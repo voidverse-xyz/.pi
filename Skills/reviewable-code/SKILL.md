@@ -57,7 +57,7 @@ expression; early returns over deep nesting; descriptive names over clever one-l
 
 Style nits in review (single-line vs multi-line, etc.) are usually the **project's
 convention or its formatter (Prettier), not an eslint rule** — diagnose which before
-"fixing eslint." Follow the repo's documented convention (`AGENT.md`/`CLAUDE.md`); if a
+"fixing eslint." Follow the repo's documented convention (`AGENTS.md`/`CLAUDE.md`); if a
 reviewer's preference conflicts with it, surface the conflict rather than silently changing
 the rules. If you must override the formatter for one line, `// prettier-ignore` is the
 honest tool.

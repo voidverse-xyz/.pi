@@ -31,10 +31,20 @@ comments, docs, or content sent to an external service:
 
 - Reusable context lives in this file.
 - Reusable skills, MCP definitions, workflows, subagents, and related agent
-  documents live in sibling directories alongside this file.
-- When editing or updating reusable agent materials, update the sibling
-  directories alongside this file, such as `Skills/`, `MCP/`, `Workflows/`, and
-  `Subagents/`.
+  documents live in sibling directories alongside this file, including:
+
+- `Skills/`
+- `MCP/`
+- `Workflows/`
+- `Subagents/`
+
+When the user asks about a skill, workflow, MCP definition, or subagent, check
+these sibling directories in this workspace before checking global or installed
+agent locations.
+
+When editing or updating reusable agent materials, update the sibling
+directories alongside this file, such as `Skills/`, `MCP/`, `Workflows/`, and
+`Subagents/`.
 
 ## Working Style
 

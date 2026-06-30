@@ -7,7 +7,7 @@ description: Prevent Claude, Codex, or any other agent from leaking private, loc
 
 Anything that leaves the local machine is **publishing**. PR descriptions, issue
 bodies, commit messages **and their trailers**, the **contents of any committed
-file** (yes, including `.gitignore` comments, `AGENT.md`, `README`), code review
+file** (yes, including `.gitignore` comments, `AGENTS.md`, `README`), code review
 comments, and content sent to external services can be cached, indexed, and read
 by anyone — and stay visible even after you "delete" them. Treat every
 outward-facing string as permanent and public.
@@ -82,13 +82,13 @@ This applies to **committed files**, not just PR/commit prose:
 
 - A committed `.gitignore` must list a pattern to ignore it, but keep its comments
   generic (`# local/personal — gitignored`); don't enumerate the personal
-  filenames in editorial comments or repeat them in `AGENT.md`/`README`/docs.
+  filenames in editorial comments or repeat them in `AGENTS.md`/`README`/docs.
 - Better still: a file that only exists on *your* machine (e.g. a personal
   launcher script) doesn't belong in the committed `.gitignore` at all — ignore it
   via `.git/info/exclude` (local, never committed) so its name is never published.
-- ❌ committed `AGENT.md`: "Keep machine-local files (`settings.json`,
+- ❌ committed `AGENTS.md`: "Keep machine-local files (`settings.json`,
   `start-agent.sh`, `.agent/`) out of git."
-- ✅ committed `AGENT.md`: "Machine-local config is gitignored; committed source of
+- ✅ committed `AGENTS.md`: "Machine-local config is gitignored; committed source of
   truth lives under `Agents/`." — names nothing personal.
 
 ## Never put these in outward-facing text
@@ -143,7 +143,7 @@ Also, before committing, run the pass over the parts that aren't the message bod
   them): no `Claude-Session:`, `Codex-Session:`, other session trailers, or
   session URLs; co-author lines use the exact safe shape.
 - **Committed files you're adding/editing** — does any `.gitignore` comment,
-  `AGENT.md`, `README`, or doc *name* an excluded personal file or describe what
+  `AGENTS.md`, `README`, or doc *name* an excluded personal file or describe what
   was withheld? `git grep -nE 'start-(claude|codex|agent)|settings\.json|\.env|/home/|/Users/' -- <staged paths>`.
 
 ## If you already leaked
@@ -168,7 +168,7 @@ exclusion was correct; advertising it in a public artifact was the leak.
 
 A later incident leaked two more ways at once: every commit on a pushed branch
 carried an agent session URL and a `Co-Authored-By: ... (1M context)` trailer,
-and a committed `AGENT.md` + `.gitignore` comment spelled out machine-local
+and a committed `AGENTS.md` + `.gitignore` comment spelled out machine-local
 filenames. The message *bodies* and the PR description were clean — the leaks
 were entirely in trailers and committed-file prose, the parts that are easy to
 skip on a leak pass. This applies equally to Claude, Codex, and any other agent
