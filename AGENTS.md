@@ -58,6 +58,33 @@ When creating local Codex plugins for this workspace, scaffold plugin source
 directories into `Codex/Plugins/plugins/`. For marketplace-backed plugins, use
 `Codex/Plugins/marketplace.json` as the workspace marketplace file.
 
+## Reusable Artifact Capture
+
+When an agent creates or substantially improves a plan, skill, workflow,
+subagent, MCP definition, Codex plugin pattern, setup procedure, or related
+agent material for a project, also create a generic reusable version and save it
+in this repository under the matching shared directory.
+
+The reusable version must be project-agnostic and host-agnostic. Remove or
+generalize project names, repo names, customer names, home paths, hostnames,
+LAN addresses, account identifiers, credentials, tokens, private URLs, local
+ports that only apply to one setup, generated logs, and environment-specific
+state. Use placeholders such as `<project-root>`, `<service-name>`,
+`<workspace>`, or `noreply@example.com` when an example needs a value.
+
+Route reusable materials by type:
+
+- Plans and operating notes go in `Plans/`.
+- Skills go in `Skills/`.
+- Workflows go in `Workflows/`.
+- Subagents or agent definitions go in `Subagents/`.
+- MCP definitions and notes go in `MCP/`.
+- Codex plugin source or patterns go in `Codex/Plugins/`.
+- Non-Codex setup/config patterns go in `Configs/`.
+
+If the project-specific artifact is not safe to preserve directly, write a short
+generic pattern or procedure instead of copying sensitive or local-only content.
+
 ## Directory Map
 
 - `AGENTS.md`: instructions agents read before working in this repository.
