@@ -1,0 +1,23 @@
+# Local host-specific configuration and runtime state.
+Codex/Configs/config.toml
+Codex/Configs/*.local.toml
+Codex/Configs/auth.json
+Codex/Configs/history.jsonl
+Codex/Configs/session_index.jsonl
+Codex/Configs/*.sqlite*
+Codex/Configs/cache/
+Codex/Configs/sessions/
+Codex/Configs/archived_sessions/
+Codex/Configs/logs/
+Codex/Configs/tmp/
+Codex/Configs/.tmp/
+
+# Local setup archives and credentials.
+Configs/PiAgent/archive/*.zip
+.ssh/
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*

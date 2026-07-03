@@ -1,0 +1,151 @@
+PI CODING AGENT — RESEARCH NOTES
+Source: https://pi.dev/ , https://pi.dev/docs/latest , https://pi.dev/docs/latest/extensions , https://pi.dev/docs/latest/packages
+Collected: 2026-07-03
+
+=================================================
+WHAT IS PI
+=================================================
+Pi is described as "a minimal agent harness" — a coding agent CLI you customize
+to fit your own workflow rather than adapting to a predefined system.
+- Supports 15+ AI providers (Anthropic, OpenAI, Google, etc.) and hundreds of models
+- Features: tree-structured session history, context engineering, extensibility
+- License: MIT
+- GitHub: https://github.com/earendil-works/pi
+- npm package name: @earendil-works/pi-coding-agent
+
+=================================================
+INSTALLING PI ITSELF
+=================================================
+curl:       curl -fsSL https://pi.dev/install.sh | sh
+PowerShell: powershell -c "irm https://pi.dev/install.ps1 | iex"
+npm:        npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+pnpm:       pnpm add -g --ignore-scripts @earendil-works/pi-coding-agent
+bun:        bun add -g --ignore-scripts @earendil-works/pi-coding-agent
+
+=================================================
+PACKAGE vs EXTENSION — CONCEPTUAL DIFFERENCE
+=================================================
+This is a "contains-a" relationship, not two peer concepts.
+
+EXTENSION = one piece of functionality
+- A single TypeScript module (or small folder) that hooks into Pi's lifecycle:
+  register a tool, add a slash command, listen to an event, gate a permission.
+- It's just code. No skills/prompts/themes attached.
+- Example: one file that adds a "/deploy" command.
+
+PACKAGE = a distribution wrapper that can bundle several kinds of resources,
+one of which is extensions
+- A package.json (published to npm or a git repo) with a "pi" key declaring
+  what's inside.
+- Conventional subfolders (any subset can be present):
+    extensions/   -> loads .ts and .js files
+    skills/       -> recursively finds SKILL.md folders
+    prompts/      -> loads .md files
+    themes/       -> loads .json files
+- Example: @foo/pi-tools might ship 3 extensions + 2 skills + 1 theme, all
+  installed together via one `pi install` command.
+
+Comparison table:
+| Aspect                  | Extension                          | Package                                            |
+|-------------------------|-------------------------------------|-----------------------------------------------------|
+| What it is              | A capability (code)                 | A shareable bundle                                   |
+| Can it stand alone?     | Yes, drop the .ts file in place     | Yes, it's the unit you `pi install`                 |
+| What's inside           | Just itself                         | 0+ extensions + skills + prompts + themes           |
+| Where it lives on disk  | ~/.pi/agent/extensions/             | ~/.pi/agent/npm/ or ~/.pi/agent/git/...             |
+
+Simple mental model: if you're writing one script that adds one feature, that's
+an extension. If you want to publish/share a collection of features (possibly
+including extensions) as one installable thing, wrap it in a package. A
+package with only an extensions/ folder and nothing else is basically "an
+extension, but installable via npm/git and versioned."
+
+=================================================
+INSTALL LOCATIONS ON DISK
+=================================================
+Extension:
+  Global:        ~/.pi/agent/extensions/*.ts   (or  .../my-extension/index.ts)
+  Project-local: .pi/extensions/*.ts
+
+npm package:
+  Global:  ~/.pi/agent/npm/
+  Project: .pi/npm/
+
+Git package:
+  Global:  ~/.pi/agent/git/<host>/<path>
+  Project: .pi/git/<host>/<path>
+
+Extra search paths can be added via the "extensions" array in settings.json.
+
+=================================================
+EXTENSION FILE STRUCTURE (3 styles)
+=================================================
+1) Single file:
+   ~/.pi/agent/extensions/my-extension.ts
+
+2) Directory with index:
+   ~/.pi/agent/extensions/my-extension/
+   ├── index.ts
+   ├── tools.ts
+   └── utils.ts
+
+3) Package with dependencies:
+   ~/.pi/agent/extensions/my-extension/
+   ├── package.json
+   ├── package-lock.json
+   ├── node_modules/
+   └── src/index.ts
+
+=================================================
+PACKAGE FILE STRUCTURE
+=================================================
+extensions/     # loads .ts and .js files
+skills/         # recursively finds SKILL.md folders
+prompts/        # loads .md files
+themes/         # loads .json files
+package.json    # declares resources under the "pi" key
+
+=================================================
+NORMAL INSTALL (via `pi install`)
+=================================================
+pi install npm:@foo/pi-tools
+pi install git:github.com/badlogic/pi-doom
+pi install /absolute/path/to/package
+
+=================================================
+MANUAL INSTALL (bypassing `pi install`)
+=================================================
+Extension:
+  1. Copy/clone the extension's files into ~/.pi/agent/extensions/
+     (or .pi/extensions/ for project-only)
+  2. If it has a package.json, run `npm install` inside that folder
+  3. Restart Pi, or run `/reload` inside Pi — extensions auto-discover from
+     those directories automatically
+
+Package (npm or git):
+  1. Clone/copy it into the matching directory:
+       ~/.pi/agent/npm/
+       ~/.pi/agent/git/<host>/<path>
+       (or the .pi/ project-local equivalents)
+  2. Run `npm install` if it has a package.json
+  3. Register it by adding the path in ~/.pi/agent/settings.json
+     (or .pi/settings.json for project-local)
+
+=================================================
+KEY RESOURCES / LINKS
+=================================================
+Docs:             https://pi.dev/docs/latest
+GitHub:           https://github.com/earendil-works/pi
+Package Registry: https://pi.dev/packages
+Discord:          https://discord.com/invite/3cU7Bz4UPx
+
+=================================================
+OPEN QUESTIONS / NOT YET VERIFIED
+=================================================
+- Exact schema of the "pi" key inside package.json (what fields it declares)
+  was not directly quoted from docs — worth checking
+  https://pi.dev/docs/latest/packages directly for the raw schema/example.
+- Exact syntax/behavior of settings.json "extensions" array entries not
+  confirmed with a direct example.
+- Haven't verified behavior differences between global vs project-local
+  scope when both define an extension/package with the same name (precedence
+  rules).
