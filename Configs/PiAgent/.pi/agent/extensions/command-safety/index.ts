@@ -7,14 +7,16 @@
  *   - destructive → two confirmations, each with a 3s button-enable countdown
  *   - network     → one confirmation with a 3s countdown
  *   - exec        → one confirmation with a 3s countdown
- *   - anything else → runs with no prompt
+ *   - other       → one confirmation with a 3s countdown (anything that isn't a
+ *                   known read-only builtin — see categories.ts)
+ *   - known read-only builtins (ls, cat, grep, git status, …) → run with no prompt
  *
  * A `/safety` command switches the enforcement mode, shown as a colored footer
  * indicator:
  *
- *   - max → gate all categories        (green shield — full protection, default)
- *   - on  → gate destructive only      (yellow shield — partial)
- *   - off → gate nothing               (red shield — protection off)
+ *   - max → gate everything except read-only builtins   (green shield — full protection, default)
+ *   - on  → gate destructive only                       (yellow shield — partial)
+ *   - off → gate nothing                                (red shield — protection off)
  *
  * The mode persists to `<agent-dir>/command-safety.json` (real home, not the
  * workspace copy), so `/safety` changes and the startup default survive restarts.
@@ -49,7 +51,7 @@ const CONFIG_PATH = join(getAgentDir(), "command-safety.json");
 const MODE_CATEGORIES: Record<SafetyMode, ReadonlySet<Category>> = {
 	off: new Set(),
 	on: new Set<Category>(["destructive"]),
-	max: new Set<Category>(["destructive", "network", "exec"]),
+	max: new Set<Category>(["destructive", "network", "exec", "other"]),
 };
 
 let currentMode: SafetyMode = loadMode();
@@ -145,7 +147,7 @@ export default function (pi: ExtensionAPI) {
 			if (arg === "") {
 				const lines = [
 					`Command safety: ${currentMode}`,
-					`  max — confirm all categories (destructive + network + exec)`,
+					`  max — confirm everything except known read-only builtins`,
 					`  on  — confirm destructive only`,
 					`  off — confirm nothing`,
 					`Usage: /safety <off|on|max>`,

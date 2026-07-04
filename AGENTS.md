@@ -143,9 +143,12 @@ shared repository using the `Reusable Artifact Capture` rules above.
   `plan-commit`, `status-line`, `tool-monitor` — `cursor` was removed
   2026-07-03) and the `plan-commit` skill.
   `command-safety` gates agent `bash` commands by category (destructive /
-  network / exec) with countdown confirmations and a `/safety off|on|max`
-  mode; it persists that mode to `~/.pi/agent/command-safety.json` (real home,
-  untracked), which is also where the startup default is configured.
+  network / exec / other) with countdown confirmations and a `/safety off|on|max`
+  mode; `max` (default) confirms everything except a read-only safe-list (ls,
+  cat, grep, git status/log/diff, …), `on` confirms destructive only, `off`
+  none. It persists that mode to `~/.pi/agent/command-safety.json` (real home,
+  untracked), which is also where the startup default is configured. Only the
+  agent's `bash` tool calls are gated, not user-typed `!` commands.
   `dir-git` (added 2026-07-03; renamed from `git-status`) renders one row above
   the input editor via a `setWidget` component — cwd + git pinned left, model +
   thinking pinned right (width-aware; dir/git truncate first when narrow). Git

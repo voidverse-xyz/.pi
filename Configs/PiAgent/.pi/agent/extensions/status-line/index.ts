@@ -1,16 +1,21 @@
 /**
- * Status line footer for Pi — a single line: token/cost usage on the left, a
- * context-usage gauge + other extensions' setStatus() text on the right.
+ * Status line footer for Pi — two stacked lines:
+ *   line 1: tool-monitor's setStatus() text on the left; a context-usage gauge +
+ *           every other extension's setStatus() text on the right
+ *   line 2: token/cost usage, directly under it, right-aligned
  *
  * The project dir, git segment, and model + thinking all live on their own row
  * above the input editor (the separate dir-git extension), not in this footer.
  *
- * Left: token/cost usage (session + trailing 1h). Right: a context-usage gauge
- * (hard-drive icon + NN%, colored dim -> success -> warning -> error as usage
- * climbs, never a progress bar) followed by any other extension's setStatus()
- * text (codex-usage, command-safety). This extension owns the " | " separators
- * between those segments, so individual extensions emit bare content.
- * Right-aligned segments survive narrow terminals; the left side truncates first.
+ * Line 1: tool-monitor is singled out to sit on the left (its own request); the
+ * context gauge (hard-drive icon + NN%, colored dim -> success -> warning -> error
+ * as usage climbs, never a progress bar) plus every other extension's setStatus()
+ * text (codex-usage, command-safety) sit on the right.
+ * This extension owns the " | " separators on the right side, so individual
+ * extensions emit bare content. When line 1 is too narrow for both sides, the
+ * left (tool-monitor) side truncates first so the right side stays visible.
+ * Line 2 (bottom): token/cost usage (session + trailing 1h), right-aligned; when
+ * narrow it truncates on the right, so the earliest segments stay visible.
  *
  * Install: ~/.pi/agent/extensions/status-line/index.ts
  * Reload: /reload
@@ -77,23 +82,31 @@ function joinSegments(segments: string[], separator: string): string {
 	return segments.filter((segment) => segment.length > 0).join(separator);
 }
 
-// Renders `left ...gap... right` across the full width, ANSI-aware. Truncates `left`
-// first when both sides don't fit, so right-side live stats never silently drop off.
-// An empty `left` still right-aligns `right` (leading spaces), rather than leaving it
-// flush against the left margin.
-function renderSplitLine(left: string, right: string, width: number): string {
+// Right-aligns `text` within `width` (ANSI-aware), padding with leading spaces.
+// When it does not fit, truncates the end so the leftmost segments stay visible.
+function alignRight(text: string, width: number): string {
+	const w = visibleWidth(text);
+	if (w >= width) return truncateToWidth(text, width);
+	return `${" ".repeat(width - w)}${text}`;
+}
+
+// tool-monitor's setStatus() text renders left-aligned on line 1, with everything
+// else (context gauge + other extensions) right-aligned on the same line.
+const TOOL_MONITOR_STATUS_KEY = "tool-monitor";
+
+// `left ...gap... right` across the full width, ANSI-aware. When both don't fit,
+// truncates the left side first so the right side (context/safety/codex) survives.
+function splitLine(left: string, right: string, width: number): string {
+	if (!left) return alignRight(right, width);
 	if (!right) return truncateToWidth(left, width);
 
+	const leftWidth = visibleWidth(left);
 	const rightWidth = visibleWidth(right);
-	if (rightWidth >= width) return truncateToWidth(right, width);
-
-	if (!left) return `${" ".repeat(width - rightWidth)}${right}`;
-
-	const gap = width - visibleWidth(left) - rightWidth;
+	const gap = width - leftWidth - rightWidth;
 	if (gap >= 1) return `${left}${" ".repeat(gap)}${right}`;
 
-	const truncatedLeft = truncateToWidth(left, Math.max(0, width - rightWidth - 1));
-	return `${truncatedLeft} ${right}`;
+	const trimmedLeft = truncateToWidth(left, Math.max(0, width - rightWidth - 1));
+	return trimmedLeft ? `${trimmedLeft} ${right}` : truncateToWidth(right, width);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -139,18 +152,21 @@ export default function (pi: ExtensionAPI) {
 					const context = formatContext(ctx, theme);
 					const extensionStatuses = footerData.getExtensionStatuses();
 
+					// Line 1 (top): tool-monitor's setStatus() text on the left, context gauge +
+					// every other extension's setStatus() text on the right. This extension owns
+					// the separators on the right side: joined with a single dim " | ", so
+					// individual extensions emit bare content (no ad-hoc separators of their own).
+					const toolMonitorStatus = extensionStatuses.get(TOOL_MONITOR_STATUS_KEY) ?? "";
+					const otherStatuses = Array.from(extensionStatuses.entries())
+						.filter(([key]) => key !== TOOL_MONITOR_STATUS_KEY)
+						.map(([, value]) => value);
+					const rightSide = joinSegments([context, ...otherStatuses], theme.fg("dim", " | "));
+					// Line 2 (bottom): token/cost usage, stacked directly under the status line.
 					const usageLine = joinSegments([tokens, costStr, hourlyStr].filter(Boolean), theme.fg("dim", " | "));
 
-					// Context gauge + other extensions' setStatus() text (codex-usage, safety)
-					// share the right side. This extension owns the separators: every segment is
-					// joined with a single dim " | ", so individual extensions emit bare content
-					// (no ad-hoc separators or padding of their own).
-					const otherStatuses = Array.from(extensionStatuses.values());
-					const rightSide = joinSegments([context, ...otherStatuses], theme.fg("dim", " | "));
-
-					const lines = [
-						renderSplitLine(usageLine, rightSide, width),
-					];
+					const lines: string[] = [];
+					if (toolMonitorStatus || rightSide) lines.push(splitLine(toolMonitorStatus, rightSide, width));
+					if (usageLine) lines.push(alignRight(usageLine, width));
 
 					return lines;
 				},

@@ -11,7 +11,7 @@
  * gating, status line, confirmation flow) reads from these two tables.
  */
 
-export type Category = "destructive" | "network" | "exec";
+export type Category = "destructive" | "network" | "exec" | "other";
 
 export interface CategoryRule {
 	category: Category;
@@ -54,6 +54,13 @@ export const CATEGORY_META: Record<Category, CategoryMeta> = {
 		confirmations: 1,
 		delayMs: THREE_SECONDS,
 		blurb: "Starts, inspects, or manipulates processes (interpreters, sudo, kill, docker, cron).",
+	},
+	other: {
+		label: "Command",
+		color: "warning",
+		confirmations: 1,
+		delayMs: THREE_SECONDS,
+		blurb: "Any command that isn't a known read-only builtin (gated in max mode only).",
 	},
 };
 
@@ -157,12 +164,78 @@ export const CATEGORY_ORDER: CategoryRule[] = [
 	},
 ];
 
-/** Classify a bash command into its highest-severity category, or null if none match. */
+// Commands considered read-only / side-effect-free. Anything a command isn't
+// built purely from (see classifyCommand's catch-all) is gated in max mode. Kept
+// deliberately tight — err toward gating — but covers the common inspection
+// commands an agent runs constantly so they don't each need a confirmation.
+const SAFE_COMMANDS = new Set([
+	"ls", "ll", "la", "l", "dir", "pwd", "cd", "echo", "printf",
+	"cat", "bat", "tac", "nl", "head", "tail", "wc",
+	"grep", "egrep", "fgrep", "rg", "ack", "ag",
+	"stat", "file", "du", "df", "tree", "realpath", "readlink", "basename", "dirname",
+	"date", "cal", "whoami", "id", "hostname", "uname", "uptime", "printenv", "locale",
+	"diff", "cmp", "comm", "sort", "uniq", "cut", "column", "rev", "fold", "paste", "join",
+	"jq", "yq", "which", "command", "type", "whereis", "true", "false", "test", "[",
+	"less", "more", "fd", "man", "tldr", "help",
+]);
+
+// git subcommands that only read repository state (mutating ones like commit,
+// checkout, branch -d, config <set> stay gated).
+const GIT_READONLY = new Set([
+	"status", "log", "diff", "show", "blame", "shortlog", "describe", "rev-parse",
+	"ls-files", "ls-tree", "reflog", "whatchanged", "cat-file", "name-rev",
+	"for-each-ref", "symbolic-ref", "count-objects", "var", "grep",
+]);
+
+// Strip a leading path and surrounding quotes from a command head: /usr/bin/ls -> ls.
+function commandHead(token: string): string {
+	const noQuotes = token.replace(/^['"]|['"]$/g, "");
+	return noQuotes.split("/").pop() || noQuotes;
+}
+
+// True only when the whole command line is provably read-only: no command/process
+// substitution, no writes to a real file, and every pipeline/list segment starts
+// with a known read-only command (or a read-only `git` subcommand). Conservative —
+// anything it can't confidently prove safe returns false, so it gets gated.
+function isReadOnlySafe(command: string): boolean {
+	// Command or process substitution can run anything — never safe.
+	if (/\$\(|`|<\(/.test(command)) return false;
+	// Output redirection to a real file is a write. Allow /dev/null and fd dups.
+	for (const m of command.matchAll(/(?:^|[^0-9&>])\d?>>?\s*([^\s|&;<>]+)/g)) {
+		if (m[1] !== "/dev/null") return false;
+	}
+	for (const m of command.matchAll(/&>>?\s*([^\s|&;<>]+)/g)) {
+		if (m[1] !== "/dev/null") return false;
+	}
+	const segments = command.split(/&&|\|\||;|\||\n/).map((s) => s.trim()).filter(Boolean);
+	if (segments.length === 0) return false;
+	for (const seg of segments) {
+		const tokens = seg.split(/\s+/).filter(Boolean);
+		// Skip leading `VAR=val` environment assignments.
+		let idx = 0;
+		while (idx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx])) idx++;
+		if (idx >= tokens.length) return false;
+		const head = commandHead(tokens[idx]);
+		if (head === "git") {
+			const sub = tokens[idx + 1] ? commandHead(tokens[idx + 1]) : "";
+			if (!GIT_READONLY.has(sub)) return false;
+			continue;
+		}
+		if (!SAFE_COMMANDS.has(head)) return false;
+	}
+	return true;
+}
+
+/**
+ * Classify a bash command. Returns the highest-severity matching category, or
+ * "other" for anything that isn't a provably read-only builtin (so max mode
+ * confirms it), or null for read-only inspection commands (never gated).
+ */
 export function classifyCommand(command: string): Category | null {
 	for (const rule of CATEGORY_ORDER) {
 		if (rule.patterns.some((pattern) => pattern.test(command))) {
 			return rule.category;
 		}
 	}
-	return null;
+	return isReadOnlySafe(command) ? null : "other";
 }

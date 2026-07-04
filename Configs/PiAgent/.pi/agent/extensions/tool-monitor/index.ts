@@ -3,15 +3,18 @@
  *
  * Tracks every tool call via tool_execution_start/update/end and exposes it two ways:
  *
- * 1. A small persistent widget, bottom-left (placement "belowEditor", plain left-aligned
- *    text — no background fill, no centering, colored "dim" to match the rest of
- *    status-line's segments), always showing one line: ">_ · <names>" while tools
- *    run, or ">_ · none" when idle.
+ * 1. A ">_ (<names>)" / ">_ (none)" indicator published via ctx.ui.setStatus() -
+ *    the same generic cross-extension footer-status channel codex-usage and
+ *    command-safety use - so status-line joins it onto the same line as the context
+ *    gauge and those other segments, rather than it living on its own separate row.
+ *    (It used to be its own belowEditor widget; John asked for it combined onto that
+ *    line instead.)
  *
- * 2. `/tools` — a full-screen floating overlay (ctx.ui.custom, evenly inset on all sides
- *    via overlayOptions.margin) listing running + recent tool calls. Arrow keys + Enter
- *    drill into one to see its live streaming output; Escape/'b' goes back to the list;
- *    Escape/'q'/Ctrl+C closes the overlay entirely.
+ * 2. `/tools` — a near-full-screen floating overlay (ctx.ui.custom, inset by OVERLAY_MARGIN
+ *    on all sides via overlayOptions.margin/width/maxHeight) listing running + recent tool
+ *    calls, on a background fill distinct from the plain transcript, with interior padding
+ *    around the content. Arrow keys + Enter drill into one to see its live streaming output;
+ *    Escape/'b' goes back to the list; Escape/'q'/Ctrl+C closes the overlay entirely.
  *
  * No true mouse/click support: Pi's extension API has no structured mouse/hit-testing
  * primitive, only raw terminal input (ctx.ui.onTerminalInput) — building real clicking
@@ -26,12 +29,25 @@
  * Reload: /reload
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth, type TUI, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { matchesKey, truncateToWidth, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
-const WIDGET_KEY = "tool-monitor-active";
+const STATUS_KEY = "tool-monitor";
 const MAX_FINISHED_HISTORY = 100;
 const WIDGET_ICON = ">_"; // terminal prompt - plain ASCII, not a Nerd Font glyph
+
+// Outer inset from the terminal edges (as full-screen as reasonably possible while
+// still reading as a floating overlay rather than literally the whole terminal).
+const OVERLAY_MARGIN = 1;
+// Interior padding, inside the box itself, on top of OVERLAY_MARGIN.
+const INNER_PAD_X = 2;
+
+// pi-tui has a function with this exact name/behavior, but it isn't re-exported from the
+// package's public index — only visibleWidth is. Reimplemented locally (see codex-usage).
+function applyBackgroundToLine(line: string, width: number, bgFn: (text: string) => string): string {
+	const padding = " ".repeat(Math.max(0, width - visibleWidth(line)));
+	return bgFn(line + padding);
+}
 
 type ToolStatus = "running" | "done" | "error";
 
@@ -140,7 +156,23 @@ class ToolMonitorComponent {
 	}
 
 	render(width: number): string[] {
-		return this.mode === "list" ? this.renderList(width) : this.renderDetail(width);
+		// Content is built against the padded-in width, then each line gets a left/right
+		// interior margin plus a full-width background fill distinct from the transcript's
+		// (which has none), and the frame is padded with blank filled rows to the full
+		// available terminal height (pi-tui sizes the overlay to however many lines we
+		// return — it does not auto-stretch short content to fill the box on its own).
+		const contentWidth = Math.max(1, width - INNER_PAD_X * 2);
+		const content = this.mode === "list" ? this.renderList(contentWidth) : this.renderDetail(contentWidth);
+
+		const bgFn = (text: string) => this.theme.bg("customMessageBg", text);
+		const pad = " ".repeat(INNER_PAD_X);
+		const rows = content.map((line) => applyBackgroundToLine(`${pad}${line}`, width, bgFn));
+
+		const targetRows = Math.max(rows.length, this.tui.terminal.rows - OVERLAY_MARGIN * 2);
+		const blankRow = applyBackgroundToLine("", width, bgFn);
+		while (rows.length < targetRows) rows.push(blankRow);
+
+		return rows;
 	}
 
 	private renderList(width: number): string[] {
@@ -189,9 +221,6 @@ class ToolMonitorComponent {
 export default function (pi: ExtensionAPI) {
 	const runs = new Map<string, ToolRun>();
 	const order: string[] = [];
-	let activeTui: TUI | undefined;
-
-	const requestRender = () => activeTui?.requestRender();
 
 	const trimFinishedHistory = () => {
 		const finishedIds = order.filter((id) => runs.get(id)?.status !== "running");
@@ -205,7 +234,16 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	pi.on("tool_execution_start", (event) => {
+	// Bare content, no leading/trailing separator of its own - status-line owns the
+	// " | " between footer segments and joins whatever any extension publishes here.
+	const publishStatus = (ctx: ExtensionContext) => {
+		if (!ctx.hasUI) return;
+		const running = [...runs.values()].filter((r) => r.status === "running");
+		const label = running.length === 0 ? "none" : running.map((r) => r.name).join(", ");
+		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", `${WIDGET_ICON} (${label})`));
+	};
+
+	pi.on("tool_execution_start", (event, ctx) => {
 		runs.set(event.toolCallId, {
 			id: event.toolCallId,
 			name: event.toolName,
@@ -217,16 +255,16 @@ export default function (pi: ExtensionAPI) {
 			result: undefined,
 		});
 		order.push(event.toolCallId);
-		requestRender();
+		publishStatus(ctx);
 	});
 
-	pi.on("tool_execution_update", (event) => {
+	pi.on("tool_execution_update", (event, ctx) => {
 		const run = runs.get(event.toolCallId);
 		if (run) run.partialResult = event.partialResult;
-		requestRender();
+		publishStatus(ctx);
 	});
 
-	pi.on("tool_execution_end", (event) => {
+	pi.on("tool_execution_end", (event, ctx) => {
 		const run = runs.get(event.toolCallId);
 		if (run) {
 			run.status = event.isError ? "error" : "done";
@@ -234,35 +272,15 @@ export default function (pi: ExtensionAPI) {
 			run.result = event.result;
 		}
 		trimFinishedHistory();
-		requestRender();
+		publishStatus(ctx);
 	});
 
 	pi.on("session_start", (_event, ctx) => {
-		if (!ctx.hasUI) return;
-
-		ctx.ui.setWidget(
-			WIDGET_KEY,
-			(tui, widgetTheme) => {
-				activeTui = tui;
-				return {
-					render(width: number): string[] {
-						const running = [...runs.values()].filter((r) => r.status === "running");
-						const label = running.length === 0 ? "none" : running.map((r) => r.name).join(", ");
-						// "dim" to match the rest of status-line's segments (path, tokens, cost, etc.)
-						return [truncateToWidth(widgetTheme.fg("dim", `${WIDGET_ICON} (${label})`), width)];
-					},
-					invalidate() {},
-					dispose() {
-						if (activeTui === tui) activeTui = undefined;
-					},
-				};
-			},
-			{ placement: "belowEditor" },
-		);
+		publishStatus(ctx);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		ctx.ui.setWidget(WIDGET_KEY, undefined);
+		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
 
 	pi.registerCommand("tools", {
@@ -270,7 +288,13 @@ export default function (pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			await ctx.ui.custom<void>(
 				(tui, theme, _keybindings, done) => new ToolMonitorComponent(tui, theme, done, ctx, runs, order),
-				{ overlay: true, overlayOptions: { margin: 2 } },
+				{
+					overlay: true,
+					// Without an explicit width, pi-tui defaults an overlay to min(80, available) —
+					// nowhere near full-screen. width/maxHeight "100%" plus a small margin is what
+					// actually gets it as close to full-screen as the terminal allows.
+					overlayOptions: { margin: OVERLAY_MARGIN, width: "100%", maxHeight: "100%" },
+				},
 			);
 		},
 	});
