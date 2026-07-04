@@ -1,26 +1,37 @@
 ---
 name: containerized-development
-description: Develop inside Docker containers, not on the host. Use a Dockerfile + docker compose (with `docker compose watch` for live sync/reload), bind-mount the project source, keep Docker artifacts/state in a project `.docker/` dir, and install dependencies and run all dev work inside the container. Use for any local development work — setting up, running, building, testing, or installing dependencies for a project — scaffolding the Docker files when they don't exist yet, and cleaning up old containers/images/volumes when done.
+description: Develop inside Docker containers when Docker or Docker Compose is installed and available. Prefer containerized development over host tooling for local development work whenever Docker tooling is available, even if the needed host tools are also installed. Use a Dockerfile + docker compose (with `docker compose watch` for live sync/reload), bind-mount or sync the project source, keep Docker artifacts/state in a project `.docker/` dir, and install dependencies and run dev work inside the container.
 ---
 
 # Containerized development
 
-**Default to developing inside a Docker container, never directly on the host.**
-The host stays clean: no language runtimes, no project dependencies, no build
-toolchains installed locally. Everything runs in the container; the host only
+**Use this skill when Docker or Docker Compose is installed and available.** If
+Docker tooling is available, switch to containerized development instead of using
+host runtimes, package managers, compilers, test runners, or project
+dependencies directly.
+
+Before using Docker, check for available Docker tooling, for example with
+`docker --version` and `docker compose version`. Prefer Compose when available.
+If Docker is missing, unavailable, or not running, do not scaffold Docker files
+as a workaround unless the user explicitly asks for Docker setup.
+
+When this skill applies, keep the host clean: avoid installing language
+runtimes, project dependencies, or build toolchains locally just to complete the
+task. Everything for that project run should happen in the container; the host
 provides Docker and an editor.
 
-This applies to **any** local dev work — first-time setup, running the app,
-builds, tests, and installing/updating dependencies. If the Docker files don't
-exist yet, **scaffold them first**, then proceed inside the container.
+This applies to local dev work whenever Docker tooling is available — first-time
+setup, running the app, builds, tests, and installing/updating dependencies. If
+Docker is available and the Docker files don't exist yet, **scaffold them
+first**, then proceed inside the container.
 
 **Stack-agnostic.** This is not a Node.js convention — it applies to any
 language or toolchain: C/C++ (gcc/clang, CMake, Make), Rust (cargo), Go, Python,
 Java, Ruby, etc. "Dependencies," "build," and "dev server" mean whatever they
 mean for the project's stack (compilers and headers, a build system, a compiled
 binary, an interpreter, a long-running server — or just a CLI that builds and
-exits). The rule is the same regardless: the toolchain and build happen in the
-container, not on the host.
+exits). When this workflow applies, the rule is the same regardless: the
+toolchain and build happen in the container, not on the host.
 
 ## The model
 
@@ -40,18 +51,21 @@ container, not on the host.
 
 ## Workflow
 
-1. **Check for Docker files.** If `Dockerfile` and a compose file are absent,
-   scaffold them (see below) before doing anything else.
-2. **Build the image.** `docker compose build` (or let `up` build on first run).
-3. **Bring it up.** Prefer `docker compose watch`; fall back to
+1. **Check whether this skill applies.** If Docker or Docker Compose is
+   available, use this workflow instead of host tools. Prefer Compose when it is
+   available.
+2. **Check for Docker files.** If `Dockerfile` and a compose file are absent,
+   scaffold them (see below) before doing containerized work.
+3. **Build the image.** `docker compose build` (or let `up` build on first run).
+4. **Bring it up.** Prefer `docker compose watch`; fall back to
    `docker compose up`.
-4. **Install dependencies inside the container** — never on the host. Either bake
+5. **Install dependencies inside the container** for this workflow. Either bake
    the install into the `Dockerfile`, or run it in the running container:
    `docker compose exec <service> <install command>`. Adding a dependency means
    updating the manifest and reinstalling **in the container**, then letting the
    image rebuild.
-5. **Run everything in the container** — dev server, builds, tests, REPLs,
-   one-off scripts — via the container (see below). Do not run these on the host.
+6. **Run project commands in the container** — dev server, builds, tests, REPLs,
+   one-off scripts — via the container (see below).
 
 ## Live reload: `docker compose watch` + an in-container reloader
 
@@ -204,9 +218,14 @@ with a session or a project, tear down what you created:
 
 ## Don't
 
-- Don't install deps or toolchains **on the host** to "just get it working" —
-  `npm install`, `pip install`, `cargo build`, `apt install g++`, `cmake`,
-  `go mod download`, `bundle install`, etc. all belong in the container.
-- Don't run the dev server, compiler/build, or tests directly on the host.
-- Don't skip scaffolding the Docker files and develop locally as a shortcut — set
-  the container up first.
+- Don't use this skill when Docker is missing, unavailable, or not running.
+- Don't choose host tools over Docker just because the host tools are already
+  installed.
+- Once this workflow applies, don't install deps or toolchains **on the host** to
+  "just get it working" — `npm install`, `pip install`, `cargo build`,
+  `apt install g++`, `cmake`, `go mod download`, `bundle install`, etc. belong
+  in the container.
+- Once this workflow applies, don't run the dev server, compiler/build, or tests
+  directly on the host.
+- Once this workflow applies, don't skip scaffolding the Docker files and develop
+  locally as a shortcut — set the container up first.

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Use Claude"
-  short_description: "Delegate work to local Claude Code"
-  default_prompt: "Use $use-claude to ask Claude Code for an independent implementation or review."

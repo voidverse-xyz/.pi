@@ -1,0 +1,81 @@
+{
+	"$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
+	"name": "black-white",
+	"vars": {
+		"white": "#ffffff",
+		"offWhite": "#e6e6e6",
+		"lightGray": "#c8c8c8",
+		"midLightGray": "#b0b0b0",
+		"gray": "#909090",
+		"midGray": "#707070",
+		"dimGray": "#5a5a5a",
+		"darkGray": "#3a3a3a",
+		"charcoal": "#242424",
+		"nearBlack": "#1a1a1a",
+		"black": "#000000"
+	},
+	"colors": {
+		"accent": "white",
+		"border": "gray",
+		"borderAccent": "white",
+		"borderMuted": "dimGray",
+		"success": "lightGray",
+		"error": "white",
+		"warning": "gray",
+		"muted": "gray",
+		"dim": "dimGray",
+		"text": "offWhite",
+		"thinkingText": "gray",
+
+		"selectedBg": "darkGray",
+		"userMessageBg": "charcoal",
+		"userMessageText": "offWhite",
+		"customMessageBg": "charcoal",
+		"customMessageText": "offWhite",
+		"customMessageLabel": "white",
+		"toolPendingBg": "charcoal",
+		"toolSuccessBg": "darkGray",
+		"toolErrorBg": "nearBlack",
+		"toolTitle": "white",
+		"toolOutput": "midLightGray",
+
+		"mdHeading": "white",
+		"mdLink": "lightGray",
+		"mdLinkUrl": "midGray",
+		"mdCode": "white",
+		"mdCodeBlock": "lightGray",
+		"mdCodeBlockBorder": "dimGray",
+		"mdQuote": "gray",
+		"mdQuoteBorder": "dimGray",
+		"mdHr": "dimGray",
+		"mdListBullet": "white",
+
+		"toolDiffAdded": "white",
+		"toolDiffRemoved": "midGray",
+		"toolDiffContext": "dimGray",
+
+		"syntaxComment": "midGray",
+		"syntaxKeyword": "white",
+		"syntaxFunction": "lightGray",
+		"syntaxVariable": "midLightGray",
+		"syntaxString": "lightGray",
+		"syntaxNumber": "lightGray",
+		"syntaxType": "offWhite",
+		"syntaxOperator": "gray",
+		"syntaxPunctuation": "gray",
+
+		"thinkingOff": "dimGray",
+		"thinkingMinimal": "midGray",
+		"thinkingLow": "gray",
+		"thinkingMedium": "midLightGray",
+		"thinkingHigh": "lightGray",
+		"thinkingXhigh": "white",
+
+		"bashMode": "white"
+	},
+	"export": {
+		"pageBg": "#0d0d0d",
+		"cardBg": "#1a1a1a",
+		"infoBg": "#242424"
+	}
+}

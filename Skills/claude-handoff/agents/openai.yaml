@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claude Handoff"
+  short_description: "Delegate tasks through Claude CLI"
+  default_prompt: "Use $claude-handoff to hand this work to Claude through the installed CLI."

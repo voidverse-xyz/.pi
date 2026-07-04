@@ -136,6 +136,41 @@ shared repository using the `Reusable Artifact Capture` rules above.
   marketplace-backed plugins exist.
 - `Codex/Plugins/plugins/<plugin-name>/`: local Codex plugin source directory.
 
+## PiAgent Layout
+
+- `Configs/PiAgent/.pi/agent/extensions/`: source of truth for Pi extensions
+  (`codex-usage`, `command-safety`, `confirm-stop-agent`, `dir-git`,
+  `plan-commit`, `status-line`, `tool-monitor` — `cursor` was removed
+  2026-07-03) and the `plan-commit` skill.
+  `command-safety` gates agent `bash` commands by category (destructive /
+  network / exec) with countdown confirmations and a `/safety off|on|max`
+  mode; it persists that mode to `~/.pi/agent/command-safety.json` (real home,
+  untracked), which is also where the startup default is configured.
+  `dir-git` (added 2026-07-03; renamed from `git-status`) renders one row above
+  the input editor via a `setWidget` component — cwd + git pinned left, model +
+  thinking pinned right (width-aware; dir/git truncate first when narrow). Git
+  is repo/branch (compact by default) with worktree name, in-progress operation
+  (rebase/merge/cherry-pick/revert/bisect), and conflict/dirty/ahead/behind/stash
+  counts shown only when relevant. `status-line` is
+  therefore just a single footer line (token/cost on the left; context gauge +
+  other `setStatus` segments on the right) and no longer draws cwd, git, or the
+  model.
+  `tool-monitor` (added 2026-07-03) tracks tool calls via
+  `tool_execution_start/update/end`: a small bottom-left `belowEditor` widget
+  shows what's currently running, and `/tools` opens a full-screen overlay
+  (evenly inset via `overlayOptions.margin`) to browse running/recent tool
+  calls, drill into one's live output, and send an abort (`ctx.abort()` —
+  whole-turn, Pi has no per-tool-call cancel).
+- `Configs/PiAgent/.pi/agent/themes/`: source of truth for custom Pi themes
+  (`black-white`, a grayscale theme, added 2026-07-03).
+- On this host, `~/.pi/agent/extensions` and `~/.pi/agent/themes` are symlinks
+  to those directories — Pi only auto-discovers extensions/themes from its
+  real global (`~/.pi/agent/extensions/`, `~/.pi/agent/themes/`) or
+  project-local (`.pi/extensions/`, `.pi/themes/`) paths, or from extra
+  entries in `settings.json`, so the workspace copies must stay linked (or
+  listed there) rather than just documented for agents to check. Re-run
+  `pi`'s `/reload` (or restart) after changing files here.
+
 ## Working Style
 
 - If something I ask for is technically wrong or impossible, say so and propose a
