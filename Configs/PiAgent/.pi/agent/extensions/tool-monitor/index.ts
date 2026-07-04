@@ -92,6 +92,8 @@ class ToolMonitorComponent {
 	private mode: "list" | "detail" = "list";
 	private selectedIndex = 0;
 	private selectedId: string | undefined;
+	// Content-line index (within renderList output) of the selected row, or null.
+	private highlightRow: number | null = null;
 
 	constructor(
 		private readonly tui: TUI,
@@ -110,7 +112,19 @@ class ToolMonitorComponent {
 			const run = this.runs.get(this.order[i]);
 			if (run) items.push(run);
 		}
+		// Running tool calls pinned to the top; recency (most recent first) is
+		// preserved within each group via the stable sort.
+		items.sort((a, b) => Number(b.status === "running") - Number(a.status === "running"));
 		return items;
+	}
+
+	private attemptAbort(run: ToolRun | undefined): void {
+		if (run?.status === "running") {
+			this.ctx.abort();
+			this.ctx.ui.notify("Sent abort (stops the whole current turn - Pi has no per-tool abort).", "warning");
+		} else {
+			this.ctx.ui.notify("That tool call already finished - nothing to abort.", "info");
+		}
 	}
 
 	handleInput(data: string): void {
@@ -131,6 +145,8 @@ class ToolMonitorComponent {
 				this.selectedId = item.id;
 				this.mode = "detail";
 			}
+		} else if (data === "x") {
+			this.attemptAbort(items[this.selectedIndex]);
 		} else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || data === "q") {
 			this.done();
 		}
@@ -146,13 +162,7 @@ class ToolMonitorComponent {
 			return;
 		}
 		if (data === "x") {
-			const run = this.selectedId ? this.runs.get(this.selectedId) : undefined;
-			if (run?.status === "running") {
-				this.ctx.abort();
-				this.ctx.ui.notify("Sent abort (stops the whole current turn - Pi has no per-tool abort).", "warning");
-			} else {
-				this.ctx.ui.notify("That tool call already finished - nothing to abort.", "info");
-			}
+			this.attemptAbort(this.selectedId ? this.runs.get(this.selectedId) : undefined);
 		}
 	}
 
@@ -166,9 +176,12 @@ class ToolMonitorComponent {
 		const content = this.mode === "list" ? this.renderList(contentWidth) : this.renderDetail(contentWidth);
 
 		const bgFn = (text: string) => this.theme.bg("customMessageBg", text);
+		const selBgFn = (text: string) => this.theme.bg("selectedBg", text);
 		const pad = " ".repeat(INNER_PAD_X);
 		const blankRow = applyBackgroundToLine("", width, bgFn);
-		const rows = content.map((line) => applyBackgroundToLine(`${pad}${line}`, width, bgFn));
+		const rows = content.map((line, i) =>
+			applyBackgroundToLine(`${pad}${line}`, width, i === this.highlightRow ? selBgFn : bgFn),
+		);
 
 		// Top interior padding so the content isn't flush against the box edge.
 		for (let i = 0; i < INNER_PAD_Y; i++) rows.unshift(blankRow);
@@ -181,10 +194,11 @@ class ToolMonitorComponent {
 	}
 
 	private renderList(width: number): string[] {
+		this.highlightRow = null;
 		const items = this.currentItems();
 		const lines: string[] = [
 			this.theme.fg("accent", "Tool Monitor"),
-			this.theme.fg("dim", "up/down: navigate  enter: view  esc/q: close"),
+			this.theme.fg("dim", "up/down: navigate  enter: view  x: abort  esc/q: close"),
 			"",
 		];
 
@@ -193,8 +207,13 @@ class ToolMonitorComponent {
 			return lines;
 		}
 
+		// Keep the selection in range as the list reorders (running pinned to top).
+		this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, items.length - 1));
+
 		items.forEach((run, index) => {
-			const marker = index === this.selectedIndex ? ">" : " ";
+			const selected = index === this.selectedIndex;
+			if (selected) this.highlightRow = lines.length;
+			const marker = selected ? ">" : " ";
 			const label = `${marker} ${run.name} ${statusLabel(run.status)}`;
 			lines.push(truncateToWidth(this.theme.fg(statusColor(run.status), label), width));
 		});
@@ -202,6 +221,7 @@ class ToolMonitorComponent {
 	}
 
 	private renderDetail(width: number): string[] {
+		this.highlightRow = null;
 		const run = this.selectedId ? this.runs.get(this.selectedId) : undefined;
 		if (!run) {
 			this.mode = "list";

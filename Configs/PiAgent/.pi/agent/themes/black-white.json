@@ -12,15 +12,19 @@
 		"darkGray": "#3a3a3a",
 		"charcoal": "#242424",
 		"nearBlack": "#1a1a1a",
-		"black": "#000000"
+		"black": "#000000",
+		"diffGreen": "#b5bd68",
+		"diffRed": "#cc6666",
+		"red": "#cc6666",
+		"blue": "#81a2be"
 	},
 	"colors": {
-		"accent": "white",
+		"accent": "blue",
 		"border": "gray",
 		"borderAccent": "white",
 		"borderMuted": "dimGray",
 		"success": "lightGray",
-		"error": "white",
+		"error": "red",
 		"warning": "gray",
 		"muted": "gray",
 		"dim": "dimGray",
@@ -50,8 +54,8 @@
 		"mdHr": "dimGray",
 		"mdListBullet": "white",
 
-		"toolDiffAdded": "white",
-		"toolDiffRemoved": "midGray",
+		"toolDiffAdded": "diffGreen",
+		"toolDiffRemoved": "diffRed",
 		"toolDiffContext": "dimGray",
 
 		"syntaxComment": "midGray",

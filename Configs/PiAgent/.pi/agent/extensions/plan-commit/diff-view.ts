@@ -1,101 +1,95 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { colorDiffLine } from "./diff.ts";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { diffGutterWidth, type ParsedDiffLine, parseDiff, replaceTabs } from "./diff.ts";
 
 export type DiffViewMode = "inline" | "split";
 
-export interface SplitRow {
-	left: string;
-	right: string;
-	leftKind: "context" | "delete" | "add" | "empty" | "header";
-	rightKind: "context" | "delete" | "add" | "empty" | "header";
+// Which background band highlights each kind of line. These are the only theme
+// background keys available (see ThemeBg), so added→success, removed→error, and
+// hunk headers→selected read as the conventional green/red/neutral bands.
+const BAND: Record<ParsedDiffLine["kind"], "toolSuccessBg" | "toolErrorBg" | "selectedBg" | null> = {
+	add: "toolSuccessBg",
+	del: "toolErrorBg",
+	hunk: "selectedBg",
+	context: null,
+	meta: null,
+};
+
+const FG: Record<ParsedDiffLine["kind"], "toolDiffAdded" | "toolDiffRemoved" | "toolDiffContext" | "muted"> = {
+	add: "toolDiffAdded",
+	del: "toolDiffRemoved",
+	context: "toolDiffContext",
+	hunk: "muted",
+	meta: "muted",
+};
+
+const SIGN: Record<ParsedDiffLine["kind"], string> = {
+	add: "+",
+	del: "-",
+	context: " ",
+	hunk: " ",
+	meta: " ",
+};
+
+/** Pad a pre-styled string to an exact visible width with trailing spaces. */
+function padTo(styled: string, visible: number, width: number): string {
+	return width > visible ? styled + " ".repeat(width - visible) : styled;
 }
 
-/** Parse unified diff into side-by-side rows (no +/- prefixes). */
-export function parseUnifiedToSplitRows(raw: string): SplitRow[] {
-	const rows: SplitRow[] = [];
-	let pendingOldHeader = "";
+/**
+ * Render one unified (inline) diff line at exactly `fullW` visible columns:
+ * ` <gutter> <sign> <content>`, wrapped in the line's highlight band so the
+ * band spans the whole row.
+ */
+function renderInlineLine(line: ParsedDiffLine, gutterW: number, fullW: number, theme: Theme): string {
+	const band = BAND[line.kind];
 
-	for (const line of raw.split("\n")) {
-		if (!line && rows.length > 0) continue;
-
-		if (line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("# ")) {
-			rows.push({ left: line, right: "", leftKind: "header", rightKind: "empty" });
-			continue;
-		}
-
-		if (line.startsWith("--- ")) {
-			pendingOldHeader = line.slice(4).trim();
-			continue;
-		}
-
-		if (line.startsWith("+++ ")) {
-			const newLabel = line.slice(4).trim();
-			rows.push({
-				left: pendingOldHeader || "(deleted)",
-				right: newLabel,
-				leftKind: "header",
-				rightKind: "header",
-			});
-			pendingOldHeader = "";
-			continue;
-		}
-
-		if (line.startsWith("@@")) {
-			rows.push({ left: line, right: line, leftKind: "header", rightKind: "header" });
-			continue;
-		}
-
-		if (line.startsWith("-") && !line.startsWith("---")) {
-			rows.push({ left: line.slice(1), right: "", leftKind: "delete", rightKind: "empty" });
-			continue;
-		}
-
-		if (line.startsWith("+") && !line.startsWith("+++")) {
-			rows.push({ left: "", right: line.slice(1), leftKind: "empty", rightKind: "add" });
-			continue;
-		}
-
-		if (line.startsWith("\\")) {
-			rows.push({ left: line, right: line, leftKind: "context", rightKind: "context" });
-			continue;
-		}
-
-		const content = line.startsWith(" ") ? line.slice(1) : line;
-		rows.push({ left: content, right: content, leftKind: "context", rightKind: "context" });
+	// Hunk header / file meta: no gutter, just the raw line, optionally banded.
+	if (line.kind === "hunk" || line.kind === "meta") {
+		const contentW = Math.max(1, fullW - 1);
+		const text = truncateToWidth(replaceTabs(line.text), contentW, "…");
+		const styled = ` ${theme.fg(FG[line.kind], text)}`;
+		const padded = padTo(styled, 1 + visibleWidth(text), fullW);
+		return band ? theme.bg(band, padded) : padded;
 	}
 
-	return rows;
+	const num = line.kind === "del" ? line.oldNo : line.newNo;
+	const numStr = num != null ? String(num).padStart(gutterW) : " ".repeat(gutterW);
+	// layout: leading space + gutter + space + sign + space + content
+	const contentW = Math.max(1, fullW - gutterW - 4);
+	const content = truncateToWidth(replaceTabs(line.text), contentW, "…");
+
+	const gutter = theme.fg("toolDiffContext", numStr);
+	const body = theme.fg(FG[line.kind], `${SIGN[line.kind]} ${content}`);
+	const styled = ` ${gutter} ${body}`;
+	const visible = 1 + gutterW + 1 + 2 + visibleWidth(content); // 2 = sign + space
+	const padded = padTo(styled, visible, fullW);
+
+	return band ? theme.bg(band, padded) : padded;
 }
 
-function padCol(content: string, width: number): string {
-	const vis = visibleWidth(content);
-	if (vis >= width) return truncateToWidth(content, width, "…");
-	return content + " ".repeat(width - vis);
-}
+/** Render one side of a split row into a fixed-width, banded cell. */
+function renderCell(
+	text: string,
+	kind: ParsedDiffLine["kind"] | "empty",
+	num: number | null,
+	gutterW: number,
+	colW: number,
+	theme: Theme,
+): string {
+	if (kind === "empty") return " ".repeat(colW);
 
-function styleSplitCell(text: string, kind: SplitRow["leftKind"], theme: Theme): string {
-	if (!text) return "";
-	switch (kind) {
-		case "delete":
-			return theme.fg("toolDiffRemoved", text);
-		case "add":
-			return theme.fg("toolDiffAdded", text);
-		case "header":
-			return theme.fg("muted", text);
-		default:
-			return theme.fg("toolDiffContext", text);
-	}
-}
+	const numStr = num != null ? String(num).padStart(gutterW) : " ".repeat(gutterW);
+	const contentW = Math.max(1, colW - gutterW - 1);
+	const content = truncateToWidth(replaceTabs(text), contentW, "…");
 
-function expandWrappedRows(rows: string[], width: number): string[] {
-	if (width < 4) return rows;
-	const out: string[] = [];
-	for (const row of rows) {
-		const wrapped = wrapTextWithAnsi(row, width);
-		out.push(...(wrapped.length > 0 ? wrapped : [""]));
-	}
-	return out;
+	const gutter = theme.fg("toolDiffContext", numStr);
+	const body = theme.fg(FG[kind], content);
+	const styled = `${gutter} ${body}`;
+	const padded = padTo(styled, gutterW + 1 + visibleWidth(content), colW);
+
+	const band = BAND[kind];
+	return band ? theme.bg(band, padded) : padded;
 }
 
 /** Build scrollable display lines for the diff pane. */
@@ -105,42 +99,45 @@ export function buildDiffDisplayLines(
 	width: number,
 	theme: Theme,
 ): string[] {
-	const innerW = Math.max(20, width - 2);
-
 	if (!raw.trim()) {
 		return [theme.fg("muted", " (no diff — empty or binary)")];
 	}
 
+	const parsed = parseDiff(raw);
+	const gutterW = diffGutterWidth(parsed);
+
 	if (mode === "inline") {
-		const lines: string[] = [];
-		for (const line of raw.split("\n")) {
-			const colored = colorDiffLine(line, theme);
-			const wrapped = wrapTextWithAnsi(colored, innerW);
-			for (const w of wrapped.length > 0 ? wrapped : [""]) {
-				lines.push(` ${w}`);
-			}
-		}
-		return lines;
+		return parsed.map((line) => renderInlineLine(line, gutterW, width, theme));
 	}
 
-	const splitRows = parseUnifiedToSplitRows(raw);
+	// Split: deletes on the left (old#), adds on the right (new#), context on both.
 	const sep = theme.fg("borderMuted", " │ ");
-	const sepW = visibleWidth(sep);
-	const colW = Math.max(8, Math.floor((innerW - sepW) / 2));
+	const sepW = visibleWidth(" │ ");
+	const colW = Math.max(8, Math.floor((width - 1 - sepW) / 2));
 	const lines: string[] = [];
 
-	for (const row of splitRows) {
-		const leftStyled = styleSplitCell(row.left, row.leftKind, theme);
-		const rightStyled = styleSplitCell(row.right, row.rightKind, theme);
-		const leftWrapped = expandWrappedRows([leftStyled], colW);
-		const rightWrapped = expandWrappedRows([rightStyled], colW);
-		const rowLines = Math.max(leftWrapped.length, rightWrapped.length, 1);
-
-		for (let i = 0; i < rowLines; i++) {
-			const left = padCol(leftWrapped[i] ?? "", colW);
-			const right = padCol(rightWrapped[i] ?? "", colW);
-			lines.push(` ${left}${sep}${right}`);
+	for (const line of parsed) {
+		if (line.kind === "hunk" || line.kind === "meta") {
+			const left = renderCell(line.text, line.kind, null, gutterW, colW, theme);
+			lines.push(` ${left}${sep}${" ".repeat(colW)}`);
+			continue;
 		}
+		if (line.kind === "add") {
+			const left = renderCell("", "empty", null, gutterW, colW, theme);
+			const right = renderCell(line.text, "add", line.newNo, gutterW, colW, theme);
+			lines.push(` ${left}${sep}${right}`);
+			continue;
+		}
+		if (line.kind === "del") {
+			const left = renderCell(line.text, "del", line.oldNo, gutterW, colW, theme);
+			const right = renderCell("", "empty", null, gutterW, colW, theme);
+			lines.push(` ${left}${sep}${right}`);
+			continue;
+		}
+		// context
+		const left = renderCell(line.text, "context", line.oldNo, gutterW, colW, theme);
+		const right = renderCell(line.text, "context", line.newNo, gutterW, colW, theme);
+		lines.push(` ${left}${sep}${right}`);
 	}
 
 	return lines.length > 0 ? lines : [theme.fg("muted", " (no diff)")];

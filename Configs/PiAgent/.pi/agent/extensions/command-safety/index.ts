@@ -6,10 +6,13 @@
  *
  *   - destructive → two confirmations, each with a 3s button-enable countdown
  *   - network     → one confirmation with a 3s countdown
- *   - exec        → one confirmation with a 3s countdown
- *   - other       → one confirmation with a 3s countdown (anything that isn't a
- *                   known read-only builtin — see categories.ts)
+ *   - exec        → one confirmation, confirm button live immediately (no countdown)
+ *   - other       → one confirmation, confirm button live immediately (anything that
+ *                   isn't a known read-only builtin — see categories.ts)
  *   - known read-only builtins (ls, cat, grep, git status, …) → run with no prompt
+ *
+ * Only the higher-risk categories (destructive, network) hold the confirm button
+ * for 3s; exec/other prompt but can be accepted right away.
  *
  * A `/safety` command switches the enforcement mode, shown as a colored footer
  * indicator:

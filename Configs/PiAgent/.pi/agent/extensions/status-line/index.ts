@@ -1,21 +1,22 @@
 /**
  * Status line footer for Pi — two stacked lines:
- *   line 1: tool-monitor's setStatus() text on the left; a context-usage gauge +
- *           every other extension's setStatus() text on the right
- *   line 2: token/cost usage, directly under it, right-aligned
+ *   line 1: the subagents agent-chips on the left; a context-usage gauge + every
+ *           other extension's setStatus() text on the right
+ *   line 2: tool-monitor's shell/tool-call indicator on the left; token/cost usage
+ *           on the right
  *
  * The project dir, git segment, and model + thinking all live on their own row
  * above the input editor (the separate dir-git extension), not in this footer.
  *
- * Line 1: tool-monitor is singled out to sit on the left (its own request); the
- * context gauge (hard-drive icon + NN%, colored dim -> success -> warning -> error
- * as usage climbs, never a progress bar) plus every other extension's setStatus()
- * text (codex-usage, command-safety) sit on the right.
+ * Line 1: the subagents agent-chips sit on the left; the context gauge (hard-drive
+ * icon + NN%, colored dim -> success -> warning -> error as usage climbs, never a
+ * progress bar) plus every other extension's setStatus() text (codex-usage,
+ * command-safety) sit on the right.
  * This extension owns the " | " separators on the right side, so individual
- * extensions emit bare content. When line 1 is too narrow for both sides, the
- * left (tool-monitor) side truncates first so the right side stays visible.
- * Line 2 (bottom): token/cost usage (session + trailing 1h), right-aligned; when
- * narrow it truncates on the right, so the earliest segments stay visible.
+ * extensions emit bare content. When a line is too narrow for both sides, the left
+ * side truncates first so the right side stays visible.
+ * Line 2 (bottom): tool-monitor's shell/tool-call indicator on the left, token/cost
+ * usage (session + trailing 1h) on the right.
  *
  * Install: ~/.pi/agent/extensions/status-line/index.ts
  * Reload: /reload
@@ -93,6 +94,10 @@ function alignRight(text: string, width: number): string {
 // tool-monitor's setStatus() text renders left-aligned on line 1, with everything
 // else (context gauge + other extensions) right-aligned on the same line.
 const TOOL_MONITOR_STATUS_KEY = "tool-monitor";
+// The subagents extension publishes its agent chips under this key; they render
+// on the left of line 1 (ahead of tool-monitor) so the active agent shares a line
+// with the context/token statuses instead of taking its own row.
+const SUBAGENT_STATUS_KEY = "subagent";
 
 // `left ...gap... right` across the full width, ANSI-aware. When both don't fit,
 // truncates the left side first so the right side (context/safety/codex) survives.
@@ -152,21 +157,23 @@ export default function (pi: ExtensionAPI) {
 					const context = formatContext(ctx, theme);
 					const extensionStatuses = footerData.getExtensionStatuses();
 
-					// Line 1 (top): tool-monitor's setStatus() text on the left, context gauge +
-					// every other extension's setStatus() text on the right. This extension owns
-					// the separators on the right side: joined with a single dim " | ", so
-					// individual extensions emit bare content (no ad-hoc separators of their own).
+					// Line 1 (top): the subagent chips on the left; context gauge + every other
+					// extension's setStatus() text on the right. This extension owns the separators
+					// on the right side: joined with a single dim " | ", so individual extensions
+					// emit bare content (no ad-hoc separators of their own).
+					const subagentStatus = extensionStatuses.get(SUBAGENT_STATUS_KEY) ?? "";
 					const toolMonitorStatus = extensionStatuses.get(TOOL_MONITOR_STATUS_KEY) ?? "";
 					const otherStatuses = Array.from(extensionStatuses.entries())
-						.filter(([key]) => key !== TOOL_MONITOR_STATUS_KEY)
+						.filter(([key]) => key !== TOOL_MONITOR_STATUS_KEY && key !== SUBAGENT_STATUS_KEY)
 						.map(([, value]) => value);
 					const rightSide = joinSegments([context, ...otherStatuses], theme.fg("dim", " | "));
-					// Line 2 (bottom): token/cost usage, stacked directly under the status line.
+					// Line 2 (bottom): tool-monitor's shell/tool-call indicator on the left,
+					// token/cost usage on the right — a separate line from the agent chips.
 					const usageLine = joinSegments([tokens, costStr, hourlyStr].filter(Boolean), theme.fg("dim", " | "));
 
 					const lines: string[] = [];
-					if (toolMonitorStatus || rightSide) lines.push(splitLine(toolMonitorStatus, rightSide, width));
-					if (usageLine) lines.push(alignRight(usageLine, width));
+					if (subagentStatus || rightSide) lines.push(splitLine(subagentStatus, rightSide, width));
+					if (toolMonitorStatus || usageLine) lines.push(splitLine(toolMonitorStatus, usageLine, width));
 
 					return lines;
 				},

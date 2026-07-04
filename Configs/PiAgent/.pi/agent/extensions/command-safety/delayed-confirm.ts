@@ -15,12 +15,15 @@
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { CategoryColor } from "./categories.ts";
+
+const ICON_WARNING = ""; // nf-fa-warning (requires a Nerd Font, like the shield in index.ts)
 
 export interface DelayedConfirmOptions {
 	/** Category label, e.g. "Destructive". */
 	label: string;
 	/** Theme color for the header. */
-	color: "error" | "warning";
+	color: CategoryColor;
 	/** The command being gated. */
 	command: string;
 	/** Button-enable delay in milliseconds. */
@@ -107,9 +110,10 @@ export async function delayedConfirm(ctx: ExtensionContext, opts: DelayedConfirm
 
 			const divider = theme.fg(opts.color, "─".repeat(renderWidth));
 			lines.push(divider);
-			for (const line of wrapTextWithAnsi(theme.fg(opts.color, `⚠ ${title}`), renderWidth)) {
+			for (const line of wrapTextWithAnsi(theme.fg(opts.color, `${ICON_WARNING} ${title}`), renderWidth)) {
 				lines.push(line);
 			}
+			lines.push(""); // padding under the header
 			addWrapped(theme.fg("dim", "  $ "), theme.fg("text", opts.command));
 			lines.push("");
 

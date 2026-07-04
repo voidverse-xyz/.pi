@@ -274,6 +274,7 @@ export default function (pi: ExtensionAPI) {
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let refresh: (() => void) | undefined;
 	let rerender: (() => void) | undefined;
+	let resink: (() => void) | undefined;
 
 	// Registered once at module scope (not inside session_start) so repeated
 	// session_start firings — e.g. session switch/resume within one process —
@@ -282,6 +283,12 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_end", () => refresh?.());
 	pi.on("model_select", () => rerender?.());
 	pi.on("thinking_level_select", () => rerender?.());
+	// Re-register our above-editor widget when a run starts. Above-editor widgets
+	// render in map-insertion order and re-setting a key moves it to the bottom;
+	// re-asserting here (before the agent can be steered) keeps this status row
+	// *below* any other extension's set-once widget — e.g. steer-queue's pending
+	// message — so that sits directly above it rather than under it.
+	pi.on("agent_start", () => resink?.());
 
 	pi.on("session_start", (_event, ctx) => {
 		if (!ctx.hasUI) return;
@@ -292,24 +299,26 @@ export default function (pi: ExtensionAPI) {
 
 		// Component (not static string[]) so the model can be pinned to the right,
 		// width-aware: dir + git on the left, model + thinking on the right.
-		ctx.ui.setWidget(
-			WIDGET_KEY,
-			(t) => {
-				tui = t;
-				return {
-					invalidate() {},
-					dispose() {
-						if (tui === t) tui = undefined;
-					},
-					render(width: number): string[] {
-						return [renderSplitLine(renderLeft(ctx, state), formatModel(pi, ctx), width)];
-					},
-				};
-			},
-			{ placement: "aboveEditor" },
-		);
+		const widgetFactory = (t: TUI) => {
+			tui = t;
+			return {
+				invalidate() {},
+				dispose() {
+					if (tui === t) tui = undefined;
+				},
+				render(width: number): string[] {
+					return [renderSplitLine(renderLeft(ctx, state), formatModel(pi, ctx), width)];
+				},
+			};
+		};
+		ctx.ui.setWidget(WIDGET_KEY, widgetFactory, { placement: "aboveEditor" });
 
 		rerender = () => tui?.requestRender();
+		// Re-setting the same key re-inserts it at the bottom of the above-editor
+		// stack (content is unchanged, so no visible flicker) — see agent_start above.
+		resink = () => {
+			if (ctx.hasUI) ctx.ui.setWidget(WIDGET_KEY, widgetFactory, { placement: "aboveEditor" });
+		};
 
 		refresh = () => {
 			readGitState(ctx.sessionManager.getCwd())

@@ -13,6 +13,14 @@
 
 export type Category = "destructive" | "network" | "exec" | "other";
 
+/**
+ * Semantic theme color key for a category's header/divider. These resolve
+ * through the active theme (theme.fg), so destructive reads red and network
+ * reads blue/cyan in colored themes, and both follow a theme swap. In a
+ * monochrome theme (e.g. black-white) they resolve to its grays.
+ */
+export type CategoryColor = "error" | "warning" | "accent" | "success";
+
 export interface CategoryRule {
 	category: Category;
 	patterns: RegExp[];
@@ -22,10 +30,10 @@ export interface CategoryMeta {
 	/** Human label shown in the confirmation dialog and notifications. */
 	label: string;
 	/** Theme color for the label / status accent. */
-	color: "error" | "warning";
+	color: CategoryColor;
 	/** How many confirmations must pass before the command runs. */
 	confirmations: number;
-	/** Button-enable delay (ms) applied to every confirmation prompt. */
+	/** Button-enable delay (ms) applied to every confirmation prompt. 0 = confirm immediately, no countdown. */
 	delayMs: number;
 	/** One-line description of what the category covers. */
 	blurb: string;
@@ -43,7 +51,7 @@ export const CATEGORY_META: Record<Category, CategoryMeta> = {
 	},
 	network: {
 		label: "Network",
-		color: "warning",
+		color: "accent",
 		confirmations: 1,
 		delayMs: THREE_SECONDS,
 		blurb: "Downloads or uploads data (curl, wget, scp, rsync, git clone/push, installs).",
@@ -52,14 +60,14 @@ export const CATEGORY_META: Record<Category, CategoryMeta> = {
 		label: "Exec",
 		color: "warning",
 		confirmations: 1,
-		delayMs: THREE_SECONDS,
+		delayMs: 0,
 		blurb: "Starts, inspects, or manipulates processes (interpreters, sudo, kill, docker, cron).",
 	},
 	other: {
-		label: "Command",
+		label: "General",
 		color: "warning",
 		confirmations: 1,
-		delayMs: THREE_SECONDS,
+		delayMs: 0,
 		blurb: "Any command that isn't a known read-only builtin (gated in max mode only).",
 	},
 };
@@ -72,7 +80,11 @@ export const CATEGORY_ORDER: CategoryRule[] = [
 	{
 		category: "destructive",
 		patterns: [
-			// rm with a recursive or force flag (rm -rf, rm -r, rm -f, rm --recursive/--force)
+			// any rm invocation at the start of a command segment: `rm file`, `rm -rf dir`,
+			// `/bin/rm x`, `foo && rm y`. Bare `rm <file>` counts too — it still deletes.
+			new RegExp(String.raw`(?:^|[;|&])\s*(?:\S+/)?rm\b`),
+			// rm with a destructive flag anywhere in a segment, to catch prefixed forms
+			// the segment-start rule misses: `sudo rm -rf`, `xargs rm -f`, `time rm -r`.
 			new RegExp(String.raw`\brm\s+(?:-\S*[rRf]|--recursive|--force)`),
 			// git history/tree destruction
 			new RegExp(String.raw`\bgit\s+reset\b${SEG}--hard`),
