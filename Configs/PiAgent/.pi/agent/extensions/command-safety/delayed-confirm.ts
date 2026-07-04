@@ -33,13 +33,6 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Pads to the overlay's full width so blank cells overwrite the transcript behind
-// the modal instead of letting it show through the gaps.
-function padRight(text: string, width: number): string {
-	const w = visibleWidth(text);
-	return w >= width ? text : `${text}${" ".repeat(width - w)}`;
-}
-
 export async function delayedConfirm(ctx: ExtensionContext, opts: DelayedConfirmOptions): Promise<boolean> {
 	if (!ctx.hasUI) return false;
 
@@ -135,8 +128,8 @@ export async function delayedConfirm(ctx: ExtensionContext, opts: DelayedConfirm
 			}
 			lines.push(divider);
 
-			cachedLines = lines.map((line) => padRight(line, renderWidth));
-			return cachedLines;
+			cachedLines = lines;
+			return lines;
 		}
 
 		return {
@@ -149,10 +142,5 @@ export async function delayedConfirm(ctx: ExtensionContext, opts: DelayedConfirm
 				if (timer) clearInterval(timer);
 			},
 		};
-	}, {
-		// Centered modal overlay so it reads unmistakably as "paused, waiting for you"
-		// rather than a line tucked into the input area.
-		overlay: true,
-		overlayOptions: { anchor: "center", width: "50%", minWidth: 46, maxHeight: "70%", margin: 1 },
 	});
 }

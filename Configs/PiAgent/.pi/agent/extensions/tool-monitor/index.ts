@@ -41,6 +41,7 @@ const WIDGET_ICON = ">_"; // terminal prompt - plain ASCII, not a Nerd Font glyp
 const OVERLAY_MARGIN = 1;
 // Interior padding, inside the box itself, on top of OVERLAY_MARGIN.
 const INNER_PAD_X = 2;
+const INNER_PAD_Y = 1;
 
 // pi-tui has a function with this exact name/behavior, but it isn't re-exported from the
 // package's public index — only visibleWidth is. Reimplemented locally (see codex-usage).
@@ -166,10 +167,14 @@ class ToolMonitorComponent {
 
 		const bgFn = (text: string) => this.theme.bg("customMessageBg", text);
 		const pad = " ".repeat(INNER_PAD_X);
+		const blankRow = applyBackgroundToLine("", width, bgFn);
 		const rows = content.map((line) => applyBackgroundToLine(`${pad}${line}`, width, bgFn));
 
+		// Top interior padding so the content isn't flush against the box edge.
+		for (let i = 0; i < INNER_PAD_Y; i++) rows.unshift(blankRow);
+
+		// Fill the remaining box height (bottom padding), keeping the frame opaque.
 		const targetRows = Math.max(rows.length, this.tui.terminal.rows - OVERLAY_MARGIN * 2);
-		const blankRow = applyBackgroundToLine("", width, bgFn);
 		while (rows.length < targetRows) rows.push(blankRow);
 
 		return rows;
