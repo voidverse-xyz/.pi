@@ -85,6 +85,38 @@ Route reusable materials by type:
 If the project-specific artifact is not safe to preserve directly, write a short
 generic pattern or procedure instead of copying sensitive or local-only content.
 
+## Project Agent Documentation
+
+When creating a new project, working in an existing project, or refactoring a
+project, create and maintain a project-local `docs/agents/` directory. Any plan,
+skill, workflow, subagent, MCP note, implementation note, memory, review note,
+setup note, or similar agent-generated material that is useful for the project
+must be written to disk there, not only left in chat.
+
+Use this project-local layout:
+
+- `docs/agents/plans/<domain>/<plan-name>/<plan-name>.md`
+- `docs/agents/skills/<domain>/<skill-name>/<skill-name>.md`
+- `docs/agents/workflows/<domain>/<workflow-name>/<workflow-name>.md`
+- `docs/agents/subagents/<domain>/<subagent-name>/<subagent-name>.md`
+- `docs/agents/mcp/<domain>/<mcp-name>/<mcp-name>.md`
+- `docs/agents/notes/<domain>/<note-name>/<note-name>.md`
+- `docs/agents/memories/<domain>/<memory-name>/<memory-name>.md`
+
+Use lowercase hyphen-case for `<domain>` and artifact names. Pick a domain that
+describes the work area, such as `frontend`, `backend`, `auth`, `deployment`,
+`testing`, `data`, `design`, `ops`, or `general`.
+
+For example, a build plan for a backend API should be saved as:
+
+`docs/agents/plans/backend/api-build-plan/api-build-plan.md`
+
+Project-local artifacts may include project-specific details, but must still
+exclude secrets, credentials, private keys, auth tokens, local-only absolute
+paths, personal contact details, and generated logs. When an artifact also has
+reusable value beyond the project, save a sanitized generic version in this
+shared repository using the `Reusable Artifact Capture` rules above.
+
 ## Directory Map
 
 - `AGENTS.md`: instructions agents read before working in this repository.
