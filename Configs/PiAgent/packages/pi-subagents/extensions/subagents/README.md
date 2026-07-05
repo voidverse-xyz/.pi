@@ -20,11 +20,11 @@ The ` N` (sitemap icon) on the left is the subagent nesting cap for this sess
 | Trigger             | Effect                                                      |
 |---------------------|------------------------------------------------------------|
 | **Alt+A**           | Cycle to the next agent (`main` → …agents… → `main`)        |
-| `/subagent`         | Menu: Switch agent · Nesting depth · Default nesting depth  |
+| `/subagent`         | Menu: Switch agent · Nesting depth · Ask-parent limit      |
 | `/subagent <name>`  | Switch to `<name>` directly                                |
 | `/subagent main`    | Restore the plain Pi agent                                 |
 | `/subagent new`     | Scaffold a new agent file in `~/.pi/agent/agents/`         |
-| `/subagent depth`   | Set the subagent nesting cap for this session (see §3)      |
+| `/subagent depth`   | Set the subagent nesting cap (see §3)                       |
 
 - Selecting an agent applies its `model`, `tools`, and system prompt for your
   subsequent turns; `main` restores what the session started with.
@@ -59,18 +59,17 @@ otherwise spawn its own subagents without bound. Two guards prevent that:
 its environment; a process may spawn only while `depth < maxDepth`. The **default
 is 1** — the interactive session can delegate, but subagents can't spawn their own.
 
-Configure the cap per session (or set a cross-session default):
+Configure the cap (persists across sessions):
 
-| Command                      | Effect                                              |
-|------------------------------|-----------------------------------------------------|
-| `/subagent depth`            | Show the current cap + pick a preset (this session) |
-| `/subagent depth <N>`        | Set this session's cap to `N`                       |
-| `/subagent depth global <N>` | Set the cross-session default (`subagent-depth.json`) |
+| Command               | Effect                               |
+|-----------------------|--------------------------------------|
+| `/subagent depth`     | Show the current cap + pick a preset |
+| `/subagent depth <N>` | Set the cap to `N`                   |
 
-The `/subagent` menu exposes the same two without typing: **Nesting depth** (this
-session) and **Default nesting depth** (the file).
+The `/subagent` menu exposes the same via **Nesting depth**. Either way the value is
+written to `~/.pi/agent/subagent-depth.json` and applies to this and future sessions.
 
-Resolution order (top level): per-session override → global default file
+Resolution order (top level): config file
 (`~/.pi/agent/subagent-depth.json`) → hard default `1`. Nested children inherit the
 resolved cap from the environment. The effective cap shows in the footer status line
 next to the active agent (` N`, sitemap icon).
@@ -113,10 +112,10 @@ request. Enforcement is the `PI_ASK_PARENT` env flag delegate.ts sets on a spawn
 — the extension registers the tool only when present, so the top-level agent (never
 spawned with it) also never sees it.
 
-The default resolves like the depth cap — env → per-session (`/subagent asklimit N`) →
-global file (`subagent-asklimit.json`, or `/subagent asklimit global N`) → hard default
-(1) — and is carried down so nested parents apply the same default. An agent overrides it
-with `askLimit:` in its own file (e.g. `askLimit: 0` to opt a specific agent out).
+The default resolves like the depth cap — env → config file (`subagent-asklimit.json`,
+written by `/subagent asklimit N`) → hard default (1) — and is carried down so nested
+parents apply the same default. An agent overrides it with `askLimit:` in its own file
+(e.g. `askLimit: 0` to opt a specific agent out).
 
 ## Agent definitions
 

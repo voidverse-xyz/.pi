@@ -138,11 +138,14 @@ shared repository using the `Reusable Artifact Capture` rules above.
 
 ## PiAgent Layout
 
-- `Configs/PiAgent/.pi/agent/extensions/`: source of truth for Pi extensions
-  (`ask-parent`, `codex-usage`, `command-safety`, `confirm-stop-agent`,
-  `dir-git`, `plan-commit`, `session-merge`, `status-line`, `steer-queue`,
-  `subagents`, `tool-monitor`, `user-inputs`, `user-summary` — `cursor` was removed
-  2026-07-03) and the `plan-commit` skill.
+- `Configs/PiAgent/packages/`: source of truth for Pi extension packages
+  (`codex-usage`, `command-safety`, `confirm-stop-agent`, `dir-git`, `ipc`,
+  `plan-commit`, `session-merge`, `status-line`, `steer-queue`, `subagents`,
+  `tool-monitor`, `user-inputs`, `user-summary` — `cursor` was removed
+  2026-07-03). These packages are listed in `~/.pi/agent/settings.json`
+  under `packages`.
+- `Configs/PiAgent/.pi/agent/skills/`: source of truth for the `plan-commit`
+  skill.
   `command-safety` gates agent `bash` commands by category (destructive /
   network / exec / other) with countdown confirmations and a `/safety off|on|max`
   mode; `max` (default) confirms everything except a read-only safe-list (ls,
@@ -170,17 +173,19 @@ shared repository using the `Reusable Artifact Capture` rules above.
   into a visible custom message in a new session, optionally drafts or runs a
   kickoff prompt, and leaves source branches intact.
   `user-summary` (added 2026-07-05) provides the LLM-callable `user_summary`
-  tool: a compact TUI summary panel with optional `info`, `warnings`, and
-  `errors` message bands, plus a `/user-summary` demo command.
+  tool: an end-of-turn transcript summary rendered as a custom message with
+  optional `summary`, `info`, `warnings`, and `errors` bands. The bands have
+  top/bottom padding and muted backgrounds. It also has a `/user-summary` demo
+  command.
 - `Configs/PiAgent/.pi/agent/themes/`: source of truth for custom Pi themes
   (`black-white`, a grayscale theme, added 2026-07-03).
-- On this host, `~/.pi/agent/extensions` and `~/.pi/agent/themes` are symlinks
-  to those directories — Pi only auto-discovers extensions/themes from its
-  real global (`~/.pi/agent/extensions/`, `~/.pi/agent/themes/`) or
-  project-local (`.pi/extensions/`, `.pi/themes/`) paths, or from extra
-  entries in `settings.json`, so the workspace copies must stay linked (or
-  listed there) rather than just documented for agents to check. Re-run
-  `pi`'s `/reload` (or restart) after changing files here.
+- On this host, `~/.pi/agent/settings.json` loads the package-backed
+  extensions from `Configs/PiAgent/packages/`. `~/.pi/agent/extensions` still
+  points to `Configs/PiAgent/.pi/agent/extensions/` for legacy/global
+  extensions, but the current reusable Pi extensions are package-backed.
+  `~/.pi/agent/themes` is symlinked to `Configs/PiAgent/.pi/agent/themes/`.
+  Re-run `pi`'s `/reload` (or restart) after changing package, skill, or theme
+  files here.
 
 ## Working Style
 

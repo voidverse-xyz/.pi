@@ -31,12 +31,8 @@ import { Container, Key, type SelectItem, SelectList, Text } from "@earendil-wor
 import { type AgentConfig, type AgentScope, discoverAgents, getUserAgentsDir } from "./agents.ts";
 import {
 	ASK_LIMIT_CHOICES,
-	ASK_LIMIT_ENTRY,
 	DEPTH_CHOICES,
 	isNested,
-	loadGlobalAskLimit,
-	loadGlobalDefault,
-	MAXDEPTH_ENTRY,
 	resolveAskLimit,
 	resolveMaxDepth,
 	saveGlobalAskLimit,
@@ -194,7 +190,7 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 	}
 
 	function updateStatus(ctx: ExtensionContext) {
-		const status = agents.length > 0 ? buildStatus(ctx.ui.theme, resolveMaxDepth(ctx.sessionManager)) : undefined;
+		const status = agents.length > 0 ? buildStatus(ctx.ui.theme, resolveMaxDepth()) : undefined;
 		ctx.ui.setStatus(STATUS_KEY, status);
 	}
 
@@ -364,30 +360,13 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		await switchToAgentByName(nextName, ctx);
 	}
 
-	// ---- per-session nesting-depth cap (/subagent depth) -------------------
+	// ---- nesting-depth cap (/subagent depth) -------------------------------
 
-	// `/subagent depth`            → show current + pick a preset (this session)
-	// `/subagent depth <N>`        → set this session's cap to N
-	// `/subagent depth global <N>` → set the cross-session default file
+	// `/subagent depth`     → show current + pick a preset
+	// `/subagent depth <N>` → set the cap to N
+	// The cap persists to subagent-depth.json and applies to this and future sessions.
 	async function handleDepth(rest: string, ctx: ExtensionContext) {
 		const parts = rest.split(/\s+/).filter(Boolean);
-
-		if (parts[0]?.toLowerCase() === "global") {
-			const n = Number(parts[1]);
-			if (!Number.isInteger(n) || n < 1) {
-				ctx.ui.notify("Usage: /subagent depth global <positive integer>", "error");
-				return;
-			}
-			try {
-				saveGlobalDefault(n);
-			} catch (err) {
-				ctx.ui.notify(`Failed to save global default: ${err}`, "error");
-				return;
-			}
-			updateStatus(ctx);
-			ctx.ui.notify(`Subagent max depth — global default set to ${n}`, "info");
-			return;
-		}
 
 		if (parts.length > 0) {
 			const n = Number(parts[0]);
@@ -395,13 +374,11 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 				ctx.ui.notify("Usage: /subagent depth <positive integer>", "error");
 				return;
 			}
-			pi.appendEntry(MAXDEPTH_ENTRY, { maxDepth: n });
-			updateStatus(ctx);
-			ctx.ui.notify(`Subagent max depth set to ${n} for this session`, "info");
+			saveDepth(n, ctx);
 			return;
 		}
 
-		const eff = resolveMaxDepth(ctx.sessionManager);
+		const eff = resolveMaxDepth();
 		const items: SelectItem[] = DEPTH_CHOICES.map((n) => ({
 			value: String(n),
 			label: n === 1 ? `${n} (no nesting)` : String(n),
@@ -409,58 +386,28 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		}));
 		const choice = await selectFromList(ctx, `Subagent max depth (current: ${eff})`, items);
 		if (!choice) return;
-		const chosen = Number(choice);
-		pi.appendEntry(MAXDEPTH_ENTRY, { maxDepth: chosen });
-		updateStatus(ctx);
-		ctx.ui.notify(`Subagent max depth set to ${chosen} for this session`, "info");
+		saveDepth(Number(choice), ctx);
 	}
 
-	// Picker for the cross-session default (the `subagent-depth.json` file).
-	async function pickDefaultDepth(ctx: ExtensionContext) {
-		const eff = loadGlobalDefault();
-		const items: SelectItem[] = DEPTH_CHOICES.map((n) => ({
-			value: String(n),
-			label: n === 1 ? `${n} (no nesting)` : String(n),
-			description: n === eff ? "current default" : "",
-		}));
-		const choice = await selectFromList(ctx, `Default nesting depth (current: ${eff})`, items);
-		if (!choice) return;
-		const n = Number(choice);
+	function saveDepth(n: number, ctx: ExtensionContext) {
 		try {
 			saveGlobalDefault(n);
 		} catch (err) {
-			ctx.ui.notify(`Failed to save default: ${err}`, "error");
+			ctx.ui.notify(`Failed to save max depth: ${err}`, "error");
 			return;
 		}
 		updateStatus(ctx);
-		ctx.ui.notify(`Default nesting depth set to ${n} (applies to new sessions)`, "info");
+		ctx.ui.notify(`Subagent max depth set to ${n}`, "info");
 	}
 
 	// ---- default ask_parent limit (/subagent asklimit) ---------------------
 
 	// The default ask_parent allowance for agents that don't set their own `askLimit`
-	// frontmatter. 0 = ask_parent off by default. Mirrors the depth commands.
-	// `/subagent asklimit`            → show current + pick a preset (this session)
-	// `/subagent asklimit <N>`        → set this session's default to N
-	// `/subagent asklimit global <N>` → set the cross-session default file
+	// frontmatter. 0 = ask_parent off by default. Persists to subagent-asklimit.json.
+	// `/subagent asklimit`     → show current + pick a preset
+	// `/subagent asklimit <N>` → set the default to N
 	async function handleAskLimit(rest: string, ctx: ExtensionContext) {
 		const parts = rest.split(/\s+/).filter(Boolean);
-
-		if (parts[0]?.toLowerCase() === "global") {
-			const n = Number(parts[1]);
-			if (!Number.isInteger(n) || n < 0) {
-				ctx.ui.notify("Usage: /subagent asklimit global <non-negative integer>", "error");
-				return;
-			}
-			try {
-				saveGlobalAskLimit(n);
-			} catch (err) {
-				ctx.ui.notify(`Failed to save global default: ${err}`, "error");
-				return;
-			}
-			ctx.ui.notify(`Default ask_parent limit — global default set to ${n}`, "info");
-			return;
-		}
 
 		if (parts.length > 0) {
 			const n = Number(parts[0]);
@@ -468,12 +415,11 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 				ctx.ui.notify("Usage: /subagent asklimit <non-negative integer>", "error");
 				return;
 			}
-			pi.appendEntry(ASK_LIMIT_ENTRY, { askLimit: n });
-			ctx.ui.notify(`Default ask_parent limit set to ${n} for this session`, "info");
+			saveAskLimit(n, ctx);
 			return;
 		}
 
-		const eff = resolveAskLimit(ctx.sessionManager);
+		const eff = resolveAskLimit();
 		const items: SelectItem[] = ASK_LIMIT_CHOICES.map((n) => ({
 			value: String(n),
 			label: n === 0 ? `${n} (ask_parent off)` : String(n),
@@ -481,29 +427,17 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		}));
 		const choice = await selectFromList(ctx, `Default ask_parent limit (current: ${eff})`, items);
 		if (!choice) return;
-		const chosen = Number(choice);
-		pi.appendEntry(ASK_LIMIT_ENTRY, { askLimit: chosen });
-		ctx.ui.notify(`Default ask_parent limit set to ${chosen} for this session`, "info");
+		saveAskLimit(Number(choice), ctx);
 	}
 
-	// Picker for the cross-session default (the `subagent-asklimit.json` file).
-	async function pickDefaultAskLimit(ctx: ExtensionContext) {
-		const eff = loadGlobalAskLimit();
-		const items: SelectItem[] = ASK_LIMIT_CHOICES.map((n) => ({
-			value: String(n),
-			label: n === 0 ? `${n} (ask_parent off)` : String(n),
-			description: n === eff ? "current default" : "",
-		}));
-		const choice = await selectFromList(ctx, `Default ask_parent limit (current: ${eff})`, items);
-		if (!choice) return;
-		const n = Number(choice);
+	function saveAskLimit(n: number, ctx: ExtensionContext) {
 		try {
 			saveGlobalAskLimit(n);
 		} catch (err) {
-			ctx.ui.notify(`Failed to save default: ${err}`, "error");
+			ctx.ui.notify(`Failed to save ask_parent limit: ${err}`, "error");
 			return;
 		}
-		ctx.ui.notify(`Default ask_parent limit set to ${n} (applies to new sessions)`, "info");
+		ctx.ui.notify(`Default ask_parent limit set to ${n}`, "info");
 	}
 
 	// ---- parent menu -------------------------------------------------------
@@ -515,30 +449,18 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 			{
 				value: "depth",
 				label: "Nesting depth",
-				description: `How deep subagents may nest — this session (current: ${resolveMaxDepth(ctx.sessionManager)})`,
-			},
-			{
-				value: "default",
-				label: "Default nesting depth",
-				description: `The nesting cap new sessions start with (current: ${loadGlobalDefault()})`,
+				description: `How deep subagents may nest (current: ${resolveMaxDepth()})`,
 			},
 			{
 				value: "asklimit",
 				label: "Ask-parent limit",
-				description: `Times an agent may ask its parent this session, unless its file overrides (current: ${resolveAskLimit(ctx.sessionManager)})`,
-			},
-			{
-				value: "askdefault",
-				label: "Default ask-parent limit",
-				description: `The ask-parent limit new sessions start with (current: ${loadGlobalAskLimit()})`,
+				description: `Times an agent may ask its parent, unless its file overrides (current: ${resolveAskLimit()})`,
 			},
 		];
 		const choice = await selectFromList(ctx, "Subagent", items);
 		if (choice === "switch") await showPicker(ctx);
 		else if (choice === "depth") await handleDepth("", ctx);
-		else if (choice === "default") await pickDefaultDepth(ctx);
 		else if (choice === "asklimit") await handleAskLimit("", ctx);
-		else if (choice === "askdefault") await pickDefaultAskLimit(ctx);
 	}
 
 	// ---- command + shortcut ------------------------------------------------
@@ -574,13 +496,13 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 				await createAgent(ctx);
 				return;
 			}
-			// `/subagent depth [N | global N]` → the per-session nesting cap.
+			// `/subagent depth [N]` → the nesting cap.
 			const [head, ...tail] = arg.split(/\s+/);
 			if (head.toLowerCase() === "depth") {
 				await handleDepth(tail.join(" "), ctx);
 				return;
 			}
-			// `/subagent asklimit [N | global N]` → the default ask_parent allowance.
+			// `/subagent asklimit [N]` → the default ask_parent allowance.
 			if (head.toLowerCase() === "asklimit") {
 				await handleAskLimit(tail.join(" "), ctx);
 				return;

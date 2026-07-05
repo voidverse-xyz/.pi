@@ -1,7 +1,7 @@
 {
   "name": "pi-user-summary",
   "version": "1.0.0",
-  "description": "user_summary tool — appends a banded summary/info/warnings/errors block at end of turn.",
+  "description": "user_summary tool - appends a padded muted summary/info/warnings/errors block at end of turn.",
   "keywords": [
     "pi-package"
   ],

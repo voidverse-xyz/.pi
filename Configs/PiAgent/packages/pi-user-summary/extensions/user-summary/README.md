@@ -2,12 +2,14 @@
 
 `user-summary` registers the LLM-callable `user_summary` tool.
 
-The tool shows a compact TUI panel with optional summary content and colored
-message bands:
+The tool queues a compact transcript summary that is appended after the agent
+finishes, so it appears after the assistant's final message. The custom renderer
+shows optional summary content and padded, muted message bands:
 
-- `info`
-- `warnings`
-- `errors`
+- `summary` uses the normal custom-message background
+- `info` uses a muted blue background
+- `warnings` uses a muted yellow background
+- `errors` uses a muted red background
 
 All fields are optional:
 
@@ -21,5 +23,4 @@ All fields are optional:
 }
 ```
 
-Use `/user-summary` to show a local demo panel. The tool waits until the user
-presses Enter or Esc, then returns whether the panel was viewed or dismissed.
+Use `/user-summary` to append a local demo message immediately.

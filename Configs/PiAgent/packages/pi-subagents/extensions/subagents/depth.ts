@@ -15,8 +15,7 @@
  * maxDepth = 1 ⇒ the top-level session spawns subagents, but those subagents can't
  * spawn their own (exactly one level).
  *
- * The effective max is resolved (top level) as: env → per-session entry → global
- * default file → hard default (1).
+ * The effective max is resolved (top level) as: env → config file → hard default (1).
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -41,9 +40,7 @@ export const CANCALL_ENV = "PI_SUBAGENT_CANCALL";
  * spawn — the top-level agent (never spawned with it) never sees the tool.
  */
 export const ASK_PARENT_ENV = "PI_ASK_PARENT";
-/** Custom session-entry type carrying a per-session override `{ maxDepth }`. */
-export const MAXDEPTH_ENTRY = "subagent-maxdepth";
-/** Global cross-session default, editable without launching Pi. */
+/** The persisted cap, editable without launching Pi; written by `/subagent depth`. */
 export const GLOBAL_CONFIG = join(getAgentDir(), "subagent-depth.json");
 export const HARD_DEFAULT = 1;
 /** Presets offered by the `/subagent depth` picker. */
@@ -66,7 +63,7 @@ export function isNested(): boolean {
 	return currentDepth() > 0;
 }
 
-/** Read the global default file; falls back to HARD_DEFAULT if absent/invalid. */
+/** Read the config file; falls back to HARD_DEFAULT if absent/invalid. */
 export function loadGlobalDefault(): number {
 	try {
 		const raw = JSON.parse(readFileSync(GLOBAL_CONFIG, "utf-8"));
@@ -76,38 +73,20 @@ export function loadGlobalDefault(): number {
 	}
 }
 
-/** Persist the global default; best-effort (throws are the caller's to surface). */
+/** Persist the cap; best-effort (throws are the caller's to surface). */
 export function saveGlobalDefault(maxDepth: number): void {
 	mkdirSync(dirname(GLOBAL_CONFIG), { recursive: true });
 	writeFileSync(GLOBAL_CONFIG, JSON.stringify({ maxDepth }, null, 2), "utf-8");
 }
 
-/** Minimal shape of the session manager we read (avoids importing heavy SDK types). */
-interface EntryReader {
-	getEntries(): Array<{ type: string; customType?: string; data?: { maxDepth?: number; askLimit?: number } }>;
-}
-
-/** The latest per-session override, or undefined if none was set this session. */
-export function readSessionMaxDepth(sm: EntryReader): number | undefined {
-	const last = sm
-		.getEntries()
-		.filter((e) => e.type === "custom" && e.customType === MAXDEPTH_ENTRY)
-		.pop();
-	return toDepth(last?.data?.maxDepth);
-}
-
 /**
  * Effective max depth for THIS process. In a nested child the env value wins (the
- * top level already resolved it); at the top level, a per-session override wins,
- * then the global default file, then the hard default.
+ * top level already resolved it); at the top level, the config file wins, then the
+ * hard default.
  */
-export function resolveMaxDepth(sm?: EntryReader): number {
+export function resolveMaxDepth(): number {
 	const fromEnv = toDepth(process.env[MAXDEPTH_ENV]);
 	if (fromEnv !== undefined) return fromEnv;
-	if (sm) {
-		const fromSession = readSessionMaxDepth(sm);
-		if (fromSession !== undefined) return fromSession;
-	}
 	return loadGlobalDefault();
 }
 
@@ -129,13 +108,11 @@ export function childEnv(maxDepth: number, childCanCall: string, askLimitDefault
 // ---- ask_parent budget default --------------------------------------------
 //
 // Each agent's ask_parent allowance is its frontmatter `askLimit`, or — when it sets
-// none — this user-configurable default. Resolved exactly like maxDepth (env → per-
-// session entry → global file → hard default) and carried to descendants via
-// ASK_LIMIT_ENV so a nested parent applies the same default to agents it spawns.
+// none — this user-configurable default. Resolved exactly like maxDepth (env → config
+// file → hard default) and carried to descendants via ASK_LIMIT_ENV so a nested parent
+// applies the same default to agents it spawns.
 
-/** Custom session-entry type carrying a per-session override `{ askLimit }`. */
-export const ASK_LIMIT_ENTRY = "subagent-asklimit";
-/** Global cross-session default, editable without launching Pi. */
+/** The persisted default, editable without launching Pi; written by `/subagent asklimit`. */
 export const ASK_LIMIT_CONFIG = join(getAgentDir(), "subagent-asklimit.json");
 /** Shipped default: an agent may ask its parent once per request unless it says otherwise. */
 export const ASK_LIMIT_HARD_DEFAULT = 1;
@@ -148,7 +125,7 @@ function toAskLimit(value: unknown): number | undefined {
 	return Number.isInteger(n) && n >= 0 ? n : undefined;
 }
 
-/** Read the global default file; falls back to the hard default if absent/invalid. */
+/** Read the config file; falls back to the hard default if absent/invalid. */
 export function loadGlobalAskLimit(): number {
 	try {
 		const raw = JSON.parse(readFileSync(ASK_LIMIT_CONFIG, "utf-8"));
@@ -158,32 +135,19 @@ export function loadGlobalAskLimit(): number {
 	}
 }
 
-/** Persist the global default; best-effort (throws are the caller's to surface). */
+/** Persist the default; best-effort (throws are the caller's to surface). */
 export function saveGlobalAskLimit(askLimit: number): void {
 	mkdirSync(dirname(ASK_LIMIT_CONFIG), { recursive: true });
 	writeFileSync(ASK_LIMIT_CONFIG, JSON.stringify({ askLimit }, null, 2), "utf-8");
 }
 
-/** The latest per-session override, or undefined if none was set this session. */
-export function readSessionAskLimit(sm: EntryReader): number | undefined {
-	const last = sm
-		.getEntries()
-		.filter((e) => e.type === "custom" && e.customType === ASK_LIMIT_ENTRY)
-		.pop();
-	return toAskLimit(last?.data?.askLimit);
-}
-
 /**
  * Effective default ask-limit for THIS process: env (already resolved at the top) wins,
- * then a per-session override, then the global default file, then the hard default.
+ * then the config file, then the hard default.
  */
-export function resolveAskLimit(sm?: EntryReader): number {
+export function resolveAskLimit(): number {
 	const fromEnv = toAskLimit(process.env[ASK_LIMIT_ENV]);
 	if (fromEnv !== undefined) return fromEnv;
-	if (sm) {
-		const fromSession = readSessionAskLimit(sm);
-		if (fromSession !== undefined) return fromSession;
-	}
 	return loadGlobalAskLimit();
 }
 
