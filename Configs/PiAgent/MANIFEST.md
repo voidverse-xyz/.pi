@@ -29,12 +29,12 @@ They live in the workspace's top-level `Subagents/` directory (the repo conventi
 for reusable agent definitions), not inside this bundle.
 Symlink into place from the workspace root: `ln -sfn "$PWD/Subagents" ~/.pi/agent/agents`.
 
-| Agent | Path | Model | Tools |
-|-------|------|-------|-------|
-| scout | `Subagents/scout.md` | inherit | read, grep, find, ls, bash (read-only) |
-| planner | `Subagents/planner.md` | inherit | read, grep, find, ls |
-| reviewer | `Subagents/reviewer.md` | inherit | read, grep, find, ls, bash (read-only) |
-| worker | `Subagents/worker.md` | inherit | all |
+| Agent | Path | Can call | Model | Tools |
+|-------|------|----------|-------|-------|
+| scout | `Subagents/scout.md` | — | inherit | read, grep, find, ls, bash (read-only) |
+| planner | `Subagents/planner.md` | — | inherit | read, grep, find, ls |
+| reviewer | `Subagents/reviewer.md` | — | inherit | read, grep, find, ls, bash (read-only) |
+| worker | `Subagents/worker.md` | scout, planner, reviewer | inherit | all |
 
 ## Copy to Desktop
 

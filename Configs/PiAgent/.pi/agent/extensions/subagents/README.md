@@ -20,7 +20,7 @@ The ` N` (sitemap icon) on the left is the subagent nesting cap for this sess
 | Trigger             | Effect                                                      |
 |---------------------|------------------------------------------------------------|
 | **Alt+A**           | Cycle to the next agent (`main` → …agents… → `main`)        |
-| `/subagent`         | Open the picker (`main` + every agent)                     |
+| `/subagent`         | Menu: Switch agent · Nesting depth · Default nesting depth  |
 | `/subagent <name>`  | Switch to `<name>` directly                                |
 | `/subagent main`    | Restore the plain Pi agent                                 |
 | `/subagent new`     | Scaffold a new agent file in `~/.pi/agent/agents/`         |
@@ -67,15 +67,20 @@ Configure the cap per session (or set a cross-session default):
 | `/subagent depth <N>`        | Set this session's cap to `N`                       |
 | `/subagent depth global <N>` | Set the cross-session default (`subagent-depth.json`) |
 
+The `/subagent` menu exposes the same two without typing: **Nesting depth** (this
+session) and **Default nesting depth** (the file).
+
 Resolution order (top level): per-session override → global default file
 (`~/.pi/agent/subagent-depth.json`) → hard default `1`. Nested children inherit the
 resolved cap from the environment. The effective cap shows in the footer status line
 next to the active agent (` N`, sitemap icon).
 
-**Privilege.** A **nested** call may only target an equal-or-lesser persona: an
-unrestricted caller (no `tools:`) may delegate to anyone, but a restricted caller
-may not escalate to an unrestricted persona and may only target agents whose tools
-are a subset of its own. The top-level session is exempt (the user is in control).
+**Privilege (call-list).** Each agent declares which agents it may delegate to
+(frontmatter `canCall:` — `*` for any, a name list for specific agents, unset for
+**none**). A **nested** call may only target an agent on the caller's list, so a
+subagent can't reach an agent it wasn't granted. The top-level session is exempt (the
+user is in control). Bundled: `worker` may call `scout`, `planner`, `reviewer`; the
+specialists call nothing.
 
 **Switcher off in subagents.** The persona switcher (Alt+A / `/subagent`) is inert
 inside any subagent process (`PI_SUBAGENT_DEPTH > 0`) — a subagent can't re-skin
@@ -92,6 +97,7 @@ description: Code review specialist
 tools: read, grep, find, ls, bash   # optional — omit to inherit all tools
 model: gpt-5.5                       # optional — bare id or "provider/id"; omit to inherit
 mode: replace                        # optional — "replace" or "augment" (default)
+canCall: scout, planner              # optional — agents this one may delegate to ("*"=any; unset=none)
 ---
 
 System prompt / instructions for the agent go here.

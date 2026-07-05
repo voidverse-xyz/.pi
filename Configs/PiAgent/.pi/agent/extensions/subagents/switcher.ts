@@ -29,7 +29,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Key, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 import { type AgentConfig, type AgentScope, discoverAgents, getUserAgentsDir } from "./agents.ts";
-import { DEPTH_CHOICES, isNested, MAXDEPTH_ENTRY, resolveMaxDepth, saveGlobalDefault } from "./depth.ts";
+import { DEPTH_CHOICES, isNested, loadGlobalDefault, MAXDEPTH_ENTRY, resolveMaxDepth, saveGlobalDefault } from "./depth.ts";
 
 type PromptMode = "augment" | "replace";
 
@@ -296,7 +296,13 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 	}
 
 	function agentDetail(a: AgentConfig): string {
-		const bits = [a.source, a.model ?? "inherit model", a.tools ? `tools: ${a.tools.join(",")}` : "all tools"];
+		const calls = a.canCall === "*" ? "calls: any" : a.canCall ? `calls: ${a.canCall.join(",")}` : "calls: none";
+		const bits = [
+			a.source,
+			calls,
+			a.model ?? "inherit model",
+			a.tools ? `tools: ${a.tools.join(",")}` : "all tools",
+		];
 		return `${a.description}  ·  [${bits.join(" · ")}]`;
 	}
 
@@ -369,6 +375,50 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		ctx.ui.notify(`Subagent max depth set to ${chosen} for this session`, "info");
 	}
 
+	// Picker for the cross-session default (the `subagent-depth.json` file).
+	async function pickDefaultDepth(ctx: ExtensionContext) {
+		const eff = loadGlobalDefault();
+		const items: SelectItem[] = DEPTH_CHOICES.map((n) => ({
+			value: String(n),
+			label: n === 1 ? `${n} (no nesting)` : String(n),
+			description: n === eff ? "current default" : "",
+		}));
+		const choice = await selectFromList(ctx, `Default nesting depth (current: ${eff})`, items);
+		if (!choice) return;
+		const n = Number(choice);
+		try {
+			saveGlobalDefault(n);
+		} catch (err) {
+			ctx.ui.notify(`Failed to save default: ${err}`, "error");
+			return;
+		}
+		updateStatus(ctx);
+		ctx.ui.notify(`Default nesting depth set to ${n} (applies to new sessions)`, "info");
+	}
+
+	// ---- parent menu -------------------------------------------------------
+
+	// `/subagent` opens this menu; each item routes to a sub-picker.
+	async function showMenu(ctx: ExtensionContext) {
+		const items: SelectItem[] = [
+			{ value: "switch", label: "Switch agent", description: "Pick which agent you're talking to" },
+			{
+				value: "depth",
+				label: "Nesting depth",
+				description: `How deep subagents may nest — this session (current: ${resolveMaxDepth(ctx.sessionManager)})`,
+			},
+			{
+				value: "default",
+				label: "Default nesting depth",
+				description: `The nesting cap new sessions start with (current: ${loadGlobalDefault()})`,
+			},
+		];
+		const choice = await selectFromList(ctx, "Subagent", items);
+		if (choice === "switch") await showPicker(ctx);
+		else if (choice === "depth") await handleDepth("", ctx);
+		else if (choice === "default") await pickDefaultDepth(ctx);
+	}
+
 	// ---- command + shortcut ------------------------------------------------
 
 	pi.registerShortcut(OPEN_KEY, {
@@ -379,14 +429,14 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("subagent", {
-		description: "Switch which agent you're talking to; `/subagent depth` sets the subagent nesting cap",
+		description: "Subagent menu — switch agent or set the nesting-depth cap",
 		handler: async (args, ctx) => {
 			const arg = args.trim();
 			const lower = arg.toLowerCase();
 
-			// No argument → open the picker (list all agents + main, select to switch).
+			// No argument → open the parent menu (Switch agent · Nesting depth).
 			if (!arg) {
-				await showPicker(ctx);
+				await showMenu(ctx);
 				return;
 			}
 			if (lower === MAIN || lower === "off" || lower === "none" || lower === "base") {

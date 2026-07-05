@@ -493,7 +493,8 @@ export default function userInputs(pi: ExtensionAPI) {
 							}
 						}
 
-						// "Add a note" row.
+						// "Add a note" row — padded from the choices above it.
+						lines.push("");
 						{
 							const rowIdx = noteRow(idx);
 							const cursor = s.cursor === rowIdx;

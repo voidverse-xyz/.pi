@@ -27,7 +27,7 @@ import { CONFIG_DIR_NAME, type ExtensionAPI, getAgentDir, getMarkdownTheme } fro
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
-import { childEnv, currentDepth, resolveMaxDepth, targetAllowedByPrivilege, toolsSpec } from "./depth.ts";
+import { canCallSpec, childEnv, currentDepth, resolveMaxDepth, targetAllowedByCall } from "./depth.ts";
 import { getPiInvocation, writePromptToTempFile } from "./runner.ts";
 
 const MAX_PARALLEL_TASKS = 8;
@@ -306,10 +306,10 @@ async function runSingleAgent(
 				cwd: cwd ?? defaultCwd,
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
-				// Carry the nesting depth (+1), the cap, and this child's granted tools
-				// down so it can enforce the same limits — it runs --no-session and
-				// can't read entries.
-				env: childEnv(maxDepth, toolsSpec(agent)),
+				// Carry the nesting depth (+1), the cap, and this child's call-list down
+				// so it can enforce the same limits — it runs --no-session and can't
+				// read entries.
+				env: childEnv(maxDepth, canCallSpec(agent)),
 			});
 			let buffer = "";
 
@@ -499,21 +499,20 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 				};
 			}
 
-			// Privilege: a nested caller may only delegate to an equal-or-lesser persona
-			// (target's tools ⊆ caller's tools). The top-level session is exempt.
+			// Privilege: a nested caller may only delegate to agents on its canCall list.
+			// The top-level session is exempt (unrestricted).
 			if (depth > 0) {
 				const requested = new Set<string>();
 				if (params.chain) for (const s of params.chain) requested.add(s.agent);
 				if (params.tasks) for (const t of params.tasks) requested.add(t.agent);
 				if (params.agent) requested.add(params.agent);
 				for (const name of requested) {
-					const agent = agents.find((a) => a.name === name);
-					if (agent && !targetAllowedByPrivilege(agent)) {
+					if (!targetAllowedByCall(name)) {
 						return {
 							content: [
 								{
 									type: "text",
-									text: `Nested subagent may not escalate to "${name}" (it has tools the caller lacks).`,
+									text: `Nested subagent may not delegate to "${name}" — not in its canCall list.`,
 								},
 							],
 							details: makeDetails(currentMode)([]),

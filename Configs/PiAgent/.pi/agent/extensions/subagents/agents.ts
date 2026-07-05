@@ -36,6 +36,12 @@ export interface AgentConfig {
 	 * makes the agent's body the entire system prompt.
 	 */
 	mode?: "augment" | "replace";
+	/**
+	 * Which agents this agent may delegate to when it is itself a nested subagent
+	 * (frontmatter `canCall:`): "*" = any, a name list = only those, undefined = none.
+	 * The top-level session is exempt.
+	 */
+	canCall?: "*" | string[];
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
@@ -84,12 +90,21 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 
 		const mode = frontmatter.mode?.trim().toLowerCase() === "replace" ? "replace" : undefined;
 
+		const rawCanCall = frontmatter.canCall?.trim();
+		const canCall =
+			rawCanCall === "*"
+				? "*"
+				: rawCanCall
+					? rawCanCall.split(",").map((s) => s.trim()).filter(Boolean)
+					: undefined;
+
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
 			tools: tools && tools.length > 0 ? tools : undefined,
 			model: frontmatter.model?.trim() || undefined,
 			mode,
+			canCall,
 			systemPrompt: body,
 			source,
 			filePath,

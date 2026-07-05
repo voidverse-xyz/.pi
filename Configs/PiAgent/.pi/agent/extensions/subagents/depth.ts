@@ -27,12 +27,11 @@ import type { AgentConfig } from "./agents.ts";
 export const DEPTH_ENV = "PI_SUBAGENT_DEPTH";
 export const MAXDEPTH_ENV = "PI_SUBAGENT_MAX_DEPTH";
 /**
- * The tools THIS process was granted, carried from the parent at spawn so a nested
- * caller knows its own privilege. A comma list, or "*" for the unrestricted
- * (inherit-all) set. Absent at the top level (the user is unrestricted).
+ * The call-list THIS process may delegate to, carried from the parent at spawn so a
+ * nested caller knows its own privilege: "*" = any, a comma list = only those,
+ * "" = none. Absent at the top level (unrestricted).
  */
-export const TOOLS_ENV = "PI_SUBAGENT_TOOLS";
-const ALL_TOOLS = "*";
+export const CANCALL_ENV = "PI_SUBAGENT_CANCALL";
 /** Custom session-entry type carrying a per-session override `{ maxDepth }`. */
 export const MAXDEPTH_ENTRY = "subagent-maxdepth";
 /** Global cross-session default, editable without launching Pi. */
@@ -103,53 +102,39 @@ export function resolveMaxDepth(sm?: EntryReader): number {
 	return loadGlobalDefault();
 }
 
-/** The wire form of an agent's granted tools, for the TOOLS_ENV var. */
-export function toolsSpec(agent: AgentConfig): string {
-	return agent.tools && agent.tools.length > 0 ? agent.tools.join(",") : ALL_TOOLS;
-}
-
 /**
  * Environment for a spawned child: bump the depth, carry the cap down unchanged,
- * and record the tools the child is granted so it knows its own privilege.
+ * and record the child's call-list so it knows who it may delegate to.
  */
-export function childEnv(maxDepth: number, childToolsSpec: string): NodeJS.ProcessEnv {
+export function childEnv(maxDepth: number, childCanCall: string): NodeJS.ProcessEnv {
 	return {
 		...process.env,
 		[DEPTH_ENV]: String(currentDepth() + 1),
 		[MAXDEPTH_ENV]: String(maxDepth),
-		[TOOLS_ENV]: childToolsSpec,
+		[CANCALL_ENV]: childCanCall,
 	};
 }
 
-// ---- privilege (capability) checks for nested calls ------------------------
+// ---- call-list escalation for nested calls ---------------------------------
 //
-// Privilege is compared SYMBOLICALLY on the tool specs ("*" = unrestricted, or an
-// explicit allowlist). We deliberately do NOT enumerate via pi.getAllTools() /
-// getActiveTools(): under `-p`/`--tools` those report the current process's narrowed
-// tool universe, which makes an unrestricted target look "lesser" than it really is.
+// Each agent declares which agents it may delegate to (frontmatter `canCall:`).
+// A NESTED caller may only spawn agents on its own list — "*" = any, a name list =
+// only those, unset = none — so a subagent can't reach an agent it wasn't granted.
+// The top-level session has no CANCALL_ENV and is unrestricted.
 
-type ToolSpec = "*" | Set<string>;
-
-function parseSpec(raw: string | undefined): ToolSpec | null {
-	if (raw === undefined) return null; // no context (top level)
-	if (raw === ALL_TOOLS || raw.trim() === "") return "*";
-	return new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+/** The wire form of an agent's call-list, for CANCALL_ENV: "*", a comma list, or "". */
+export function canCallSpec(agent: AgentConfig): string {
+	if (agent.canCall === "*") return "*";
+	return agent.canCall ? agent.canCall.join(",") : "";
 }
 
 /**
- * A nested caller may only delegate to an equal-or-lesser persona:
- *   - an unrestricted caller ("*") may target anything;
- *   - a restricted caller may NOT target an unrestricted persona, and may target a
- *     restricted one only if its tools are a subset of the caller's.
- * The top-level session (no TOOLS_ENV) is unrestricted.
+ * Whether the CURRENT process may delegate to `name`: "*" (or top level, no env)
+ * allows any; a name list allows only those; "" allows none.
  */
-export function targetAllowedByPrivilege(agent: AgentConfig): boolean {
-	const caller = parseSpec(process.env[TOOLS_ENV]);
-	if (caller === null || caller === "*") return true;
-	const target = toolsSpec(agent);
-	if (target === ALL_TOOLS) return false; // can't escalate to unrestricted
-	for (const tool of target.split(",")) {
-		if (tool && !caller.has(tool)) return false;
-	}
-	return true;
+export function targetAllowedByCall(name: string): boolean {
+	const raw = process.env[CANCALL_ENV];
+	if (raw === undefined || raw === "*") return true;
+	const allowed = new Set(raw.split(",").map((s) => s.trim()).filter(Boolean));
+	return allowed.has(name);
 }
