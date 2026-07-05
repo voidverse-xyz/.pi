@@ -37,99 +37,93 @@ async function runPlanCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext): Pr
 		return;
 	}
 
-	ctx.ui.setStatus("plan-commit", "plan-commit");
+	const paths = await git.changedPaths();
+	if (paths.length === 0) {
+		ctx.ui.notify("No uncommitted changes", "info");
+		return;
+	}
 
-	try {
-		const paths = await git.changedPaths();
-		if (paths.length === 0) {
-			ctx.ui.notify("No uncommitted changes", "info");
-			return;
-		}
+	const excluded: string[] = [];
+	for (const path of paths) {
+		const diff = await git.diffForPaths([path]);
+		if (isLocalDevOnly(path, diff)) excluded.push(path);
+	}
 
-		const excluded: string[] = [];
-		for (const path of paths) {
-			const diff = await git.diffForPaths([path]);
-			if (isLocalDevOnly(path, diff)) excluded.push(path);
-		}
+	let { groups } = classifyPaths(paths, excluded);
+	if (groups.length === 0) {
+		ctx.ui.notify("No reviewable changes (local dev exclusions only?)", "info");
+		return;
+	}
 
-		let { groups } = classifyPaths(paths, excluded);
-		if (groups.length === 0) {
-			ctx.ui.notify("No reviewable changes (local dev exclusions only?)", "info");
-			return;
-		}
+	const sessionCommits: SessionCommit[] = [];
+	let stopped = false;
 
-		const sessionCommits: SessionCommit[] = [];
-		let stopped = false;
+	for (let i = 0; i < groups.length; i++) {
+		const group = groups[i]!;
+		const action = await showGroup(ctx, git, group, i, groups.length);
 
-		for (let i = 0; i < groups.length; i++) {
-			const group = groups[i]!;
-			const action = await showGroup(ctx, git, group, i, groups.length);
-
-			switch (action) {
-				case "accept": {
-					const sha = await git.stageAndCommit(group.paths, group.commitMessage);
-					if (!sha) {
-						ctx.ui.notify(`Commit failed for: ${group.title}`, "error");
-						break;
-					}
-					sessionCommits.push({ sha, message: group.commitMessage });
-					ctx.ui.notify(`Committed ${sha} — ${group.commitMessage}`, "success");
+		switch (action) {
+			case "accept": {
+				const sha = await git.stageAndCommit(group.paths, group.commitMessage);
+				if (!sha) {
+					ctx.ui.notify(`Commit failed for: ${group.title}`, "error");
 					break;
 				}
-				case "ask": {
-					const question = await ctx.ui.input(`Ask about: ${group.title}`, "Your question…");
-					if (!question?.trim()) break;
-
-					pi.sendUserMessage(
-						`[plan-commit] Question about review group "${group.title}" (${group.paths.join(", ")}):\n\n${question.trim()}\n\nAnswer only about this group's changes. Do not commit.`,
-						{ deliverAs: "followUp" },
-					);
-					await ctx.waitForIdle();
-					ctx.ui.notify("Agent answered — check chat, then continue review", "info");
-					i--;
-					break;
-				}
-				case "edit": {
-					const instruction = await ctx.ui.input(`Edit: ${group.title}`, "What should change?");
-					if (!instruction?.trim()) break;
-
-					pi.sendUserMessage(
-						`[plan-commit] Edit request for review group "${group.title}" (${group.paths.join(", ")}):\n\n${instruction.trim()}\n\nApply the edits only for these files. Do not commit.`,
-						{ deliverAs: "followUp" },
-					);
-					await ctx.waitForIdle();
-
-					const freshPaths = await git.changedPaths();
-					groups = classifyPaths(freshPaths, excluded).groups;
-					const updatedIndex = groups.findIndex((g) => g.id === group.id);
-					if (updatedIndex >= 0) {
-						i = updatedIndex - 1;
-					} else {
-						const byPath = groups.findIndex((g) => g.paths.some((p) => group.paths.includes(p)));
-						if (byPath >= 0) i = byPath - 1;
-						else i--;
-					}
-					ctx.ui.notify("Edits applied — re-reviewing group", "info");
-					break;
-				}
-				case "skip":
-					ctx.ui.notify(`Skipped: ${group.title}`, "info");
-					break;
-				case "stop":
-					stopped = true;
-					break;
+				sessionCommits.push({ sha, message: group.commitMessage });
+				ctx.ui.notify(`Committed ${sha} — ${group.commitMessage}`, "success");
+				break;
 			}
+			case "ask": {
+				const question = await ctx.ui.input(`Ask about: ${group.title}`, "Your question…");
+				if (!question?.trim()) break;
 
-			if (stopped) break;
+				pi.sendUserMessage(
+					`[plan-commit] Question about review group "${group.title}" (${group.paths.join(", ")}):\n\n${question.trim()}\n\nAnswer only about this group's changes. Do not commit.`,
+					{ deliverAs: "followUp" },
+				);
+				await ctx.waitForIdle();
+				ctx.ui.notify("Agent answered — check chat, then continue review", "info");
+				i--;
+				break;
+			}
+			case "edit": {
+				const instruction = await ctx.ui.input(`Edit: ${group.title}`, "What should change?");
+				if (!instruction?.trim()) break;
+
+				pi.sendUserMessage(
+					`[plan-commit] Edit request for review group "${group.title}" (${group.paths.join(", ")}):\n\n${instruction.trim()}\n\nApply the edits only for these files. Do not commit.`,
+					{ deliverAs: "followUp" },
+				);
+				await ctx.waitForIdle();
+
+				const freshPaths = await git.changedPaths();
+				groups = classifyPaths(freshPaths, excluded).groups;
+				const updatedIndex = groups.findIndex((g) => g.id === group.id);
+				if (updatedIndex >= 0) {
+					i = updatedIndex - 1;
+				} else {
+					const byPath = groups.findIndex((g) => g.paths.some((p) => group.paths.includes(p)));
+					if (byPath >= 0) i = byPath - 1;
+					else i--;
+				}
+				ctx.ui.notify("Edits applied — re-reviewing group", "info");
+				break;
+			}
+			case "skip":
+				ctx.ui.notify(`Skipped: ${group.title}`, "info");
+				break;
+			case "stop":
+				stopped = true;
+				break;
 		}
 
-		await showSummary(ctx, sessionCommits, excluded, stopped);
+		if (stopped) break;
+	}
 
-		if (sessionCommits.length > 1) {
-			await offerSquash(ctx, git, sessionCommits);
-		}
-	} finally {
-		ctx.ui.setStatus("plan-commit", undefined);
+	await showSummary(ctx, sessionCommits, excluded, stopped);
+
+	if (sessionCommits.length > 1) {
+		await offerSquash(ctx, git, sessionCommits);
 	}
 }
 

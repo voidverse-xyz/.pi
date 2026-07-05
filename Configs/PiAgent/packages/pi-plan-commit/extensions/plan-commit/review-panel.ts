@@ -28,10 +28,10 @@ type Pane = "content" | "actions";
 type ContentView = "diff" | "files" | "file";
 
 const ACTIONS: SelectItem[] = [
-	{ value: "accept", label: "Accept" },
 	{ value: "ask", label: "Ask" },
-	{ value: "skip", label: "Skip" },
 	{ value: "edit", label: "Edit" },
+	{ value: "skip", label: "Skip" },
+	{ value: "accept", label: "Accept" },
 	{ value: "stop", label: "Stop" },
 ];
 
