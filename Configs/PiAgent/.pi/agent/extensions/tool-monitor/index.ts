@@ -3,18 +3,36 @@
  *
  * Tracks every tool call via tool_execution_start/update/end and exposes it two ways:
  *
- * 1. A ">_ (<names>)" / ">_ (none)" indicator published via ctx.ui.setStatus() -
- *    the same generic cross-extension footer-status channel codex-usage and
- *    command-safety use - so status-line joins it onto the same line as the context
- *    gauge and those other segments, rather than it living on its own separate row.
- *    (It used to be its own belowEditor widget; John asked for it combined onto that
- *    line instead.)
+ * 1. A live "<spinner> >_ <N running:> <names>" indicator published via
+ *    ctx.ui.setStatus() - the same generic cross-extension footer-status channel
+ *    codex-usage and command-safety use - so status-line joins it onto the same line
+ *    as the context gauge and those other segments, rather than it living on its own
+ *    separate row. (It used to be its own belowEditor widget; John asked for it
+ *    combined onto that line instead.)
+ *
+ *    When nothing is running the status is cleared entirely (setStatus(key, undefined))
+ *    rather than showing a dead ">_ (none)" - the segment simply disappears so an idle
+ *    footer stays clean. While ≥1 tool runs, a braille spinner animates via a ~100ms
+ *    interval (SPINNER_INTERVAL_MS) that only ticks while something is running and is
+ *    stopped the moment the last tool finishes; each tick re-publishes the status, which
+ *    is what drives the footer re-render (same mechanism codex-usage's poll timer relies
+ *    on). A leading count ("N running:") appears only when more than one tool runs.
  *
  * 2. `/tools` — a near-full-screen floating overlay (ctx.ui.custom, inset by OVERLAY_MARGIN
  *    on all sides via overlayOptions.margin/width/maxHeight) listing running + recent tool
  *    calls, on a background fill distinct from the plain transcript, with interior padding
  *    around the content. Arrow keys + Enter drill into one to see its live streaming output;
  *    Escape/'b' goes back to the list; Escape/'q'/Ctrl+C closes the overlay entirely.
+ *
+ * Subagent awareness: the `subagent` delegation tool runs each subagent in its own
+ * child `pi` process, so those subagents' tool calls never fire tool_execution_* on
+ * THIS process's bus — a delegating turn would otherwise show as one opaque
+ * "subagent" tool. We recover the inner calls from the subagent tool's streamed
+ * result details (see subagentChildren) and surface them everywhere: expanded into
+ * the footer's running-tool list/count, indented under their parent in the /tools
+ * list, and enumerated in the detail view. Granularity is message-level (a child
+ * tool appears when its assistant message streams back, flips to done/error when its
+ * toolResult arrives), not the sub-second streaming of local tools.
  *
  * No true mouse/click support: Pi's extension API has no structured mouse/hit-testing
  * primitive, only raw terminal input (ctx.ui.onTerminalInput) — building real clicking
@@ -35,6 +53,11 @@ import { matchesKey, truncateToWidth, type TUI, visibleWidth, wrapTextWithAnsi }
 const STATUS_KEY = "tool-monitor";
 const MAX_FINISHED_HISTORY = 100;
 const WIDGET_ICON = ">_"; // terminal prompt - plain ASCII, not a Nerd Font glyph
+
+// Braille spinner animated while ≥1 tool runs. Plain Unicode (not a Nerd Font glyph),
+// so it renders on any terminal. ~100ms per frame is the usual spinner cadence.
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_INTERVAL_MS = 100;
 
 // Outer inset from the terminal edges (as full-screen as reasonably possible while
 // still reading as a floating overlay rather than literally the whole terminal).
@@ -83,6 +106,85 @@ function statusColor(status: ToolStatus): "warning" | "error" | "success" {
 	if (status === "running") return "warning";
 	if (status === "error") return "error";
 	return "success";
+}
+
+// The `subagent` delegation tool (extensions/subagents) runs each subagent in a
+// separate child `pi` process whose OWN tool calls never reach this process's event
+// bus — from here a delegating turn otherwise looks like a single opaque "subagent"
+// tool, blind to the bash/read/edit/... the subagents are actually running. But the
+// tool streams its child transcript back through the tool-result details
+// (partialResult while running, result when done), so we reach in and surface those
+// inner calls as child rows. Shape mirrors SubagentDetails in
+// extensions/subagents/delegate.ts — read loosely, only what we need.
+const SUBAGENT_TOOL_NAME = "subagent";
+
+interface InnerToolCall {
+	id: string;
+	name: string;
+	args: unknown;
+	status: ToolStatus;
+	agent?: string;
+}
+
+// Walk one subagent result's message transcript, pairing each assistant toolCall
+// with its later toolResult (matched by id) to infer status: no result yet =>
+// running, isError result => error, otherwise done.
+function innerCallsFromMessages(messages: unknown, agent: string | undefined): InnerToolCall[] {
+	if (!Array.isArray(messages)) return [];
+	const resultIsError = new Map<string, boolean>();
+	for (const msg of messages) {
+		const m = msg as { role?: string; toolCallId?: unknown; isError?: unknown };
+		if (m?.role === "toolResult" && typeof m.toolCallId === "string") {
+			resultIsError.set(m.toolCallId, Boolean(m.isError));
+		}
+	}
+	const calls: InnerToolCall[] = [];
+	for (const msg of messages) {
+		const m = msg as { role?: string; content?: unknown };
+		if (m?.role !== "assistant" || !Array.isArray(m.content)) continue;
+		for (const part of m.content) {
+			const p = part as { type?: string; id?: unknown; name?: unknown; arguments?: unknown };
+			if (p?.type !== "toolCall" || typeof p.id !== "string") continue;
+			const errored = resultIsError.get(p.id);
+			const status: ToolStatus = errored === undefined ? "running" : errored ? "error" : "done";
+			calls.push({ id: p.id, name: typeof p.name === "string" ? p.name : "(tool)", args: p.arguments, status, agent });
+		}
+	}
+	return calls;
+}
+
+// Inner tool calls of a subagent run, drawn from the freshest details available
+// (final result once done, else the streaming partialResult). Non-subagent runs
+// have none. When the parent has finished, nothing under it is still executing, so
+// any still-"running" leaf is clamped to done (e.g. an aborted child mid-call).
+function subagentChildren(run: ToolRun): InnerToolCall[] {
+	if (run.name !== SUBAGENT_TOOL_NAME) return [];
+	const details = ((run.result as { details?: unknown })?.details ??
+		(run.partialResult as { details?: unknown })?.details) as { results?: unknown } | undefined;
+	const results = details?.results;
+	if (!Array.isArray(results)) return [];
+	const calls: InnerToolCall[] = [];
+	for (const r of results) {
+		const res = r as { agent?: unknown; messages?: unknown };
+		const agent = typeof res?.agent === "string" ? res.agent : undefined;
+		calls.push(...innerCallsFromMessages(res?.messages, agent));
+	}
+	if (run.status !== "running") {
+		for (const c of calls) if (c.status === "running") c.status = "done";
+	}
+	return calls;
+}
+
+// A running tool's contribution to the footer's leaf-tool list: a running subagent
+// resolves to the inner tool names currently in flight (agent-qualified so parallel
+// subagents stay distinct); between inner calls, or for any ordinary tool, it's just
+// the tool's own name.
+function runningLeafNames(run: ToolRun): string[] {
+	if (run.name === SUBAGENT_TOOL_NAME) {
+		const inFlight = subagentChildren(run).filter((c) => c.status === "running");
+		if (inFlight.length > 0) return inFlight.map((c) => (c.agent ? `${c.agent}:${c.name}` : c.name));
+	}
+	return [run.name];
 }
 
 // Full-screen /tools overlay: a hand-rolled two-mode (list/detail) component. Not built on
@@ -216,6 +318,13 @@ class ToolMonitorComponent {
 			const marker = selected ? ">" : " ";
 			const label = `${marker} ${run.name} ${statusLabel(run.status)}`;
 			lines.push(truncateToWidth(this.theme.fg(statusColor(run.status), label), width));
+			// Inner subagent tool calls, indented beneath their parent so a delegating
+			// turn shows the bash/read/edit its subagents ran, not just "subagent".
+			for (const child of subagentChildren(run)) {
+				const prefix = child.agent ? `[${child.agent}] ` : "";
+				const childLabel = `    ${prefix}${child.name} ${statusLabel(child.status)}`;
+				lines.push(truncateToWidth(this.theme.fg(statusColor(child.status), childLabel), width));
+			}
 		});
 		return lines;
 	}
@@ -233,12 +342,33 @@ class ToolMonitorComponent {
 			this.theme.fg(statusColor(run.status), `Status: ${run.status}`),
 			this.theme.fg("dim", "esc/b: back  x: abort (stops whole turn)  ctrl+c: close"),
 			"",
+		];
+
+		// For a subagent, the raw details JSON is a huge transcript dump; the useful
+		// view is the list of tools it ran, so surface that instead.
+		const children = subagentChildren(run);
+		if (run.name === SUBAGENT_TOOL_NAME) {
+			lines.push(this.theme.fg("dim", `Subagent tool calls (${children.length}):`));
+			if (children.length === 0) {
+				lines.push(this.theme.fg("muted", "  (none yet)"));
+			} else {
+				for (const child of children) {
+					const prefix = child.agent ? `[${child.agent}] ` : "";
+					lines.push(
+						truncateToWidth(this.theme.fg(statusColor(child.status), `  ${prefix}${child.name} ${statusLabel(child.status)}`), width),
+					);
+				}
+			}
+			lines.push("");
+		}
+
+		lines.push(
 			this.theme.fg("dim", "Args:"),
 			...wrapTextWithAnsi(summarize(run.args), width),
 			"",
 			this.theme.fg("dim", run.status === "running" ? "Live output:" : "Result:"),
 			...wrapTextWithAnsi(summarize(run.status === "running" ? run.partialResult : run.result), width),
-		];
+		);
 		return lines;
 	}
 }
@@ -259,13 +389,50 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
+	let spinnerFrame = 0;
+	let spinnerTimer: ReturnType<typeof setInterval> | undefined;
+	// Latest ctx seen from an event, so the spinner interval (which fires outside any
+	// event) has a live handle to setStatus/theme without a session_start dependency.
+	let lastCtx: ExtensionContext | undefined;
+
+	const stopSpinner = () => {
+		if (spinnerTimer) clearInterval(spinnerTimer);
+		spinnerTimer = undefined;
+		spinnerFrame = 0;
+	};
+
 	// Bare content, no leading/trailing separator of its own - status-line owns the
 	// " | " between footer segments and joins whatever any extension publishes here.
+	// Clears the segment entirely when idle so the footer doesn't carry a dead marker.
 	const publishStatus = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
+		lastCtx = ctx;
 		const running = [...runs.values()].filter((r) => r.status === "running");
-		const label = running.length === 0 ? "none" : running.map((r) => r.name).join(", ");
-		ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", `${WIDGET_ICON} (${label})`));
+
+		if (running.length === 0) {
+			stopSpinner();
+			ctx.ui.setStatus(STATUS_KEY, undefined);
+			return;
+		}
+
+		// Keep the animation ticking for as long as anything runs; each tick re-publishes,
+		// which is what nudges the footer to re-render (setStatus is the render trigger).
+		if (!spinnerTimer) {
+			spinnerTimer = setInterval(() => {
+				spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
+				if (lastCtx) publishStatus(lastCtx);
+			}, SPINNER_INTERVAL_MS);
+		}
+
+		// Expand each running subagent into the inner tools it's actually executing
+		// (see runningLeafNames), so the footer reflects the real work rather than one
+		// opaque "subagent". Count reflects those leaves too.
+		const leaves = running.flatMap(runningLeafNames);
+		const theme = ctx.ui.theme;
+		const spinner = theme.fg("warning", SPINNER_FRAMES[spinnerFrame]);
+		const count = leaves.length > 1 ? `${leaves.length} running: ` : "";
+		const names = leaves.join(", ");
+		ctx.ui.setStatus(STATUS_KEY, `${spinner} ${theme.fg("dim", `${WIDGET_ICON} ${count}${names}`)}`);
 	};
 
 	pi.on("tool_execution_start", (event, ctx) => {
@@ -305,6 +472,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
+		stopSpinner();
+		lastCtx = undefined;
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
 

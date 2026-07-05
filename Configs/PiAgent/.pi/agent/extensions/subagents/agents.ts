@@ -11,6 +11,7 @@
  *   description: What this agent does
  *   tools: read, grep, find, ls        # optional; omitted → inherit all tools
  *   model: gpt-5.5                      # optional; bare id or "provider/id"; omitted → inherit
+ *   askLimit: 2                         # optional; overrides the /subagent asklimit default for this agent (0 = no ask_parent)
  *   ---
  *   System prompt / instructions for the agent go here.
  *
@@ -42,6 +43,13 @@ export interface AgentConfig {
 	 * The top-level session is exempt.
 	 */
 	canCall?: "*" | string[];
+	/**
+	 * How many times this agent may call ask_parent (frontmatter `askLimit:`) within a
+	 * user request before the tool is withheld from its re-runs. `undefined` ⇒ use the
+	 * user-configurable default (`/subagent asklimit`); 0 ⇒ never gets ask_parent.
+	 * Enforced by delegate.ts, which counts asks per agent name and resets each turn.
+	 */
+	askLimit?: number;
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
@@ -98,6 +106,9 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 					? rawCanCall.split(",").map((s) => s.trim()).filter(Boolean)
 					: undefined;
 
+		const askLimitNum = Number(frontmatter.askLimit);
+		const askLimit = Number.isInteger(askLimitNum) && askLimitNum >= 0 ? askLimitNum : undefined;
+
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
@@ -105,6 +116,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			model: frontmatter.model?.trim() || undefined,
 			mode,
 			canCall,
+			askLimit,
 			systemPrompt: body,
 			source,
 			filePath,

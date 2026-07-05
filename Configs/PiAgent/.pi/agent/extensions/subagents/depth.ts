@@ -26,12 +26,21 @@ import type { AgentConfig } from "./agents.ts";
 
 export const DEPTH_ENV = "PI_SUBAGENT_DEPTH";
 export const MAXDEPTH_ENV = "PI_SUBAGENT_MAX_DEPTH";
+/** Carries the resolved default ask-limit down to descendants (see the ask_parent section below). */
+export const ASK_LIMIT_ENV = "PI_SUBAGENT_ASK_LIMIT";
 /**
  * The call-list THIS process may delegate to, carried from the parent at spawn so a
  * nested caller knows its own privilege: "*" = any, a comma list = only those,
  * "" = none. Absent at the top level (unrestricted).
  */
 export const CANCALL_ENV = "PI_SUBAGENT_CANCALL";
+/**
+ * Set to "1" on a spawned child when its agent opted into ask_parent (frontmatter
+ * `askLimit` ≥ 1) and still has ask budget this request. ask-parent/index.ts registers
+ * the tool only when this is present, so the capability is opt-in per agent and per
+ * spawn — the top-level agent (never spawned with it) never sees the tool.
+ */
+export const ASK_PARENT_ENV = "PI_ASK_PARENT";
 /** Custom session-entry type carrying a per-session override `{ maxDepth }`. */
 export const MAXDEPTH_ENTRY = "subagent-maxdepth";
 /** Global cross-session default, editable without launching Pi. */
@@ -75,7 +84,7 @@ export function saveGlobalDefault(maxDepth: number): void {
 
 /** Minimal shape of the session manager we read (avoids importing heavy SDK types). */
 interface EntryReader {
-	getEntries(): Array<{ type: string; customType?: string; data?: { maxDepth?: number } }>;
+	getEntries(): Array<{ type: string; customType?: string; data?: { maxDepth?: number; askLimit?: number } }>;
 }
 
 /** The latest per-session override, or undefined if none was set this session. */
@@ -103,16 +112,79 @@ export function resolveMaxDepth(sm?: EntryReader): number {
 }
 
 /**
- * Environment for a spawned child: bump the depth, carry the cap down unchanged,
- * and record the child's call-list so it knows who it may delegate to.
+ * Environment for a spawned child: bump the depth, carry the cap and the default
+ * ask-limit down unchanged, and record the child's call-list so it knows who it may
+ * delegate to.
  */
-export function childEnv(maxDepth: number, childCanCall: string): NodeJS.ProcessEnv {
+export function childEnv(maxDepth: number, childCanCall: string, askLimitDefault: number): NodeJS.ProcessEnv {
 	return {
 		...process.env,
 		[DEPTH_ENV]: String(currentDepth() + 1),
 		[MAXDEPTH_ENV]: String(maxDepth),
 		[CANCALL_ENV]: childCanCall,
+		[ASK_LIMIT_ENV]: String(askLimitDefault),
 	};
+}
+
+// ---- ask_parent budget default --------------------------------------------
+//
+// Each agent's ask_parent allowance is its frontmatter `askLimit`, or — when it sets
+// none — this user-configurable default. Resolved exactly like maxDepth (env → per-
+// session entry → global file → hard default) and carried to descendants via
+// ASK_LIMIT_ENV so a nested parent applies the same default to agents it spawns.
+
+/** Custom session-entry type carrying a per-session override `{ askLimit }`. */
+export const ASK_LIMIT_ENTRY = "subagent-asklimit";
+/** Global cross-session default, editable without launching Pi. */
+export const ASK_LIMIT_CONFIG = join(getAgentDir(), "subagent-asklimit.json");
+/** Shipped default: an agent may ask its parent once per request unless it says otherwise. */
+export const ASK_LIMIT_HARD_DEFAULT = 1;
+/** Presets offered by the `/subagent asklimit` picker (0 = ask_parent off by default). */
+export const ASK_LIMIT_CHOICES = [0, 1, 2, 3, 5];
+
+/** A non-negative integer (0 = off is allowed), or undefined if not a usable limit. */
+function toAskLimit(value: unknown): number | undefined {
+	const n = Number(value);
+	return Number.isInteger(n) && n >= 0 ? n : undefined;
+}
+
+/** Read the global default file; falls back to the hard default if absent/invalid. */
+export function loadGlobalAskLimit(): number {
+	try {
+		const raw = JSON.parse(readFileSync(ASK_LIMIT_CONFIG, "utf-8"));
+		return toAskLimit(raw?.askLimit) ?? ASK_LIMIT_HARD_DEFAULT;
+	} catch {
+		return ASK_LIMIT_HARD_DEFAULT;
+	}
+}
+
+/** Persist the global default; best-effort (throws are the caller's to surface). */
+export function saveGlobalAskLimit(askLimit: number): void {
+	mkdirSync(dirname(ASK_LIMIT_CONFIG), { recursive: true });
+	writeFileSync(ASK_LIMIT_CONFIG, JSON.stringify({ askLimit }, null, 2), "utf-8");
+}
+
+/** The latest per-session override, or undefined if none was set this session. */
+export function readSessionAskLimit(sm: EntryReader): number | undefined {
+	const last = sm
+		.getEntries()
+		.filter((e) => e.type === "custom" && e.customType === ASK_LIMIT_ENTRY)
+		.pop();
+	return toAskLimit(last?.data?.askLimit);
+}
+
+/**
+ * Effective default ask-limit for THIS process: env (already resolved at the top) wins,
+ * then a per-session override, then the global default file, then the hard default.
+ */
+export function resolveAskLimit(sm?: EntryReader): number {
+	const fromEnv = toAskLimit(process.env[ASK_LIMIT_ENV]);
+	if (fromEnv !== undefined) return fromEnv;
+	if (sm) {
+		const fromSession = readSessionAskLimit(sm);
+		if (fromSession !== undefined) return fromSession;
+	}
+	return loadGlobalAskLimit();
 }
 
 // ---- call-list escalation for nested calls ---------------------------------

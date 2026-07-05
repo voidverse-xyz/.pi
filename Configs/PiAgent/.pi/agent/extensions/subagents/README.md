@@ -86,6 +86,38 @@ specialists call nothing.
 inside any subagent process (`PI_SUBAGENT_DEPTH > 0`) — a subagent can't re-skin
 itself into another persona.
 
+## 4. Pause & ask the parent — `ask_parent`
+
+A subagent that hits a decision above its scope can stop and ask the agent that
+delegated to it, instead of guessing. The `ask_parent` tool (extension
+`../ask-parent/`) takes `{ summary, question }`; calling it **ends the subagent's
+run**. `delegate.ts` detects the `ask_parent` tool call in the child's output stream,
+captures the summary + question, cleanly stops the child, and surfaces the pause as
+the `subagent` tool result — rendered `⏸`. The **parent agent** (whose turn resumes
+when the tool returns) answers from its broader context and delegates a continuation
+(same agent, another, or itself), passing the goal + summary + question + answer.
+
+Why "summarize → exit" and not a live round-trip: while a subagent runs, the parent
+LLM is frozen inside the `subagent` call and cannot answer; it can only answer once
+its turn resumes, i.e. after the child returns. The answer therefore arrives as the
+*direct* parent's business — this does **not** bubble to the top-level human (unlike
+`user_inputs`/command-safety).
+
+**Per-agent allowance, capped per request.** Each agent may call `ask_parent` a limited
+number of times per user request. The limit is the agent's own `askLimit:` frontmatter,
+or — when it sets none — the **user-configurable default** (`/subagent asklimit`, or the
+"Ask-parent limit" menu entry; `0` = off). `delegate.ts` counts each agent's asks per
+request and, once an agent hits its limit, spawns its re-runs **without** `ask_parent`
+(so an ask → answer → re-run → ask loop can't run away); the budget refills on the next
+request. Enforcement is the `PI_ASK_PARENT` env flag delegate.ts sets on a spawned child
+— the extension registers the tool only when present, so the top-level agent (never
+spawned with it) also never sees it.
+
+The default resolves like the depth cap — env → per-session (`/subagent asklimit N`) →
+global file (`subagent-asklimit.json`, or `/subagent asklimit global N`) → hard default
+(1) — and is carried down so nested parents apply the same default. An agent overrides it
+with `askLimit:` in its own file (e.g. `askLimit: 0` to opt a specific agent out).
+
 ## Agent definitions
 
 Markdown files with YAML frontmatter, shared by both features:
@@ -98,6 +130,7 @@ tools: read, grep, find, ls, bash   # optional — omit to inherit all tools
 model: gpt-5.5                       # optional — bare id or "provider/id"; omit to inherit
 mode: replace                        # optional — "replace" or "augment" (default)
 canCall: scout, planner              # optional — agents this one may delegate to ("*"=any; unset=none)
+askLimit: 2                          # optional — overrides the /subagent asklimit default for this agent (0=off; see §4)
 ---
 
 System prompt / instructions for the agent go here.

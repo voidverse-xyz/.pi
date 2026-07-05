@@ -29,7 +29,19 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Key, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 import { type AgentConfig, type AgentScope, discoverAgents, getUserAgentsDir } from "./agents.ts";
-import { DEPTH_CHOICES, isNested, loadGlobalDefault, MAXDEPTH_ENTRY, resolveMaxDepth, saveGlobalDefault } from "./depth.ts";
+import {
+	ASK_LIMIT_CHOICES,
+	ASK_LIMIT_ENTRY,
+	DEPTH_CHOICES,
+	isNested,
+	loadGlobalAskLimit,
+	loadGlobalDefault,
+	MAXDEPTH_ENTRY,
+	resolveAskLimit,
+	resolveMaxDepth,
+	saveGlobalAskLimit,
+	saveGlobalDefault,
+} from "./depth.ts";
 
 type PromptMode = "augment" | "replace";
 
@@ -92,7 +104,19 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 	// ---- apply / restore ---------------------------------------------------
 
 	function snapshotOriginal(ctx: ExtensionContext) {
-		original = { model: ctx.model, thinkingLevel: pi.getThinkingLevel(), tools: pi.getActiveTools() };
+		// "main" is the unrestricted agent — it must always carry every tool (bash
+		// included). Capture the full registered tool set as the base, NOT the live
+		// pi.getActiveTools(): on resume Pi restores the session already wearing its
+		// persisted persona, so getActiveTools() here can be that persona's reduced set
+		// (e.g. read/grep/find/ls, no bash). Snapshotting that as "base" would make
+		// restoreBase() permanently strip bash from main, and the model — with no shell
+		// tool left — would delegate every bash command to a subagent. Model and thinking
+		// level are still the live base values; only tools are pinned to the full set.
+		original = {
+			model: ctx.model,
+			thinkingLevel: pi.getThinkingLevel(),
+			tools: pi.getAllTools().map((t) => t.name),
+		};
 	}
 
 	async function restoreBase() {
@@ -133,12 +157,28 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 
 		active = { agent, mode };
 		updateStatus(ctx);
+		// Persist the switch immediately (not just on the next turn_start) so a /reload
+		// or resume right after switching restores the same agent. Skip during the silent
+		// session_start restore — we're already replaying a persisted entry there.
+		if (!silent) persistState(agent.name, mode);
 	}
 
 	async function restoreMain(ctx: ExtensionContext) {
 		await restoreBase();
 		active = null;
 		updateStatus(ctx);
+		// Record the return to main so a later resume/reload does NOT stickily re-enter the
+		// last persona. Without this, .pop() of the state entries always finds the most
+		// recent persona and silently re-applies it (restricting tools — e.g. dropping bash),
+		// making main look broken even though the user switched back to it.
+		persistState(MAIN, "augment");
+	}
+
+	// Append the active selection ("main" or an agent name) as a session entry. The last
+	// such entry is what session_start replays, so this is what makes a resume/reload land
+	// on the agent the user was actually last using.
+	function persistState(name: string, mode: PromptMode) {
+		pi.appendEntry(STATE_ENTRY, { name, mode });
 	}
 
 	// Publish just the ACTIVE agent as a footer status (not the whole roster — the
@@ -396,6 +436,76 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		ctx.ui.notify(`Default nesting depth set to ${n} (applies to new sessions)`, "info");
 	}
 
+	// ---- default ask_parent limit (/subagent asklimit) ---------------------
+
+	// The default ask_parent allowance for agents that don't set their own `askLimit`
+	// frontmatter. 0 = ask_parent off by default. Mirrors the depth commands.
+	// `/subagent asklimit`            → show current + pick a preset (this session)
+	// `/subagent asklimit <N>`        → set this session's default to N
+	// `/subagent asklimit global <N>` → set the cross-session default file
+	async function handleAskLimit(rest: string, ctx: ExtensionContext) {
+		const parts = rest.split(/\s+/).filter(Boolean);
+
+		if (parts[0]?.toLowerCase() === "global") {
+			const n = Number(parts[1]);
+			if (!Number.isInteger(n) || n < 0) {
+				ctx.ui.notify("Usage: /subagent asklimit global <non-negative integer>", "error");
+				return;
+			}
+			try {
+				saveGlobalAskLimit(n);
+			} catch (err) {
+				ctx.ui.notify(`Failed to save global default: ${err}`, "error");
+				return;
+			}
+			ctx.ui.notify(`Default ask_parent limit — global default set to ${n}`, "info");
+			return;
+		}
+
+		if (parts.length > 0) {
+			const n = Number(parts[0]);
+			if (!Number.isInteger(n) || n < 0) {
+				ctx.ui.notify("Usage: /subagent asklimit <non-negative integer>", "error");
+				return;
+			}
+			pi.appendEntry(ASK_LIMIT_ENTRY, { askLimit: n });
+			ctx.ui.notify(`Default ask_parent limit set to ${n} for this session`, "info");
+			return;
+		}
+
+		const eff = resolveAskLimit(ctx.sessionManager);
+		const items: SelectItem[] = ASK_LIMIT_CHOICES.map((n) => ({
+			value: String(n),
+			label: n === 0 ? `${n} (ask_parent off)` : String(n),
+			description: n === eff ? "current" : "",
+		}));
+		const choice = await selectFromList(ctx, `Default ask_parent limit (current: ${eff})`, items);
+		if (!choice) return;
+		const chosen = Number(choice);
+		pi.appendEntry(ASK_LIMIT_ENTRY, { askLimit: chosen });
+		ctx.ui.notify(`Default ask_parent limit set to ${chosen} for this session`, "info");
+	}
+
+	// Picker for the cross-session default (the `subagent-asklimit.json` file).
+	async function pickDefaultAskLimit(ctx: ExtensionContext) {
+		const eff = loadGlobalAskLimit();
+		const items: SelectItem[] = ASK_LIMIT_CHOICES.map((n) => ({
+			value: String(n),
+			label: n === 0 ? `${n} (ask_parent off)` : String(n),
+			description: n === eff ? "current default" : "",
+		}));
+		const choice = await selectFromList(ctx, `Default ask_parent limit (current: ${eff})`, items);
+		if (!choice) return;
+		const n = Number(choice);
+		try {
+			saveGlobalAskLimit(n);
+		} catch (err) {
+			ctx.ui.notify(`Failed to save default: ${err}`, "error");
+			return;
+		}
+		ctx.ui.notify(`Default ask_parent limit set to ${n} (applies to new sessions)`, "info");
+	}
+
 	// ---- parent menu -------------------------------------------------------
 
 	// `/subagent` opens this menu; each item routes to a sub-picker.
@@ -412,11 +522,23 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 				label: "Default nesting depth",
 				description: `The nesting cap new sessions start with (current: ${loadGlobalDefault()})`,
 			},
+			{
+				value: "asklimit",
+				label: "Ask-parent limit",
+				description: `Times an agent may ask its parent this session, unless its file overrides (current: ${resolveAskLimit(ctx.sessionManager)})`,
+			},
+			{
+				value: "askdefault",
+				label: "Default ask-parent limit",
+				description: `The ask-parent limit new sessions start with (current: ${loadGlobalAskLimit()})`,
+			},
 		];
 		const choice = await selectFromList(ctx, "Subagent", items);
 		if (choice === "switch") await showPicker(ctx);
 		else if (choice === "depth") await handleDepth("", ctx);
 		else if (choice === "default") await pickDefaultDepth(ctx);
+		else if (choice === "asklimit") await handleAskLimit("", ctx);
+		else if (choice === "askdefault") await pickDefaultAskLimit(ctx);
 	}
 
 	// ---- command + shortcut ------------------------------------------------
@@ -429,7 +551,7 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("subagent", {
-		description: "Subagent menu — switch agent or set the nesting-depth cap",
+		description: "Subagent menu — switch agent, set the nesting-depth cap or the default ask-parent limit",
 		handler: async (args, ctx) => {
 			const arg = args.trim();
 			const lower = arg.toLowerCase();
@@ -458,6 +580,11 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 				await handleDepth(tail.join(" "), ctx);
 				return;
 			}
+			// `/subagent asklimit [N | global N]` → the default ask_parent allowance.
+			if (head.toLowerCase() === "asklimit") {
+				await handleAskLimit(tail.join(" "), ctx);
+				return;
+			}
 			// `/subagent <name>` → switch to that agent directly.
 			await switchToAgentByName(arg, ctx);
 		},
@@ -470,22 +597,21 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		active = null;
 		original = undefined;
 
-		// Restore the agent this session was last wearing.
+		// Restore whatever the session was last wearing — a persona, OR main. A persisted
+		// "main" (name === MAIN, written by restoreMain) means the user deliberately went
+		// back to the base agent, so we must NOT re-apply an earlier persona: leaving active
+		// null keeps the full base toolset (bash included). An unknown name (agent file
+		// removed) likewise falls through to main.
 		const entries = ctx.sessionManager.getEntries();
 		const last = entries
 			.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === STATE_ENTRY)
 			.pop() as { data?: { name: string; mode: PromptMode } } | undefined;
 
-		if (last?.data?.name) {
+		if (last?.data?.name && last.data.name !== MAIN) {
 			const agent = agents.find((a) => a.name === last.data!.name);
 			if (agent) await applyAgent(agent, last.data.mode ?? "augment", ctx, true);
 		}
 		updateStatus(ctx);
-	});
-
-	// Persist the active agent so a resume re-enters it.
-	pi.on("turn_start", async () => {
-		if (active) pi.appendEntry(STATE_ENTRY, { name: active.agent.name, mode: active.mode });
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {

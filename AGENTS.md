@@ -139,8 +139,9 @@ shared repository using the `Reusable Artifact Capture` rules above.
 ## PiAgent Layout
 
 - `Configs/PiAgent/.pi/agent/extensions/`: source of truth for Pi extensions
-  (`codex-usage`, `command-safety`, `confirm-stop-agent`, `dir-git`,
-  `plan-commit`, `status-line`, `tool-monitor` — `cursor` was removed
+  (`ask-parent`, `codex-usage`, `command-safety`, `confirm-stop-agent`,
+  `dir-git`, `plan-commit`, `session-merge`, `status-line`, `steer-queue`,
+  `subagents`, `tool-monitor`, `user-inputs`, `user-summary` — `cursor` was removed
   2026-07-03) and the `plan-commit` skill.
   `command-safety` gates agent `bash` commands by category (destructive /
   network / exec / other) with countdown confirmations and a `/safety off|on|max`
@@ -164,6 +165,13 @@ shared repository using the `Reusable Artifact Capture` rules above.
   (evenly inset via `overlayOptions.margin`) to browse running/recent tool
   calls, drill into one's live output, and send an abort (`ctx.abort()` —
   whole-turn, Pi has no per-tool-call cancel).
+  `session-merge` (added 2026-07-05) provides `/merge`, a synthesis merge for
+  selected session branches: it summarizes the shared base plus branch deltas
+  into a visible custom message in a new session, optionally drafts or runs a
+  kickoff prompt, and leaves source branches intact.
+  `user-summary` (added 2026-07-05) provides the LLM-callable `user_summary`
+  tool: a compact TUI summary panel with optional `info`, `warnings`, and
+  `errors` message bands, plus a `/user-summary` demo command.
 - `Configs/PiAgent/.pi/agent/themes/`: source of truth for custom Pi themes
   (`black-white`, a grayscale theme, added 2026-07-03).
 - On this host, `~/.pi/agent/extensions` and `~/.pi/agent/themes` are symlinks

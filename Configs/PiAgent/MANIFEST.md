@@ -8,7 +8,7 @@ Collected from `C:\Users\DenTeach\.pi\agent\` on 2026-07-03.
 |-------|------|-------------|
 | plan-commit | `skills/plan-commit/` | Layered git review and commit workflow |
 
-## Extensions (9)
+## Extensions (13)
 
 | Extension | Path | Description |
 |-----------|------|-------------|
@@ -20,6 +20,10 @@ Collected from `C:\Users\DenTeach\.pi\agent\` on 2026-07-03.
 | dir-git | `extensions/dir-git/` | Row above the input: cwd + git (branch, dirty/ahead/behind) + model/thinking |
 | tool-monitor | `extensions/tool-monitor/` | Live tool-call indicator in the footer + `/tools` overlay of running/recent calls |
 | user-inputs | `extensions/user-inputs/` | `user_inputs` tool: agent asks the user text / pick-one / pick-many questions (with "Something else…" + note) |
+| user-summary | `extensions/user-summary/` | `user_summary` tool: shows a compact TUI summary panel with optional info, warning, and error bands |
+| session-merge | `extensions/session-merge/` | `/merge` command that synthesizes selected session branches into a new merged session without rewriting source history |
+| steer-queue | `extensions/steer-queue/` | Queue steering/follow-up messages while an agent turn is running |
+| ask-parent | `extensions/ask-parent/` | `ask_parent` tool: a subagent pauses on a decision above its scope, returns a progress summary + question, and exits; the parent agent answers and delegates a continuation. Each agent may ask up to a per-request limit — its `askLimit:` frontmatter, else the user-set default (`/subagent asklimit`, or its menu entry); 0 ⇒ off. Never shown to the top-level agent |
 | subagents | `extensions/subagents/` | Agent switcher (`Alt+A` / `/subagent`) re-skins the session's model+tools+prompt in the same thread (active shown on the status line) **plus** an LLM-callable `subagent` delegation tool (single/parallel/chain, isolated `pi` processes, result returned to the main agent). Nesting is depth-capped (`/subagent depth`, default 1) and privilege-gated; the switcher is disabled inside subagents |
 
 ## Agents

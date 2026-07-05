@@ -26,8 +26,11 @@
  * Edit that file's `"mode"` to change the startup default without launching pi.
  *
  * Only agent `bash` tool calls are gated — user-run `!` commands are never
- * intercepted. In non-interactive modes (print/json) a gated command is blocked,
- * since there is no human available to confirm.
+ * intercepted. In a non-interactive process (print/json) there is no local UI to
+ * confirm with: a subagent spawned by the delegation tool forwards the confirmation
+ * up to its parent's TUI over the IPC channel (see subagents/ipc.ts), so gated
+ * subagent commands still prompt the human; a plain `pi -p` run with no parent to
+ * ask simply blocks.
  *
  * Requires a Nerd Font for the shield glyph.
  *
@@ -38,8 +41,9 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { hasIpcChannel, ipcRequest } from "../subagents/ipc.ts";
 import { CATEGORY_META, type Category, classifyCommand } from "./categories.ts";
-import { delayedConfirm } from "./delayed-confirm.ts";
+import { confirmGatedCommand } from "./confirm.ts";
 
 type SafetyMode = "off" | "on" | "max";
 
@@ -91,22 +95,6 @@ function updateStatus(ctx: ExtensionContext): void {
 	ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg("dim", `${ICON_SHIELD} ${currentMode}`));
 }
 
-async function gate(ctx: ExtensionContext, category: Category, command: string): Promise<boolean> {
-	const meta = CATEGORY_META[category];
-	for (let i = 1; i <= meta.confirmations; i++) {
-		const step = meta.confirmations > 1 ? `${i} of ${meta.confirmations}` : undefined;
-		const ok = await delayedConfirm(ctx, {
-			label: meta.label,
-			color: meta.color,
-			command,
-			delayMs: meta.delayMs,
-			step,
-		});
-		if (!ok) return false;
-	}
-	return true;
-}
-
 export default function (pi: ExtensionAPI) {
 	// Registered at module scope so repeated session_start firings (switch/resume
 	// within one process) never stack duplicate listeners.
@@ -121,13 +109,21 @@ export default function (pi: ExtensionAPI) {
 		if (!MODE_CATEGORIES[currentMode].has(category)) return undefined;
 
 		if (!ctx.hasUI) {
+			// Headless subagent: forward the confirmation up to the parent's TUI over the
+			// IPC channel instead of blindly blocking. Without a channel (e.g. a plain
+			// `pi -p` run, not a spawned subagent) there's no one to ask, so block.
+			if (hasIpcChannel()) {
+				const res = await ipcRequest<{ approved: boolean }>("safety.confirm", { command, category });
+				if (res.ok && res.value.approved) return undefined;
+				return { block: true, reason: `command-safety: ${category} command declined via parent` };
+			}
 			return {
 				block: true,
 				reason: `command-safety: ${category} command blocked (no interactive UI to confirm)`,
 			};
 		}
 
-		const approved = await gate(ctx, category, command);
+		const approved = await confirmGatedCommand(ctx, category, command);
 		if (!approved) {
 			ctx.ui.notify(`Blocked ${CATEGORY_META[category].label.toLowerCase()} command`, "warning");
 			return { block: true, reason: `Blocked by command-safety (${category}; declined by user)` };
