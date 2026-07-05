@@ -7,8 +7,17 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Key, Text, applyBackgroundToLine, matchesKey, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Key, Text, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+
+// Pads a line to full width, then applies a background so the fill covers the whole
+// row (not just the text). pi-tui has a function with this exact name/behavior, but it
+// isn't re-exported from the package's public index barrel — reimplemented locally, the
+// same way codex-usage and tool-monitor do, so this extension stays self-contained.
+function applyBackgroundToLine(line: string, width: number, bgFn: (text: string) => string): string {
+	const padding = " ".repeat(Math.max(0, width - visibleWidth(line)));
+	return bgFn(line + padding);
+}
 
 interface SummaryData {
 	title?: string;

@@ -66,8 +66,8 @@ const OVERLAY_MARGIN = 1;
 const INNER_PAD_X = 2;
 const INNER_PAD_Y = 1;
 
-// pi-tui has a function with this exact name/behavior, but it isn't re-exported from the
-// package's public index — only visibleWidth is. Reimplemented locally (see codex-usage).
+// pi-tui has a function with this exact name/behavior, but it isn't among the text utils
+// re-exported from the package's public index. Reimplemented locally (see codex-usage).
 function applyBackgroundToLine(line: string, width: number, bgFn: (text: string) => string): string {
 	const padding = " ".repeat(Math.max(0, width - visibleWidth(line)));
 	return bgFn(line + padding);
