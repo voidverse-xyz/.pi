@@ -1,7 +1,8 @@
 /**
  * The interactive confirmation flow for a gated command, factored out of index.ts
- * so it can be reused by the subagent path (delegate.ts shows this same dialog on
- * behalf of a headless child — see subagents/ipc.ts).
+ * so it can be reused by the subagent path: index.ts's `ipc:serve` handler shows this
+ * same dialog on the parent's TUI on behalf of a headless child, when a "safety.confirm"
+ * is forwarded up through the optional `ipc` extension.
  *
  * Runs one delayedConfirm per required confirmation (destructive needs two); any
  * cancel short-circuits to "not approved". Returns false immediately when there is

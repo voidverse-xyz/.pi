@@ -1,0 +1,17 @@
+{
+  "name": "pi-plan-commit",
+  "version": "1.0.0",
+  "description": "/plan-commit — a native TUI for layered git review and staged commits.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

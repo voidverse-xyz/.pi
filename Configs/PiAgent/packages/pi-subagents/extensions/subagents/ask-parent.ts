@@ -31,14 +31,15 @@
  * detecting the call is what makes the stop deterministic — this execute() body is a
  * belt-and-suspenders end-of-turn signal that usually returns after the child is gone.
  *
- * Install: ~/.pi/agent/extensions/ask-parent/index.ts
- * Reload: /reload
+ * Part of the `subagents` extension (registered by index.ts via registerAskParent);
+ * it can't function without delegate.ts, so it ships in the same unit rather than
+ * separately importing depth.ts across an extension boundary.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { ASK_PARENT_ENV } from "../subagents/depth.ts";
+import { ASK_PARENT_ENV } from "./depth.ts";
 
 const AskParentParams = Type.Object({
 	summary: Type.String({
@@ -58,7 +59,7 @@ interface AskParentDetails {
 	question: string;
 }
 
-export default function askParent(pi: ExtensionAPI) {
+export function registerAskParent(pi: ExtensionAPI) {
 	// Opt-in per agent: delegate.ts sets PI_ASK_PARENT=1 only on a spawned child whose
 	// agent granted ask_parent (askLimit ≥ 1) and still has budget this request. Absent
 	// ⇒ don't register — so the top-level agent and capped/opted-out agents never see it.

@@ -28,9 +28,9 @@
  * Only agent `bash` tool calls are gated — user-run `!` commands are never
  * intercepted. In a non-interactive process (print/json) there is no local UI to
  * confirm with: a subagent spawned by the delegation tool forwards the confirmation
- * up to its parent's TUI over the IPC channel (see subagents/ipc.ts), so gated
- * subagent commands still prompt the human; a plain `pi -p` run with no parent to
- * ask simply blocks.
+ * up to its parent's TUI via the optional `ipc` extension (over pi.events, no import),
+ * so gated subagent commands still prompt the human when `ipc` is installed; without
+ * it — or on a plain `pi -p` run with no parent to ask — the command simply blocks.
  *
  * Requires a Nerd Font for the shield glyph.
  *
@@ -41,9 +41,39 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { hasIpcChannel, ipcRequest } from "../subagents/ipc.ts";
 import { CATEGORY_META, type Category, classifyCommand } from "./categories.ts";
 import { confirmGatedCommand } from "./confirm.ts";
+
+// ---------------------------------------------------------------------------
+// Optional ipc capability (no import — pure runtime rendezvous over pi.events).
+//
+// A headless subagent has no local TUI, so it forwards a confirmation up to its
+// parent. The transport lives in the standalone `ipc` extension; we reach it by
+// emitting an `ipc:client` probe carrying a `claim` callback. If `ipc` is installed
+// AND this process has a parent channel, it claims synchronously (before emit()
+// returns) and does the fd round-trip; otherwise nothing claims and we degrade to a
+// block. No import means dropping the `ipc` extension can't break this one's load.
+// ---------------------------------------------------------------------------
+
+type ClaimFn = (params: unknown, meta: { method: string; from: string[] }) => Promise<unknown> | unknown;
+type IpcResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+function busCall<T>(pi: ExtensionAPI, channel: string, method: string, params: unknown): Promise<IpcResult<T>> {
+	let claimed: ClaimFn | null = null;
+	pi.events.emit(channel, {
+		method,
+		claim: (fn: ClaimFn) => {
+			claimed = fn;
+		},
+	});
+	if (!claimed) return Promise.resolve({ ok: false, error: "no ipc provider" });
+	return Promise.resolve()
+		.then(() => (claimed as ClaimFn)(params, { method, from: [] }))
+		.then(
+			(value) => ({ ok: true, value: value as T }) as IpcResult<T>,
+			(err) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }) as IpcResult<T>,
+		);
+}
 
 type SafetyMode = "off" | "on" | "max";
 
@@ -62,6 +92,9 @@ const MODE_CATEGORIES: Record<SafetyMode, ReadonlySet<Category>> = {
 };
 
 let currentMode: SafetyMode = loadMode();
+// Captured at session_start so the parent-side ipc:serve handler can render the confirm
+// on this process's TUI when a headless child forwards a safety.confirm up to us.
+let currentCtx: ExtensionContext | undefined;
 
 function isMode(value: unknown): value is SafetyMode {
 	return typeof value === "string" && (MODES as string[]).includes(value);
@@ -109,17 +142,17 @@ export default function (pi: ExtensionAPI) {
 		if (!MODE_CATEGORIES[currentMode].has(category)) return undefined;
 
 		if (!ctx.hasUI) {
-			// Headless subagent: forward the confirmation up to the parent's TUI over the
-			// IPC channel instead of blindly blocking. Without a channel (e.g. a plain
-			// `pi -p` run, not a spawned subagent) there's no one to ask, so block.
-			if (hasIpcChannel()) {
-				const res = await ipcRequest<{ approved: boolean }>("safety.confirm", { command, category });
-				if (res.ok && res.value.approved) return undefined;
-				return { block: true, reason: `command-safety: ${category} command declined via parent` };
-			}
+			// Headless subagent: forward the confirmation up to the parent's TUI via the
+			// `ipc` extension instead of blindly blocking. If ipc isn't installed or there's
+			// no parent channel (e.g. a plain `pi -p` run), nothing claims the probe and we
+			// fail safe by blocking.
+			const res = await busCall<{ approved: boolean }>(pi, "ipc:client", "safety.confirm", { command, category });
+			if (res.ok && res.value.approved) return undefined;
 			return {
 				block: true,
-				reason: `command-safety: ${category} command blocked (no interactive UI to confirm)`,
+				reason: res.ok
+					? `command-safety: ${category} command declined via parent`
+					: `command-safety: ${category} command blocked (no interactive UI to confirm)`,
 			};
 		}
 
@@ -167,7 +200,21 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// Parent side: when a headless child forwards a "safety.confirm" up through the `ipc`
+	// extension, ipc probes `ipc:serve` for a capability that can render it. Claim it only
+	// when this process actually owns a TUI (otherwise ipc forwards further up). The claim
+	// is synchronous so the probe sees it.
+	pi.events.on("ipc:serve", (data) => {
+		const { method, claim } = data as { method: string; claim: (fn: ClaimFn) => void };
+		if (method !== "safety.confirm" || !currentCtx?.hasUI) return;
+		claim(async (params) => {
+			const { command, category } = params as { command: string; category: Category };
+			return { approved: await confirmGatedCommand(currentCtx as ExtensionContext, category, command) };
+		});
+	});
+
 	pi.on("session_start", (_event, ctx) => {
+		currentCtx = ctx;
 		// Reload from disk in case the file changed between sessions in this process.
 		currentMode = loadMode();
 		updateStatus(ctx);
@@ -175,5 +222,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
+		currentCtx = undefined;
 	});
 }

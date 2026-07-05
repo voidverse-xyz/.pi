@@ -171,15 +171,20 @@ export function ipcNotify(method: string, params: unknown, from: string[] = []):
 
 export type IpcHandler = (params: unknown, meta: IpcMeta) => Promise<unknown> | unknown;
 export type IpcHandlers = Record<string, IpcHandler>;
+/** Resolve any method by name — the single-function form used by attachIpcDispatch. */
+export type IpcDispatch = (method: string, params: unknown, meta: IpcMeta) => Promise<unknown> | unknown;
 
 /**
  * Serve IPC messages arriving from a child over `stream` (the parent end of the child's
- * fd pipe). `childName` is that direct child's agent name; it is prepended to each
- * message's `from` path so handlers — and any further upstream forward — always see the
- * full asker chain. Unknown methods and thrown handlers reply with an error;
- * notifications (no id) get no reply.
+ * fd pipe), routing every method through one `dispatch` function. `childName` is that
+ * direct child's agent name; it is prepended to each message's `from` path so the
+ * dispatcher — and any further upstream forward — always sees the full asker chain. A
+ * thrown dispatch replies with an error; notifications (no id) get no reply.
+ *
+ * This is the generic transport half. The routing policy (which capability serves a
+ * method, when to forward upward) lives in the caller — see the `ipc` extension.
  */
-export function attachIpc(stream: Duplex, childName: string, handlers: IpcHandlers): void {
+export function attachIpcDispatch(stream: Duplex, childName: string, dispatch: IpcDispatch): void {
 	let buffer = "";
 	stream.setEncoding("utf8");
 	stream.on("data", (chunk: string) => {
@@ -197,8 +202,9 @@ export function attachIpc(stream: Duplex, childName: string, handlers: IpcHandle
 			}
 			if (typeof msg.method !== "string") continue;
 
+			const method = msg.method;
 			const meta: IpcMeta = {
-				method: msg.method,
+				method,
 				from: [childName, ...(Array.isArray(msg.from) ? msg.from : [])],
 			};
 			const id = msg.id;
@@ -212,13 +218,8 @@ export function attachIpc(stream: Duplex, childName: string, handlers: IpcHandle
 				}
 			};
 
-			const handler = handlers[msg.method];
-			if (!handler) {
-				reply({ error: `unknown ipc method: ${msg.method}` });
-				continue;
-			}
 			Promise.resolve()
-				.then(() => handler(msg.params, meta))
+				.then(() => dispatch(method, msg.params, meta))
 				.then(
 					(result) => reply({ result }),
 					(err) => reply({ error: err instanceof Error ? err.message : String(err) }),
@@ -228,4 +229,16 @@ export function attachIpc(stream: Duplex, childName: string, handlers: IpcHandle
 	// The child owns this pipe's lifecycle; swallow errors so a mid-flight close
 	// (e.g. the subagent aborted) never throws in the parent.
 	stream.on("error", () => {});
+}
+
+/**
+ * Serve IPC messages using a fixed handler map (thin wrapper over attachIpcDispatch).
+ * Unknown methods reply with an error.
+ */
+export function attachIpc(stream: Duplex, childName: string, handlers: IpcHandlers): void {
+	attachIpcDispatch(stream, childName, (method, params, meta) => {
+		const handler = handlers[method];
+		if (!handler) throw new Error(`unknown ipc method: ${method}`);
+		return handler(params, meta);
+	});
 }

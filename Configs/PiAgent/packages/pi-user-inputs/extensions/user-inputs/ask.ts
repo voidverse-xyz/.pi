@@ -2,8 +2,9 @@
  * The user-inputs ask flow, factored out of index.ts so it can run in two places:
  *
  *   - directly, when the agent calling user_inputs has the interactive TUI, and
- *   - on behalf of a headless subagent, when delegate.ts receives a "user.ask" IPC
- *     request and runs the panel in the parent session (see subagents/ipc.ts).
+ *   - on behalf of a headless subagent: index.ts's `ipc:serve` handler runs the panel in
+ *     the parent session when a "user.ask" is forwarded up through the optional `ipc`
+ *     extension.
  *
  * showUserInputs takes a `from` agent path (e.g. ["worker","reviewer"]) and, when it
  * is non-empty, renders a header naming who is asking — so the user always knows the

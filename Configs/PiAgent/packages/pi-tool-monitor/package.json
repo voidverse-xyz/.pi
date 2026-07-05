@@ -1,0 +1,17 @@
+{
+  "name": "pi-tool-monitor",
+  "version": "1.0.0",
+  "description": "Running-tool indicator with a spinner in the footer, plus a /tools detail panel.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

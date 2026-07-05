@@ -1,0 +1,17 @@
+{
+  "name": "pi-codex-usage",
+  "version": "1.0.0",
+  "description": "Shows Codex usage/limits (5h window) polled from the codex app-server, in the footer and an above-editor widget.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

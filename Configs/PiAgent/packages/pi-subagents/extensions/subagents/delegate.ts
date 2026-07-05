@@ -24,73 +24,29 @@ import type { Duplex } from "node:stream";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { CONFIG_DIR_NAME, type ExtensionAPI, type ExtensionContext, getAgentDir, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, type ExtensionAPI, getAgentDir, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import type { Category } from "../command-safety/categories.ts";
-import { confirmGatedCommand } from "../command-safety/confirm.ts";
-import { normalizeInputs, type RawInput, showUserInputs, type UserInputsResult, validateInputs } from "../user-inputs/ask.ts";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
 import { ASK_PARENT_ENV, canCallSpec, childEnv, currentDepth, resolveAskLimit, resolveMaxDepth, targetAllowedByCall } from "./depth.ts";
-import { attachIpc, hasIpcChannel, IPC_FD_ENV, type IpcHandlers, ipcRequest } from "./ipc.ts";
 import { getPiInvocation, writePromptToTempFile } from "./runner.ts";
 
-// Re-issue a request up THIS process's own parent channel — used when this process is
-// itself a headless subagent forwarding a descendant's request — and unwrap or throw.
-async function forwardUp<T>(method: string, params: unknown, from: string[]): Promise<T> {
-	const res = await ipcRequest<T>(method, params, from);
-	if (!res.ok) throw new Error(res.error);
-	return res.value;
+// The fd the child reaches its parent on for headless confirm / user_inputs. The actual
+// transport lives in the standalone `ipc` extension; here we only spawn with the pipe and
+// hand it off over `pi.events` (channel "ipc:attach"), so delegate has no ipc import — and
+// no import of command-safety / user-inputs either. If `ipc` isn't installed the child
+// still runs; it just can't reach the parent (safety blocks, user_inputs errors).
+const PI_IPC_FD_ENV = "PI_IPC_FD";
+function hasParentChannel(): boolean {
+	return Boolean(process.env[PI_IPC_FD_ENV]);
 }
 
-// Only one TUI panel can be on screen at a time, but parallel subagents each ask for one
-// concurrently — calling ctx.ui.* twice at once drops all but one. Serialize every LOCAL
-// presentation through this chain so the next request opens when the previous closes.
-// Process-wide (module scope) so it covers every child of every subagent call. Forwarded
-// requests deliberately don't take this lock: they present at whatever ancestor owns the
-// TUI, which serializes them there — locking here too would just stall the pipe.
 // ask_parent budget: how many times each agent (by name) has paused to ask its parent
 // this user request. delegate.ts grants ask_parent to a spawned child only while its
 // count is below the agent's frontmatter `askLimit`; a re-run past the cap spawns
 // without the tool. Reset each turn (see registerSubagentTool). Module scope so it spans
 // every subagent call within the process; a headless parent's map dies with its one run.
 const askCounts = new Map<string, number>();
-
-let uiLock: Promise<unknown> = Promise.resolve();
-function withUiLock<T>(present: () => Promise<T>): Promise<T> {
-	const run = uiLock.then(present, present);
-	// Keep the chain alive regardless of how this presentation settled.
-	uiLock = run.then(
-		() => undefined,
-		() => undefined,
-	);
-	return run;
-}
-
-/**
- * IPC handlers serving a spawned child's requests. Each capability resolves on this
- * process's TUI when it has one; otherwise it forwards further up its own parent channel
- * (so a nested subagent's request bubbles all the way to the top-level TUI), else fails
- * safe. `meta.from` carries the asker chain (direct child first) for identity display.
- */
-function makeIpcHandlers(ctx: ExtensionContext): IpcHandlers {
-	return {
-		"safety.confirm": async (params, meta) => {
-			const { command, category } = params as { command: string; category: Category };
-			if (ctx.hasUI) return withUiLock(async () => ({ approved: await confirmGatedCommand(ctx, category, command) }));
-			if (hasIpcChannel()) return forwardUp("safety.confirm", params, meta.from);
-			return { approved: false };
-		},
-		"user.ask": async (params, meta) => {
-			const inputs = normalizeInputs((params as { inputs: RawInput[] }).inputs);
-			const err = validateInputs(inputs);
-			if (err) throw new Error(err);
-			if (ctx.mode === "tui") return withUiLock(() => showUserInputs(ctx, inputs, meta.from));
-			if (hasIpcChannel()) return forwardUp<UserInputsResult>("user.ask", params, meta.from);
-			throw new Error("no interactive UI available to ask the user");
-		},
-	};
-}
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -218,7 +174,7 @@ interface SingleResult {
 	step?: number;
 	/**
 	 * Set when the agent called ask_parent to pause and ask its parent a question
-	 * (see ask-parent/index.ts). Captured from the tool call in the child's output
+	 * (see ask-parent.ts). Captured from the tool call in the child's output
 	 * stream; the run is stopped and this — not the agent's final text — is surfaced.
 	 */
 	paused?: { summary: string; question: string };
@@ -256,7 +212,7 @@ function formatPausedResult(r: SingleResult): string {
 	// Tailor the escalation hint to who reads this. A top-level parent owns the TUI and
 	// user_inputs but has no parent of its own; a nested parent (itself a subagent) can
 	// escalate further with ask_parent. Never name a tool the reader doesn't have.
-	const escalation = hasIpcChannel()
+	const escalation = hasParentChannel()
 		? " — or, if you're also unsure, escalate with ask_parent to your own parent (or user_inputs, if you have it) before answering"
 		: " — or, if you're also unsure, ask the human with user_inputs before answering";
 	return [
@@ -341,7 +297,7 @@ async function runSingleAgent(
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
 	maxDepth: number,
 	defaultAskLimit: number,
-	ipcHandlers: IpcHandlers,
+	pi: ExtensionAPI,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -361,7 +317,7 @@ async function runSingleAgent(
 
 	// ask_parent budget: the agent's own frontmatter `askLimit` wins; otherwise the
 	// user-configurable default (/subagent asklimit). Allowed only while this agent's ask
-	// count is under that limit (see ask-parent/index.ts). Limit 0 ⇒ never granted.
+	// count is under that limit (see ask-parent.ts). Limit 0 ⇒ never granted.
 	const askLimit = agent.askLimit ?? defaultAskLimit;
 	const askAllowed = askLimit > 0 && (askCounts.get(agentName) ?? 0) < askLimit;
 
@@ -416,7 +372,8 @@ async function runSingleAgent(
 				cwd: cwd ?? defaultCwd,
 				shell: false,
 				// fd 3 is a dedicated bidirectional pipe for the parent↔subagent IPC channel
-				// (see ipc.ts) — kept off stdout so control traffic never mixes with pi's JSON.
+				// (served by the `ipc` extension) — kept off stdout so control traffic never
+				// mixes with pi's JSON.
 				stdio: ["ignore", "pipe", "pipe", "pipe"],
 				// Carry the nesting depth (+1), the cap, and this child's call-list down
 				// so it can enforce the same limits — it runs --no-session and can't
@@ -424,17 +381,18 @@ async function runSingleAgent(
 				// a headless capability (safety confirm, user_inputs) needs the TUI.
 				env: {
 					...childEnv(maxDepth, canCallSpec(agent), defaultAskLimit),
-					[IPC_FD_ENV]: "3",
+					[PI_IPC_FD_ENV]: "3",
 					// Register ask_parent in the child only when the agent opted in and has budget.
 					...(askAllowed ? { [ASK_PARENT_ENV]: "1" } : {}),
 				},
 			});
 
-			// Serve the child's IPC requests on the parent's TUI (or forward them further up
-			// if this process is itself a headless subagent). childName = agentName so the
-			// asker chain is labeled correctly for identity display.
+			// Hand the child's control pipe to the `ipc` extension (if installed) over
+			// pi.events; it serves the child's confirm / user_inputs requests on the parent's
+			// TUI, or forwards them further up. childName = agentName labels the asker chain.
+			// No listener (ipc not installed) ⇒ the child simply can't reach us.
 			const control = proc.stdio[3] as Duplex | null | undefined;
-			if (control) attachIpc(control, agentName, ipcHandlers);
+			if (control) pi.events.emit("ipc:attach", { stream: control, childName: agentName });
 			let buffer = "";
 
 			const processLine = (line: string) => {
@@ -465,7 +423,7 @@ async function runSingleAgent(
 						if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
 
 						// Detect a pause: the agent called ask_parent to ask its parent a question
-						// (see ask-parent/index.ts). Capture {summary, question} from the tool-call
+						// (see ask-parent.ts). Capture {summary, question} from the tool-call
 						// arguments and stop the child now — we surface the pause instead of its final
 						// text and let the parent LLM answer when this tool call returns.
 						if (!currentResult.paused) {
@@ -608,13 +566,9 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 
 			// Nesting-depth policy. depth 0 = the top-level interactive session.
 			const depth = currentDepth();
-			const maxDepth = resolveMaxDepth(ctx.sessionManager);
+			const maxDepth = resolveMaxDepth();
 			// Default ask_parent allowance for agents that don't set their own askLimit.
-			const defaultAskLimit = resolveAskLimit(ctx.sessionManager);
-
-			// How a spawned child's IPC requests (safety confirm, user_inputs) get resolved:
-			// on the parent TUI, forwarded upward, or failed safe. Shared across every child.
-			const ipcHandlers = makeIpcHandlers(ctx);
+			const defaultAskLimit = resolveAskLimit();
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -733,7 +687,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 						makeDetails("chain"),
 						maxDepth,
 						defaultAskLimit,
-						ipcHandlers,
+						pi,
 					);
 					results.push(result);
 
@@ -814,7 +768,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 						makeDetails("parallel"),
 						maxDepth,
 						defaultAskLimit,
-						ipcHandlers,
+						pi,
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -853,7 +807,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 					makeDetails("single"),
 					maxDepth,
 					defaultAskLimit,
-					ipcHandlers,
+					pi,
 				);
 				if (result.paused) {
 					return {

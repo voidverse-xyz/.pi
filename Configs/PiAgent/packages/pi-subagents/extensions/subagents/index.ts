@@ -19,10 +19,14 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerAskParent } from "./ask-parent.ts";
 import { registerSubagentTool } from "./delegate.ts";
 import { registerSwitcher } from "./switcher.ts";
 
 export default function subagents(pi: ExtensionAPI) {
 	registerSwitcher(pi);
 	registerSubagentTool(pi);
+	// ask_parent is a spawned-child-only tool (guarded on PI_ASK_PARENT); folded in here
+	// so it ships with subagents rather than as a separate extension that imported depth.ts.
+	registerAskParent(pi);
 }

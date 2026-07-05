@@ -1,0 +1,13 @@
+{
+  "name": "pi-command-safety",
+  "version": "1.0.0",
+  "description": "Gates the agent's bash commands by risk category with delayed confirmations; forwards headless subagent confirms to the parent via the optional ipc extension.",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

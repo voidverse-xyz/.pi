@@ -13,29 +13,64 @@
  *   - "radio" — pick exactly one of a list of options.
  *   - "multi" — pick any number of a list of options.
  *
- * The panel UI, normalization, and answer summary live in ask.ts, shared with the
- * subagents delegation tool: when a headless subagent calls user_inputs it has no
- * local TUI, so this tool forwards the request over the IPC channel (see
- * subagents/ipc.ts) and the parent runs the panel — naming the asking subagent so
- * the user knows the question isn't from the main agent.
+ * The panel UI, normalization, and answer summary live in ask.ts. When a headless
+ * subagent calls user_inputs it has no local TUI, so this tool forwards the request via
+ * the optional `ipc` extension (over pi.events, no import) and the parent runs the panel
+ * — naming the asking subagent so the user knows the question isn't from the main agent.
+ * If `ipc` isn't installed the tool returns a graceful error instead.
  *
  * Install: ~/.pi/agent/extensions/user-inputs/index.ts
  * Reload: /reload
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { hasIpcChannel, ipcRequest } from "../subagents/ipc.ts";
 import {
 	type Input,
 	normalizeInputs,
+	type RawInput,
 	showUserInputs,
 	summarizeAnswers,
 	type UserInputsResult,
 	validateInputs,
 } from "./ask.ts";
+
+// ---------------------------------------------------------------------------
+// Optional ipc capability (no import — pure runtime rendezvous over pi.events).
+//
+// A headless subagent has no local TUI, so it forwards the question up to its parent.
+// The transport lives in the standalone `ipc` extension; we reach it by emitting an
+// `ipc:client` probe carrying a `claim` callback. If `ipc` is installed AND this process
+// has a parent channel, it claims synchronously and does the fd round-trip; otherwise
+// nothing claims and we return a graceful error. No import means dropping `ipc` can't
+// break this extension's load.
+// ---------------------------------------------------------------------------
+
+type ClaimFn = (params: unknown, meta: { method: string; from: string[] }) => Promise<unknown> | unknown;
+type IpcResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+// Captured at session_start so the parent-side ipc:serve handler can render the panel on
+// this process's TUI when a headless child forwards a user.ask up to us.
+let currentCtx: ExtensionContext | undefined;
+
+function busCall<T>(pi: ExtensionAPI, channel: string, method: string, params: unknown): Promise<IpcResult<T>> {
+	let claimed: ClaimFn | null = null;
+	pi.events.emit(channel, {
+		method,
+		claim: (fn: ClaimFn) => {
+			claimed = fn;
+		},
+	});
+	if (!claimed) return Promise.resolve({ ok: false, error: "no ipc provider" });
+	return Promise.resolve()
+		.then(() => (claimed as ClaimFn)(params, { method, from: [] }))
+		.then(
+			(value) => ({ ok: true, value: value as T }) as IpcResult<T>,
+			(err) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }) as IpcResult<T>,
+		);
+}
 
 // ---------------------------------------------------------------------------
 // Schema — what the agent fills in.
@@ -98,14 +133,14 @@ export default function userInputs(pi: ExtensionAPI) {
 			if (ctx.mode === "tui") {
 				// The calling agent has the TUI — ask directly (from is empty: it's this agent).
 				result = await showUserInputs(ctx, inputs, []);
-			} else if (hasIpcChannel()) {
-				// Headless subagent — forward to the parent's TUI. The parent stamps our
-				// identity onto the request's `from`, so the user sees which subagent asked.
-				const res = await ipcRequest<UserInputsResult>("user.ask", { inputs });
+			} else {
+				// Headless subagent — forward to the parent's TUI via the optional `ipc`
+				// extension. The parent stamps our identity onto the request's `from`, so the
+				// user sees which subagent asked. If ipc isn't installed or there's no parent
+				// channel, nothing claims the probe and we return a graceful error.
+				const res = await busCall<UserInputsResult>(pi, "ipc:client", "user.ask", { inputs });
 				if (!res.ok) return errorResult(`Error: user_inputs unavailable (${res.error}).`);
 				result = res.value;
-			} else {
-				return errorResult("Error: user_inputs needs interactive mode (UI unavailable).");
 			}
 
 			return { content: [{ type: "text", text: summarizeAnswers(result) }], details: result };
@@ -138,5 +173,28 @@ export default function userInputs(pi: ExtensionAPI) {
 			});
 			return new Text(lines.join("\n"), 0, 0);
 		},
+	});
+
+	// Parent side: when a headless child forwards a "user.ask" up through the `ipc`
+	// extension, ipc probes `ipc:serve` for a capability that can render it. Claim it only
+	// when this process has an interactive TUI (otherwise ipc forwards further up). The
+	// claim is synchronous so the probe sees it; `meta.from` names the asking subagent.
+	pi.events.on("ipc:serve", (data) => {
+		const { method, claim } = data as { method: string; claim: (fn: ClaimFn) => void };
+		if (method !== "user.ask" || currentCtx?.mode !== "tui") return;
+		claim(async (params, meta) => {
+			const inputs = normalizeInputs((params as { inputs: RawInput[] }).inputs);
+			const err = validateInputs(inputs);
+			if (err) throw new Error(err);
+			return showUserInputs(currentCtx as ExtensionContext, inputs, meta.from);
+		});
+	});
+
+	pi.on("session_start", (_event, ctx) => {
+		currentCtx = ctx;
+	});
+
+	pi.on("session_shutdown", () => {
+		currentCtx = undefined;
 	});
 }
