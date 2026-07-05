@@ -555,9 +555,10 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 		const allContentLines = displayLines(innerW);
 		const contentLabel = contentPaneLabel();
 
+		const actionDividerRows = 1;
 		const actionsBlockRows = 1 + actionRows;
-		const overhead = headerLines.length + 1 + actionsBlockRows + footerRows;
-		const contentH = Math.max(3, targetH - overhead);
+		const overhead = headerLines.length + 1 + actionDividerRows + actionsBlockRows + footerRows;
+		const contentH = Math.max(0, targetH - overhead);
 		currentContentHeight = contentH;
 
 		const maxScroll = Math.max(0, allContentLines.length - contentH);
