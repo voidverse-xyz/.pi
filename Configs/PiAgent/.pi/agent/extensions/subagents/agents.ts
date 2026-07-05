@@ -30,6 +30,12 @@ export interface AgentConfig {
 	tools?: string[];
 	/** Raw model string from frontmatter: bare id ("gpt-5.5") or "provider/id". */
 	model?: string;
+	/**
+	 * How this agent's prompt applies when switched to (frontmatter `mode:`):
+	 * "augment" (default) keeps Pi's base prompt and appends the agent's; "replace"
+	 * makes the agent's body the entire system prompt.
+	 */
+	mode?: "augment" | "replace";
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
@@ -76,11 +82,14 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			.map((t: string) => t.trim())
 			.filter(Boolean);
 
+		const mode = frontmatter.mode?.trim().toLowerCase() === "replace" ? "replace" : undefined;
+
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
 			tools: tools && tools.length > 0 ? tools : undefined,
 			model: frontmatter.model?.trim() || undefined,
+			mode,
 			systemPrompt: body,
 			source,
 			filePath,

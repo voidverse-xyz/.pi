@@ -20,19 +20,21 @@ Collected from `C:\Users\DenTeach\.pi\agent\` on 2026-07-03.
 | dir-git | `extensions/dir-git/` | Row above the input: cwd + git (branch, dirty/ahead/behind) + model/thinking |
 | tool-monitor | `extensions/tool-monitor/` | Live tool-call indicator in the footer + `/tools` overlay of running/recent calls |
 | user-inputs | `extensions/user-inputs/` | `user_inputs` tool: agent asks the user text / pick-one / pick-many questions (with "Something else…" + note) |
-| subagents | `extensions/subagents/` | Claude-style agent switcher (chips on the footer status line; `alt+a` / `/subagent` swaps the session's model+tools+prompt) **plus** an LLM-callable `subagent` delegation tool (single/parallel/chain, isolated `pi` processes) |
+| subagents | `extensions/subagents/` | Agent switcher (`Alt+A` / `/subagent`) re-skins the session's model+tools+prompt in the same thread (active shown on the status line) **plus** an LLM-callable `subagent` delegation tool (single/parallel/chain, isolated `pi` processes, result returned to the main agent). Nesting is depth-capped (`/subagent depth`, default 1) and privilege-gated; the switcher is disabled inside subagents |
 
 ## Agents
 
 Markdown agent definitions shared by the `subagents` switcher and delegation tool.
-Symlink into place: `ln -sfn "$PWD/.pi/agent/agents" ~/.pi/agent/agents`.
+They live in the workspace's top-level `Subagents/` directory (the repo convention
+for reusable agent definitions), not inside this bundle.
+Symlink into place from the workspace root: `ln -sfn "$PWD/Subagents" ~/.pi/agent/agents`.
 
 | Agent | Path | Model | Tools |
 |-------|------|-------|-------|
-| scout | `agents/scout.md` | inherit | read, grep, find, ls, bash (read-only) |
-| planner | `agents/planner.md` | inherit | read, grep, find, ls |
-| reviewer | `agents/reviewer.md` | inherit | read, grep, find, ls, bash (read-only) |
-| worker | `agents/worker.md` | inherit | all |
+| scout | `Subagents/scout.md` | inherit | read, grep, find, ls, bash (read-only) |
+| planner | `Subagents/planner.md` | inherit | read, grep, find, ls |
+| reviewer | `Subagents/reviewer.md` | inherit | read, grep, find, ls, bash (read-only) |
+| worker | `Subagents/worker.md` | inherit | all |
 
 ## Copy to Desktop
 

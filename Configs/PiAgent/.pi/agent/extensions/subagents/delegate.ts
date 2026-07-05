@@ -23,16 +23,12 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Message } from "@earendil-works/pi-ai";
 import { StringEnum } from "@earendil-works/pi-ai";
-import {
-	CONFIG_DIR_NAME,
-	type ExtensionAPI,
-	getAgentDir,
-	getMarkdownTheme,
-	withFileMutationQueue,
-} from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, type ExtensionAPI, getAgentDir, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { childEnv, currentDepth, resolveMaxDepth, targetAllowedByPrivilege, toolsSpec } from "./depth.ts";
+import { getPiInvocation, writePromptToTempFile } from "./runner.ts";
 
 const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
@@ -235,28 +231,6 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 	return results;
 }
 
-async function writePromptToTempFile(agentName: string, prompt: string): Promise<{ dir: string; filePath: string }> {
-	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-subagent-"));
-	const safeName = agentName.replace(/[^\w.-]+/g, "_");
-	const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
-	await withFileMutationQueue(filePath, async () => {
-		await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
-	});
-	return { dir: tmpDir, filePath };
-}
-
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
-	const currentScript = process.argv[1];
-	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
-	}
-	const execName = path.basename(process.execPath).toLowerCase();
-	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-	if (!isGenericRuntime) return { command: process.execPath, args };
-	return { command: "pi", args };
-}
-
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
 async function runSingleAgent(
@@ -269,6 +243,7 @@ async function runSingleAgent(
 	signal: AbortSignal | undefined,
 	onUpdate: OnUpdateCallback | undefined,
 	makeDetails: (results: SingleResult[]) => SubagentDetails,
+	maxDepth: number,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -331,6 +306,10 @@ async function runSingleAgent(
 				cwd: cwd ?? defaultCwd,
 				shell: false,
 				stdio: ["ignore", "pipe", "pipe"],
+				// Carry the nesting depth (+1), the cap, and this child's granted tools
+				// down so it can enforce the same limits — it runs --no-session and
+				// can't read entries.
+				env: childEnv(maxDepth, toolsSpec(agent)),
 			});
 			let buffer = "";
 
@@ -476,6 +455,10 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 			const agents = discovery.agents;
 			const confirmProjectAgents = params.confirmProjectAgents ?? true;
 
+			// Nesting-depth policy. depth 0 = the top-level interactive session.
+			const depth = currentDepth();
+			const maxDepth = resolveMaxDepth(ctx.sessionManager);
+
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
 			const hasSingle = Boolean(params.agent && params.task);
@@ -498,6 +481,46 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 					],
 					details: makeDetails("single")([]),
 				};
+			}
+
+			const currentMode: "single" | "parallel" | "chain" = hasChain ? "chain" : hasTasks ? "parallel" : "single";
+
+			// Depth cap: a process at depth d may spawn a subagent only if d < maxDepth.
+			if (depth >= maxDepth) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Subagent depth limit (${maxDepth}) reached — this agent can't spawn further subagents.`,
+						},
+					],
+					details: makeDetails(currentMode)([]),
+					isError: true,
+				};
+			}
+
+			// Privilege: a nested caller may only delegate to an equal-or-lesser persona
+			// (target's tools ⊆ caller's tools). The top-level session is exempt.
+			if (depth > 0) {
+				const requested = new Set<string>();
+				if (params.chain) for (const s of params.chain) requested.add(s.agent);
+				if (params.tasks) for (const t of params.tasks) requested.add(t.agent);
+				if (params.agent) requested.add(params.agent);
+				for (const name of requested) {
+					const agent = agents.find((a) => a.name === name);
+					if (agent && !targetAllowedByPrivilege(agent)) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Nested subagent may not escalate to "${name}" (it has tools the caller lacks).`,
+								},
+							],
+							details: makeDetails(currentMode)([]),
+							isError: true,
+						};
+					}
+				}
 			}
 
 			if ((agentScope === "project" || agentScope === "both") && confirmProjectAgents && ctx.hasUI) {
@@ -552,6 +575,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 						signal,
 						chainUpdate,
 						makeDetails("chain"),
+						maxDepth,
 					);
 					results.push(result);
 
@@ -620,6 +644,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 							}
 						},
 						makeDetails("parallel"),
+						maxDepth,
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -653,6 +678,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 					signal,
 					onUpdate,
 					makeDetails("single"),
+					maxDepth,
 				);
 				if (isFailedResult(result)) {
 					const errorMsg = getResultOutput(result);

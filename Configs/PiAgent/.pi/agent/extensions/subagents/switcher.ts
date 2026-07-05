@@ -1,27 +1,26 @@
 /**
- * Foreground agent switcher — the Claude-style "which agent am I talking to" picker.
+ * Foreground agent switcher — list the available agents and switch which one you
+ * are talking to. Switching re-skins THIS session (same conversation thread); it
+ * does NOT spin up a separate process.
  *
- * A row under the input editor shows every available agent as a chip, with the
- * active one highlighted (▪ main is the plain Pi agent). Alt+A — or the
- * `/subagent` command — opens a keyboard picker; choosing an agent swaps the
- * SESSION's model, tools, and system prompt to that agent for your subsequent
- * turns. Choosing "main" restores the state Pi started with.
+ * Two entry points:
+ *   - Alt+A          — cycle to the next agent (main → …agents… → main).
+ *   - /subagent      — open the picker (or /subagent <name> to switch directly).
  *
- * The agent chips render on the left of the shared footer status line (via
- * setStatus + the status-line extension), so the active agent and the other
- * footer statuses sit on one line — no separate row, no duplicate indicator.
+ * "main" = the plain Pi agent. The active agent shows on the left of the footer
+ * status line (via setStatus + the status-line extension) and persists as a
+ * session entry, so a resume comes back wearing it.
  *
  * How switching maps onto Pi primitives:
  *   - model  → pi.setModel()        (agent frontmatter `model:`, optional)
  *   - tools  → pi.setActiveTools()  (agent frontmatter `tools:`, optional)
- *   - prompt → returned from the `before_agent_start` event each turn
+ *   - prompt → returned from the `before_agent_start` event each turn. Mode is
+ *     "augment" (default: base prompt + the agent's instructions) unless the agent
+ *     file sets `mode: replace` in its frontmatter.
  *
- * Prompt mode is chosen in the TUI at switch time (the user's call):
- *   - "augment" — keep Pi's base system prompt, append the agent's instructions
- *   - "replace" — the agent's markdown body becomes the entire system prompt
- *
- * The active agent + mode are persisted as a session entry, so a resumed session
- * comes back wearing the same agent.
+ * (Spinning up an isolated child `pi` is a separate thing — the LLM-callable
+ * `subagent` delegation tool in delegate.ts, whose result reports back to the main
+ * agent.)
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -30,6 +29,7 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { DynamicBorder, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, Key, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 import { type AgentConfig, type AgentScope, discoverAgents, getUserAgentsDir } from "./agents.ts";
+import { DEPTH_CHOICES, isNested, MAXDEPTH_ENTRY, resolveMaxDepth, saveGlobalDefault } from "./depth.ts";
 
 type PromptMode = "augment" | "replace";
 
@@ -57,11 +57,18 @@ const SCOPE: AgentScope = "both";
 
 const MAIN = "main";
 
+// nf-fa-sitemap (U+F0E8) — the subagent nesting-depth cap for this session.
+const ICON_DEPTH = "\u{f0e8}";
+
 export function registerSwitcher(pi: ExtensionAPI): void {
+	// Persona switching is a top-level, user-only feature. Inside a spawned subagent
+	// (PI_SUBAGENT_DEPTH > 0) it stays inert — don't register the command, shortcut,
+	// or prompt injection, so a subagent can never re-skin itself into another persona.
+	if (isNested()) return;
+
 	let agents: AgentConfig[] = [];
 	let active: ActiveAgent | null = null;
 	let original: OriginalState | undefined;
-	let lastMode: PromptMode = "augment";
 
 	// ---- model resolution --------------------------------------------------
 
@@ -125,7 +132,6 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		}
 
 		active = { agent, mode };
-		lastMode = mode;
 		updateStatus(ctx);
 	}
 
@@ -135,20 +141,21 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		updateStatus(ctx);
 	}
 
-	// Publish the agent chips as a footer status. The status-line extension renders
-	// this key on the left of the status line, so the chips share a line with the
-	// context/token/other-extension statuses. Cleared when there are no agents.
-	function buildChips(theme: ExtensionContext["ui"]["theme"]): string {
-		const chip = (label: string, isActive: boolean) =>
-			isActive ? theme.bg("selectedBg", theme.fg("text", ` ${label} `)) : theme.fg("dim", label);
-		const parts = [chip(MAIN, active === null), ...agents.map((a) => chip(a.name, active?.agent.name === a.name))];
-		const modeTag =
-			active && active.mode === "replace" ? theme.fg("warning", " replace") : active ? theme.fg("dim", " augment") : "";
-		return theme.fg("dim", "agent ") + parts.join(theme.fg("dim", " · ")) + modeTag;
+	// Publish just the ACTIVE agent as a footer status (not the whole roster — the
+	// full list lives in the /subagent picker). The status-line extension renders
+	// this key on the left of the status line. Cleared when there are no agents.
+	function buildStatus(theme: ExtensionContext["ui"]["theme"], maxDepth: number): string {
+		const name = active?.agent.name ?? MAIN;
+		const chip = theme.bg("selectedBg", theme.fg("text", ` ${name} `));
+		const modeTag = active && active.mode === "replace" ? theme.fg("warning", " replace") : "";
+		// Subagent nesting cap (the count) — sitemap icon, dim.
+		const depthTag = theme.fg("dim", ` ${ICON_DEPTH} ${maxDepth}`);
+		return chip + modeTag + depthTag;
 	}
 
 	function updateStatus(ctx: ExtensionContext) {
-		ctx.ui.setStatus(STATUS_KEY, agents.length > 0 ? buildChips(ctx.ui.theme) : undefined);
+		const status = agents.length > 0 ? buildStatus(ctx.ui.theme, resolveMaxDepth(ctx.sessionManager)) : undefined;
+		ctx.ui.setStatus(STATUS_KEY, status);
 	}
 
 	// ---- prompt injection --------------------------------------------------
@@ -165,15 +172,6 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 
 	// ---- picker UI ---------------------------------------------------------
 
-	// Ask the user how the agent's prompt should combine with Pi's base prompt.
-	async function pickMode(ctx: ExtensionContext): Promise<PromptMode | undefined> {
-		const augmentLabel = `Augment base prompt${lastMode === "augment" ? " (default)" : ""}`;
-		const replaceLabel = `Replace base prompt${lastMode === "replace" ? " (default)" : ""}`;
-		const choice = await ctx.ui.select("How should this agent's instructions apply?", [augmentLabel, replaceLabel]);
-		if (choice === undefined) return undefined;
-		return choice === replaceLabel ? "replace" : "augment";
-	}
-
 	async function switchToAgentByName(name: string, ctx: ExtensionContext) {
 		const agent = agents.find((a) => a.name === name);
 		if (!agent) {
@@ -182,10 +180,9 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 			return;
 		}
 		if (!(await confirmProjectAgent(agent, ctx))) return;
-		const mode = await pickMode(ctx);
-		if (mode === undefined) return;
-		await applyAgent(agent, mode, ctx);
-		ctx.ui.notify(`Switched to "${agent.name}" (${mode})`, "info");
+		// Mode is a property of the agent (frontmatter `mode:`), not asked per switch.
+		await applyAgent(agent, agent.mode ?? "augment", ctx);
+		ctx.ui.notify(`Switched to "${agent.name}"`, "info");
 	}
 
 	async function confirmProjectAgent(agent: AgentConfig, ctx: ExtensionContext): Promise<boolean> {
@@ -209,49 +206,14 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 				label: active === null ? `${MAIN} (active)` : MAIN,
 				description: "The plain Pi agent — restore the model, tools, and prompt you started with",
 			},
-			...agents.map((a): SelectItem => {
-				const isActive = active?.agent.name === a.name;
-				const bits = [a.source, a.model ?? "inherit model", a.tools ? `tools: ${a.tools.join(",")}` : "all tools"];
-				return {
-					value: a.name,
-					label: isActive ? `${a.name} (active)` : a.name,
-					description: `${a.description}  ·  [${bits.join(" · ")}]`,
-				};
-			}),
+			...agents.map((a): SelectItem => ({
+				value: a.name,
+				label: active?.agent.name === a.name ? `${a.name} (active)` : a.name,
+				description: agentDetail(a),
+			})),
 		];
 
-		const choice = await ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
-			const container = new Container();
-			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
-			container.addChild(new Text(theme.fg("accent", theme.bold("Switch agent"))));
-
-			const selectList = new SelectList(items, Math.min(items.length, 10), {
-				selectedPrefix: (text) => theme.fg("accent", text),
-				selectedText: (text) => theme.fg("accent", text),
-				description: (text) => theme.fg("muted", text),
-				scrollInfo: (text) => theme.fg("dim", text),
-				noMatch: (text) => theme.fg("warning", text),
-			});
-			selectList.onSelect = (item) => done(item.value);
-			selectList.onCancel = () => done(null);
-			container.addChild(selectList);
-
-			container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc cancel")));
-			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
-
-			return {
-				render(width: number) {
-					return container.render(width);
-				},
-				invalidate() {
-					container.invalidate();
-				},
-				handleInput(data: string) {
-					selectList.handleInput(data);
-					tui.requestRender();
-				},
-			};
-		});
+		const choice = await selectFromList(ctx, "Switch agent", items);
 
 		if (!choice) return;
 		if (choice === MAIN) {
@@ -299,38 +261,154 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		ctx.ui.notify(`Created agent "${name}" at ${filePath}`, "info");
 	}
 
+	// ---- shared keyboard picker -------------------------------------------
+
+	function selectFromList(ctx: ExtensionContext, title: string, items: SelectItem[]): Promise<string | null> {
+		return ctx.ui.custom<string | null>((tui, theme, _kb, done) => {
+			const container = new Container();
+			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+			container.addChild(new Text(theme.fg("accent", theme.bold(title))));
+			const selectList = new SelectList(items, Math.min(items.length, 10), {
+				selectedPrefix: (t) => theme.fg("accent", t),
+				selectedText: (t) => theme.fg("accent", t),
+				description: (t) => theme.fg("muted", t),
+				scrollInfo: (t) => theme.fg("dim", t),
+				noMatch: (t) => theme.fg("warning", t),
+			});
+			selectList.onSelect = (item) => done(item.value);
+			selectList.onCancel = () => done(null);
+			container.addChild(selectList);
+			container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc cancel")));
+			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+			return {
+				render(width: number) {
+					return container.render(width);
+				},
+				invalidate() {
+					container.invalidate();
+				},
+				handleInput(data: string) {
+					selectList.handleInput(data);
+					tui.requestRender();
+				},
+			};
+		});
+	}
+
+	function agentDetail(a: AgentConfig): string {
+		const bits = [a.source, a.model ?? "inherit model", a.tools ? `tools: ${a.tools.join(",")}` : "all tools"];
+		return `${a.description}  ·  [${bits.join(" · ")}]`;
+	}
+
+	// Alt+A steps to the next agent in the ring: main → …agents… → main.
+	async function cycleAgent(ctx: ExtensionContext) {
+		if (agents.length === 0) {
+			ctx.ui.notify(`No agents found. Add markdown files to ${getUserAgentsDir()} (see /subagent new).`, "warning");
+			return;
+		}
+		const order = [MAIN, ...agents.map((a) => a.name)];
+		const currentName = active?.agent.name ?? MAIN;
+		const idx = order.indexOf(currentName);
+		const nextName = order[(idx + 1) % order.length];
+		if (nextName === MAIN) {
+			await restoreMain(ctx);
+			ctx.ui.notify("Switched to main agent", "info");
+			return;
+		}
+		await switchToAgentByName(nextName, ctx);
+	}
+
+	// ---- per-session nesting-depth cap (/subagent depth) -------------------
+
+	// `/subagent depth`            → show current + pick a preset (this session)
+	// `/subagent depth <N>`        → set this session's cap to N
+	// `/subagent depth global <N>` → set the cross-session default file
+	async function handleDepth(rest: string, ctx: ExtensionContext) {
+		const parts = rest.split(/\s+/).filter(Boolean);
+
+		if (parts[0]?.toLowerCase() === "global") {
+			const n = Number(parts[1]);
+			if (!Number.isInteger(n) || n < 1) {
+				ctx.ui.notify("Usage: /subagent depth global <positive integer>", "error");
+				return;
+			}
+			try {
+				saveGlobalDefault(n);
+			} catch (err) {
+				ctx.ui.notify(`Failed to save global default: ${err}`, "error");
+				return;
+			}
+			updateStatus(ctx);
+			ctx.ui.notify(`Subagent max depth — global default set to ${n}`, "info");
+			return;
+		}
+
+		if (parts.length > 0) {
+			const n = Number(parts[0]);
+			if (!Number.isInteger(n) || n < 1) {
+				ctx.ui.notify("Usage: /subagent depth <positive integer>", "error");
+				return;
+			}
+			pi.appendEntry(MAXDEPTH_ENTRY, { maxDepth: n });
+			updateStatus(ctx);
+			ctx.ui.notify(`Subagent max depth set to ${n} for this session`, "info");
+			return;
+		}
+
+		const eff = resolveMaxDepth(ctx.sessionManager);
+		const items: SelectItem[] = DEPTH_CHOICES.map((n) => ({
+			value: String(n),
+			label: n === 1 ? `${n} (no nesting)` : String(n),
+			description: n === eff ? "current" : "",
+		}));
+		const choice = await selectFromList(ctx, `Subagent max depth (current: ${eff})`, items);
+		if (!choice) return;
+		const chosen = Number(choice);
+		pi.appendEntry(MAXDEPTH_ENTRY, { maxDepth: chosen });
+		updateStatus(ctx);
+		ctx.ui.notify(`Subagent max depth set to ${chosen} for this session`, "info");
+	}
+
 	// ---- command + shortcut ------------------------------------------------
 
 	pi.registerShortcut(OPEN_KEY, {
-		description: "Switch subagent",
+		description: "Cycle to the next agent",
 		handler: async (ctx) => {
-			await showPicker(ctx);
+			await cycleAgent(ctx);
 		},
 	});
 
 	pi.registerCommand("subagent", {
-		description: "Switch the active agent (persona) for this session, or manage agents",
+		description: "Switch which agent you're talking to; `/subagent depth` sets the subagent nesting cap",
 		handler: async (args, ctx) => {
 			const arg = args.trim();
+			const lower = arg.toLowerCase();
+
+			// No argument → open the picker (list all agents + main, select to switch).
 			if (!arg) {
 				await showPicker(ctx);
 				return;
 			}
-			const lower = arg.toLowerCase();
 			if (lower === MAIN || lower === "off" || lower === "none" || lower === "base") {
 				await restoreMain(ctx);
 				ctx.ui.notify("Switched to main agent", "info");
 				return;
 			}
-			if (lower === "new") {
+			if (lower === "list") {
+				await showPicker(ctx);
+				return;
+			}
+			if (lower === "new" || lower === "create") {
 				await createAgent(ctx);
 				return;
 			}
-			if (lower === "list") {
-				const list = agents.map((a) => `${a.name} (${a.source})`).join(", ") || "none";
-				ctx.ui.notify(`Agents: ${list}`, "info");
+			// `/subagent depth [N | global N]` → the per-session nesting cap.
+			const [head, ...tail] = arg.split(/\s+/);
+			if (head.toLowerCase() === "depth") {
+				await handleDepth(tail.join(" "), ctx);
 				return;
 			}
+			// `/subagent <name>` → switch to that agent directly.
 			await switchToAgentByName(arg, ctx);
 		},
 	});
