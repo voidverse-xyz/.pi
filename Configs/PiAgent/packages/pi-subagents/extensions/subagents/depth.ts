@@ -153,15 +153,15 @@ export function resolveAskLimit(): number {
 
 // ---- call-list escalation for nested calls ---------------------------------
 //
-// Each agent declares which agents it may delegate to (frontmatter `canCall:`).
+// Each agent declares which agents it may delegate to (frontmatter `canDelegateTo:`).
 // A NESTED caller may only spawn agents on its own list — "*" = any, a name list =
 // only those, unset = none — so a subagent can't reach an agent it wasn't granted.
 // The top-level session has no CANCALL_ENV and is unrestricted.
 
-/** The wire form of an agent's call-list, for CANCALL_ENV: "*", a comma list, or "". */
+/** The wire form of an agent's delegate-list, for CANCALL_ENV: "*", a comma list, or "". */
 export function canCallSpec(agent: AgentConfig): string {
-	if (agent.canCall === "*") return "*";
-	return agent.canCall ? agent.canCall.join(",") : "";
+	if (agent.canDelegateTo === "*") return "*";
+	return agent.canDelegateTo ? agent.canDelegateTo.join(",") : "";
 }
 
 /**

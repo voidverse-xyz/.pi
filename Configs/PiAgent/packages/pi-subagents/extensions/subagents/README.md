@@ -75,7 +75,7 @@ resolved cap from the environment. The effective cap shows in the footer status 
 next to the active agent (` N`, sitemap icon).
 
 **Privilege (call-list).** Each agent declares which agents it may delegate to
-(frontmatter `canCall:` — `*` for any, a name list for specific agents, unset for
+(frontmatter `canDelegateTo:` — `*` for any, a name list for specific agents, unset for
 **none**). A **nested** call may only target an agent on the caller's list, so a
 subagent can't reach an agent it wasn't granted. The top-level session is exempt (the
 user is in control). Bundled: `worker` may call `scout`, `planner`, `reviewer`; the
@@ -126,9 +126,10 @@ Markdown files with YAML frontmatter, shared by both features:
 name: reviewer
 description: Code review specialist
 tools: read, grep, find, ls, bash   # optional — omit to inherit all tools
+skills: none                         # optional — "none", a skill-name list, or omit to inherit the catalog
 model: gpt-5.5                       # optional — bare id or "provider/id"; omit to inherit
 mode: replace                        # optional — "replace" or "augment" (default)
-canCall: scout, planner              # optional — agents this one may delegate to ("*"=any; unset=none)
+canDelegateTo: scout, planner        # optional — agents this one may delegate to ("*"=any; unset=none)
 askLimit: 2                          # optional — overrides the /subagent asklimit default for this agent (0=off; see §4)
 ---
 

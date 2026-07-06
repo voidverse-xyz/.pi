@@ -332,7 +332,8 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 	}
 
 	function agentDetail(a: AgentConfig): string {
-		const calls = a.canCall === "*" ? "calls: any" : a.canCall ? `calls: ${a.canCall.join(",")}` : "calls: none";
+		const calls =
+			a.canDelegateTo === "*" ? "calls: any" : a.canDelegateTo ? `calls: ${a.canDelegateTo.join(",")}` : "calls: none";
 		const bits = [
 			a.source,
 			calls,

@@ -641,7 +641,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 				};
 			}
 
-			// Privilege: a nested caller may only delegate to agents on its canCall list.
+			// Privilege: a nested caller may only delegate to agents on its canDelegateTo list.
 			// The top-level session is exempt (unrestricted).
 			if (depth > 0) {
 				const requested = new Set<string>();
@@ -654,7 +654,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 							content: [
 								{
 									type: "text",
-									text: `Nested subagent may not delegate to "${name}" — not in its canCall list.`,
+									text: `Nested subagent may not delegate to "${name}" — not in its canDelegateTo list.`,
 								},
 							],
 							details: makeDetails(currentMode)([]),

@@ -39,10 +39,10 @@ export interface AgentConfig {
 	mode?: "augment" | "replace";
 	/**
 	 * Which agents this agent may delegate to when it is itself a nested subagent
-	 * (frontmatter `canCall:`): "*" = any, a name list = only those, undefined = none.
+	 * (frontmatter `canDelegateTo:`): "*" = any, a name list = only those, undefined = none.
 	 * The top-level session is exempt.
 	 */
-	canCall?: "*" | string[];
+	canDelegateTo?: "*" | string[];
 	/**
 	 * How many times this agent may call ask_parent (frontmatter `askLimit:`) within a
 	 * user request before the tool is withheld from its re-runs. `undefined` ⇒ use the
@@ -126,12 +126,12 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 
 		const mode = frontmatter.mode?.trim().toLowerCase() === "replace" ? "replace" : undefined;
 
-		const rawCanCall = frontmatter.canCall?.trim();
-		const canCall =
-			rawCanCall === "*"
+		const rawCanDelegateTo = frontmatter.canDelegateTo?.trim();
+		const canDelegateTo =
+			rawCanDelegateTo === "*"
 				? "*"
-				: rawCanCall
-					? rawCanCall.split(",").map((s) => s.trim()).filter(Boolean)
+				: rawCanDelegateTo
+					? rawCanDelegateTo.split(",").map((s) => s.trim()).filter(Boolean)
 					: undefined;
 
 		const askLimitNum = Number(frontmatter.askLimit);
@@ -153,7 +153,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			tools: tools && tools.length > 0 ? tools : undefined,
 			model: frontmatter.model?.trim() || undefined,
 			mode,
-			canCall,
+			canDelegateTo,
 			askLimit,
 			skills,
 			systemPrompt: body,
