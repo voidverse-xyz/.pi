@@ -346,6 +346,9 @@ async function runSingleAgent(
 		const tools = askAllowed && !agent.tools.includes("ask_parent") ? [...agent.tools, "ask_parent"] : agent.tools;
 		args.push("--tools", tools.join(","));
 	}
+	// `skills: none` (frontmatter) ⇒ spawn with --no-skills so the child skips the
+	// auto-discovered skill catalog it would never use. Omitting the field inherits it.
+	if (agent.skills === "none") args.push("--no-skills");
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;

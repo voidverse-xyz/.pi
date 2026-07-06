@@ -50,6 +50,14 @@ export interface AgentConfig {
 	 * Enforced by delegate.ts, which counts asks per agent name and resets each turn.
 	 */
 	askLimit?: number;
+	/**
+	 * Whether to load the auto-discovered skill catalog (frontmatter `skills:`).
+	 * `undefined` (omitted) ⇒ inherit the full catalog. `"none"` ⇒ the child is spawned
+	 * with --no-skills, so it gets none of the auto-discovered user/project skills — right
+	 * for narrow read-only agents that never load a skill and shouldn't pay for the
+	 * catalog listing on every spawn. (A named allow-list may come later.)
+	 */
+	skills?: "none";
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
@@ -109,6 +117,10 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 		const askLimitNum = Number(frontmatter.askLimit);
 		const askLimit = Number.isInteger(askLimitNum) && askLimitNum >= 0 ? askLimitNum : undefined;
 
+		// Phase 1: only `skills: none` is recognized (⇒ --no-skills). Any other value —
+		// including a name list — is treated as "inherit the full catalog" for now.
+		const skills = frontmatter.skills?.trim().toLowerCase() === "none" ? "none" : undefined;
+
 		agents.push({
 			name: frontmatter.name,
 			description: frontmatter.description,
@@ -117,6 +129,7 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			mode,
 			canCall,
 			askLimit,
+			skills,
 			systemPrompt: body,
 			source,
 			filePath,
