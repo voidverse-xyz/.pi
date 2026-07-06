@@ -27,7 +27,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, type ExtensionAPI, getAgentDir, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { type AgentConfig, type AgentScope, discoverAgents } from "./agents.ts";
+import { type AgentConfig, type AgentScope, discoverAgents, discoverSkillPaths } from "./agents.ts";
 import { ASK_PARENT_ENV, canCallSpec, childEnv, currentDepth, resolveAskLimit, resolveMaxDepth, targetAllowedByCall } from "./depth.ts";
 import { getPiInvocation, writePromptToTempFile } from "./runner.ts";
 
@@ -346,9 +346,21 @@ async function runSingleAgent(
 		const tools = askAllowed && !agent.tools.includes("ask_parent") ? [...agent.tools, "ask_parent"] : agent.tools;
 		args.push("--tools", tools.join(","));
 	}
-	// `skills: none` (frontmatter) ⇒ spawn with --no-skills so the child skips the
-	// auto-discovered skill catalog it would never use. Omitting the field inherits it.
-	if (agent.skills === "none") args.push("--no-skills");
+	// `skills:` (frontmatter) scopes the child's skill catalog. "none" ⇒ --no-skills (skip
+	// the whole auto-discovered catalog). A name list ⇒ --no-skills plus --skill for each
+	// named skill's resolved path, so the child loads only those. Omitting inherits the catalog.
+	if (agent.skills === "none") {
+		args.push("--no-skills");
+	} else if (Array.isArray(agent.skills)) {
+		args.push("--no-skills");
+		if (agent.skills.length > 0) {
+			const skillPaths = discoverSkillPaths(cwd ?? defaultCwd);
+			for (const name of agent.skills) {
+				const resolved = skillPaths.get(name);
+				if (resolved) args.push("--skill", resolved);
+			}
+		}
+	}
 
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;

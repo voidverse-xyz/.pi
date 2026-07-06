@@ -21,7 +21,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { CONFIG_DIR_NAME, getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir, loadSkills, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -51,13 +51,16 @@ export interface AgentConfig {
 	 */
 	askLimit?: number;
 	/**
-	 * Whether to load the auto-discovered skill catalog (frontmatter `skills:`).
-	 * `undefined` (omitted) ⇒ inherit the full catalog. `"none"` ⇒ the child is spawned
-	 * with --no-skills, so it gets none of the auto-discovered user/project skills — right
-	 * for narrow read-only agents that never load a skill and shouldn't pay for the
-	 * catalog listing on every spawn. (A named allow-list may come later.)
+	 * How to scope the child's skill catalog (frontmatter `skills:`):
+	 *   - omitted (`undefined`) ⇒ inherit the full auto-discovered catalog (unchanged).
+	 *   - `"none"` ⇒ spawn with --no-skills; the child gets no auto-discovered skills —
+	 *     right for narrow read-only agents that never load a skill and shouldn't pay for
+	 *     the catalog listing on every spawn.
+	 *   - a name list (e.g. `deep-research, dataviz`) ⇒ --no-skills plus --skill for each
+	 *     named skill's resolved path, so the child loads only those. Unknown names are
+	 *     skipped (see discoverSkillPaths / delegate.ts). An empty list behaves like "none".
 	 */
-	skills?: "none";
+	skills?: "none" | string[];
 	systemPrompt: string;
 	source: "user" | "project";
 	filePath: string;
@@ -71,6 +74,23 @@ export interface AgentDiscoveryResult {
 /** Absolute path to the user-scope agents directory (may not exist yet). */
 export function getUserAgentsDir(): string {
 	return path.join(getAgentDir(), "agents");
+}
+
+/**
+ * Resolve skill names to their on-disk paths using pi's own skill discovery, so a
+ * `skills:` allow-list never drifts from how the child would find them. Returns
+ * name → filePath for every skill visible from `cwd` (user + project roots). On
+ * discovery failure returns an empty map — the child then simply loads none.
+ */
+export function discoverSkillPaths(cwd: string): Map<string, string> {
+	const map = new Map<string, string>();
+	try {
+		const { skills } = loadSkills({ cwd, agentDir: getAgentDir(), skillPaths: [], includeDefaults: true });
+		for (const skill of skills) if (!map.has(skill.name)) map.set(skill.name, skill.filePath);
+	} catch {
+		// Best effort: unresolved names just mean the child gets fewer/no skills.
+	}
+	return map;
 }
 
 function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {
@@ -117,9 +137,15 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 		const askLimitNum = Number(frontmatter.askLimit);
 		const askLimit = Number.isInteger(askLimitNum) && askLimitNum >= 0 ? askLimitNum : undefined;
 
-		// Phase 1: only `skills: none` is recognized (⇒ --no-skills). Any other value —
-		// including a name list — is treated as "inherit the full catalog" for now.
-		const skills = frontmatter.skills?.trim().toLowerCase() === "none" ? "none" : undefined;
+		// `skills:` scopes the child catalog: "none" ⇒ --no-skills; a comma list ⇒ only those
+		// named skills; omitted ⇒ inherit the full catalog.
+		const rawSkills = frontmatter.skills?.trim();
+		const skills: "none" | string[] | undefined =
+			rawSkills?.toLowerCase() === "none"
+				? "none"
+				: rawSkills
+					? rawSkills.split(",").map((s) => s.trim()).filter(Boolean)
+					: undefined;
 
 		agents.push({
 			name: frontmatter.name,
