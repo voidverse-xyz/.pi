@@ -205,6 +205,55 @@ function commandHead(token: string): string {
 	return noQuotes.split("/").pop() || noQuotes;
 }
 
+// uniq's grammar is `uniq [OPTS] [INPUT [OUTPUT]]` — a second non-option operand is
+// an output file it overwrites. Count operands, skipping options and the value that
+// a value-taking option consumes, so `uniq -w 3 in` (1 operand, read-only) is not
+// mistaken for a write while `uniq in out` (2 operands) is.
+function uniqHasOutputOperand(rest: string[]): boolean {
+	const valueOpts = new Set(["-f", "--skip-fields", "-s", "--skip-chars", "-w", "--check-chars"]);
+	let operands = 0;
+	for (let i = 0; i < rest.length; i++) {
+		const t = rest[i];
+		if (t === "--") {
+			operands += rest.length - 1 - i;
+			break;
+		}
+		// An option (`-x`, `--foo`, `--foo=bar`) is not an operand; a bare `-` (stdin) is.
+		if (t.length > 1 && t.startsWith("-")) {
+			if (valueOpts.has(t)) i++; // space-separated value: `-w 3`
+			continue;
+		}
+		operands++;
+	}
+	return operands >= 2;
+}
+
+// A few commands in SAFE_COMMANDS stay read-only only until given a specific flag or
+// operand that writes a file or runs another command. isReadOnlySafe trusts the command
+// head, so these side-effect forms must be rejected explicitly — otherwise `fd -x rm`,
+// `sort -o f`, `tree -o f`, `uniq in out`, `yq -i` slip through UNGATED even in max mode.
+function safeCommandUsedUnsafely(head: string, rest: string[]): boolean {
+	switch (head) {
+		case "fd":
+		case "fdfind":
+			// -x/--exec and -X/--exec-batch run an arbitrary command per match.
+			return rest.some((t) => t === "-x" || t === "--exec" || t === "-X" || t === "--exec-batch");
+		case "sort":
+			// -o/--output FILE (incl. -oFILE, --output=FILE) writes to a file.
+			return rest.some((t) => t === "-o" || /^-o./.test(t) || t === "--output" || /^--output=/.test(t));
+		case "tree":
+			// -o/--output FILE writes the listing to a file.
+			return rest.some((t) => t === "-o" || t === "--output" || /^--output=/.test(t));
+		case "yq":
+			// -i/--inplace edits the input file in place (mikefarah yq).
+			return rest.some((t) => t === "-i" || t === "--inplace");
+		case "uniq":
+			return uniqHasOutputOperand(rest);
+		default:
+			return false;
+	}
+}
+
 // True only when the whole command line is provably read-only: no command/process
 // substitution, no writes to a real file, and every pipeline/list segment starts
 // with a known read-only command (or a read-only `git` subcommand). Conservative —
@@ -234,6 +283,8 @@ function isReadOnlySafe(command: string): boolean {
 			continue;
 		}
 		if (!SAFE_COMMANDS.has(head)) return false;
+		// A known-safe head can still write/exec via a side-effect flag or operand.
+		if (safeCommandUsedUnsafely(head, tokens.slice(idx + 1))) return false;
 	}
 	return true;
 }
