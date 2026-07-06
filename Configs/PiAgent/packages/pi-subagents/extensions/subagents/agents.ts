@@ -21,7 +21,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { CONFIG_DIR_NAME, getAgentDir, loadSkills, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir, loadProjectContextFiles, loadSkills, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
 export type AgentScope = "user" | "project" | "both";
 
@@ -91,6 +91,22 @@ export function discoverSkillPaths(cwd: string): Map<string, string> {
 		// Best effort: unresolved names just mean the child gets fewer/no skills.
 	}
 	return map;
+}
+
+/**
+ * The context files (AGENTS.md / CLAUDE.md, global + ancestor-walked) a child spawned
+ * at `cwd` would load, using pi's own discovery so it matches the child exactly. Returned
+ * as a sorted list of absolute paths — used to detect when a per-task `cwd` makes a
+ * subagent run under different project instructions than its parent. Empty on failure.
+ */
+export function discoverContextFiles(cwd: string): string[] {
+	try {
+		return loadProjectContextFiles({ cwd, agentDir: getAgentDir() })
+			.map((c) => c.path)
+			.sort();
+	} catch {
+		return [];
+	}
 }
 
 function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig[] {

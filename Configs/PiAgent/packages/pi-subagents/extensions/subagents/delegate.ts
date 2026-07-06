@@ -27,7 +27,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, type ExtensionAPI, getAgentDir, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { type AgentConfig, type AgentScope, discoverAgents, discoverSkillPaths } from "./agents.ts";
+import { type AgentConfig, type AgentScope, discoverAgents, discoverContextFiles, discoverSkillPaths } from "./agents.ts";
 import { ASK_PARENT_ENV, canCallSpec, childEnv, currentDepth, resolveAskLimit, resolveMaxDepth, targetAllowedByCall } from "./depth.ts";
 import { getPiInvocation, writePromptToTempFile } from "./runner.ts";
 
@@ -183,6 +183,17 @@ interface SingleResult {
 	 * stream; the run is stopped and this — not the agent's final text — is surfaced.
 	 */
 	paused?: { summary: string; question: string };
+	/**
+	 * Absolute paths of the context files (AGENTS.md / CLAUDE.md) the child actually loaded,
+	 * discovered from its effective cwd. Recorded so a per-task `cwd` that pulls in different
+	 * project instructions than the parent is visible rather than silent.
+	 */
+	contextFiles?: string[];
+	/**
+	 * True when this run used a per-task `cwd` whose context-file set differs from the parent's
+	 * — i.e. the subagent ran under different project instructions. Surfaced with a ⚠ note.
+	 */
+	contextDiverged?: boolean;
 }
 
 interface SubagentDetails {
@@ -299,6 +310,26 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 	return results;
 }
 
+/** Abbreviate an absolute path under $HOME to a leading ~ for display. */
+function homeRelative(p: string): string {
+	const home = os.homedir();
+	return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+}
+
+/** Equal as sets; both inputs are sorted absolute-path lists from discoverContextFiles. */
+function sameStringSet(a: string[], b: string[]): boolean {
+	return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+/** A short, home-relative one-line summary of a context-file divergence, for the ⚠ note. */
+function describeContextDivergence(agent: string, childFiles: string[], parentFiles: string[]): string {
+	const fmt = (files: string[]) => (files.length ? files.map(homeRelative).join(", ") : "(none)");
+	return (
+		`⚠ subagent "${agent}" ran under a different project context (per-task cwd): ` +
+		`loaded ${fmt(childFiles)}; parent uses ${fmt(parentFiles)}.`
+	);
+}
+
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
 async function runSingleAgent(
@@ -314,6 +345,7 @@ async function runSingleAgent(
 	maxDepth: number,
 	defaultAskLimit: number,
 	pi: ExtensionAPI,
+	parentContextFiles: string[],
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -365,6 +397,12 @@ async function runSingleAgent(
 	let tmpPromptDir: string | null = null;
 	let tmpPromptPath: string | null = null;
 
+	// Which AGENTS.md/CLAUDE.md the child will load. When no per-task cwd is given it runs in
+	// the parent's cwd, so its set == parentContextFiles (reuse, don't re-walk). A per-task cwd
+	// can pull in a different set — flag that so it's visible rather than silent (see #3).
+	const contextFiles = cwd === undefined ? parentContextFiles : discoverContextFiles(cwd);
+	const contextDiverged = cwd !== undefined && !sameStringSet(contextFiles, parentContextFiles);
+
 	const currentResult: SingleResult = {
 		agent: agentName,
 		agentSource: agent.source,
@@ -375,6 +413,8 @@ async function runSingleAgent(
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
 		model: agent.model,
 		step,
+		contextFiles,
+		contextDiverged,
 	};
 
 	const emitUpdate = () => {
@@ -600,6 +640,13 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 			const maxDepth = resolveMaxDepth();
 			// Default ask_parent allowance for agents that don't set their own askLimit.
 			const defaultAskLimit = resolveAskLimit();
+			// The context files this (parent) process runs under — computed once and compared
+			// against each child's set to flag a per-task cwd that diverges (see #3 / runSingleAgent).
+			const parentContextFiles = discoverContextFiles(ctx.cwd);
+			// A ⚠ prefix for a result whose child loaded different context files than the parent,
+			// so the divergence rides along in the text the parent LLM reads (not just the UI).
+			const contextNote = (r: SingleResult): string =>
+				r.contextDiverged ? `${describeContextDivergence(r.agent, r.contextFiles ?? [], parentContextFiles)}\n\n` : "";
 
 			const hasChain = (params.chain?.length ?? 0) > 0;
 			const hasTasks = (params.tasks?.length ?? 0) > 0;
@@ -719,6 +766,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 						maxDepth,
 						defaultAskLimit,
 						pi,
+						parentContextFiles,
 					);
 					results.push(result);
 
@@ -742,8 +790,12 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 					}
 					previousOutput = getFinalOutput(result.messages);
 				}
+				// Any step that ran under a diverging per-task cwd gets its ⚠ note surfaced up front.
+				const chainNotes = results.map((r) => contextNote(r)).join("");
 				return {
-					content: [{ type: "text", text: getFinalOutput(results[results.length - 1].messages) || "(no output)" }],
+					content: [
+						{ type: "text", text: chainNotes + (getFinalOutput(results[results.length - 1].messages) || "(no output)") },
+					],
 					details: makeDetails("chain")(results),
 				};
 			}
@@ -800,6 +852,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 						maxDepth,
 						defaultAskLimit,
 						pi,
+						parentContextFiles,
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -814,11 +867,13 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 					const status = isFailedResult(r)
 						? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
 						: "completed";
-					return `### [${r.agent}] ${status}\n\n${output}`;
+					return `### [${r.agent}] ${status}\n\n${contextNote(r)}${output}`;
 				});
+				const divergedCount = results.filter((r) => r.contextDiverged).length;
 				const header =
 					`Parallel: ${successCount}/${results.length} succeeded` +
-					(pausedCount ? `, ${pausedCount} paused (awaiting your answer)` : "");
+					(pausedCount ? `, ${pausedCount} paused (awaiting your answer)` : "") +
+					(divergedCount ? `, ${divergedCount} under a different project context (⚠)` : "");
 				return {
 					content: [{ type: "text", text: `${header}\n\n${summaries.join("\n\n---\n\n")}` }],
 					details: makeDetails("parallel")(results),
@@ -839,6 +894,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 					maxDepth,
 					defaultAskLimit,
 					pi,
+					parentContextFiles,
 				);
 				if (result.paused) {
 					return {
@@ -855,7 +911,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 					};
 				}
 				return {
-					content: [{ type: "text", text: getFinalOutput(result.messages) || "(no output)" }],
+					content: [{ type: "text", text: contextNote(result) + (getFinalOutput(result.messages) || "(no output)") }],
 					details: makeDetails("single")([result]),
 				};
 			}
@@ -944,9 +1000,15 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 				if (expanded) {
 					const container = new Container();
 					let header = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
+					if (r.contextDiverged) header += ` ${theme.fg("warning", "⚠ different project context")}`;
 					if (isError && r.stopReason) header += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
 					container.addChild(new Text(header, 0, 0));
 					if (isError && r.errorMessage) container.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
+					if (r.contextFiles && r.contextFiles.length > 0) {
+						const shown = r.contextFiles.map(homeRelative).join(", ");
+						const color = r.contextDiverged ? "warning" : "dim";
+						container.addChild(new Text(theme.fg(color, `context: ${shown}`), 0, 0));
+					}
 					container.addChild(new Spacer(1));
 					container.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
 					container.addChild(new Text(theme.fg("dim", r.task), 0, 0));
@@ -975,6 +1037,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 				}
 
 				let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
+				if (r.contextDiverged) text += ` ${theme.fg("warning", "⚠ different project context")}`;
 				if (isError && r.stopReason) text += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
 				if (isError && r.errorMessage) text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
 				else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
@@ -1013,7 +1076,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 							? theme.fg("success", "✓")
 							: theme.fg("error", "✗");
 					const displayItems = getDisplayItems(r.messages);
-					text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
+					text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}${r.contextDiverged ? ` ${theme.fg("warning", "⚠")}` : ""}`;
 					if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
 					else text += `\n${renderDisplayItems(displayItems, expanded ? undefined : 5)}`;
 				}
@@ -1048,7 +1111,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 									? theme.fg("error", "✗")
 									: theme.fg("success", "✓");
 					const displayItems = getDisplayItems(r.messages);
-					text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
+					text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}${r.contextDiverged ? ` ${theme.fg("warning", "⚠")}` : ""}`;
 					if (displayItems.length === 0) text += `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`;
 					else text += `\n${renderDisplayItems(displayItems, expanded ? undefined : 5)}`;
 				}
