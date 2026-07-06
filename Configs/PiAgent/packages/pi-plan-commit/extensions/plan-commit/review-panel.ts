@@ -12,20 +12,14 @@ import {
 import { createReviewKeys } from "./keys.ts";
 import type { ReviewGroup } from "./classify.ts";
 import { summarizePaths } from "./diff.ts";
-import {
-	buildDiffDisplayLines,
-	toggleViewMode,
-	type DiffViewMode,
-} from "./diff-view.ts";
-import {
-	buildFileContentLines,
-	buildFilesListLines,
-	contentViewLabel,
-} from "./file-view.ts";
+import { buildDiffDisplayLines, type DiffViewMode, toggleViewMode } from "./diff-view.ts";
+import { buildFilesListLines } from "./file-view.ts";
 
 export type ReviewAction = "accept" | "ask" | "skip" | "edit" | "stop";
 type Pane = "content" | "actions";
-type ContentView = "diff" | "files" | "file";
+type ContentView = "files" | "detail";
+/** diff = changed hunks only (±3 lines). full = the whole file, changes highlighted. */
+type DetailContext = "diff" | "full";
 
 const ACTIONS: SelectItem[] = [
 	{ value: "ask", label: "Ask" },
@@ -39,34 +33,33 @@ interface ReviewPanelOptions {
 	group: ReviewGroup;
 	index: number;
 	total: number;
-	diff: string;
 	tui: TUI;
 	theme: Theme;
 	keybindings: KeybindingsManager;
-	diffForPath: (path: string) => Promise<string>;
-	readFile: (path: string) => Promise<string | null>;
+	/** Fetch a unified diff for the group or a single file, hunks-only or full-file. */
+	loadDiff: (scope: "group" | "file", path: string | null, full: boolean) => Promise<string>;
 	onDone: (action: ReviewAction) => void;
 }
 
 export function createReviewPanel(opts: ReviewPanelOptions): Component {
-	const { group, index, total, diff, tui, theme, keybindings, diffForPath, readFile, onDone } =
-		opts;
+	const { group, index, total, tui, theme, keybindings, loadDiff, onDone } = opts;
 	const keys = createReviewKeys(keybindings);
 
-	const groupDiff = diff;
-	let currentDiff = diff;
+	// Task 2: open on the Files list, with the content (tab) pane focused — not Actions.
+	let contentView: ContentView = "files";
+	let focus: Pane = "content";
+
 	let diffScope: "group" | "file" = "group";
-	let activeDiffPath: string | null = null;
+	let activeFilePath: string | null = null;
+	let detailContext: DetailContext = "diff";
+	let diffViewMode: DiffViewMode = "inline";
+
+	let currentDiff = "";
+	let diffLoading = false;
+	let detailToken = 0;
 
 	let contentScroll = 0;
-	let focus: Pane = "actions";
-	let contentView: ContentView = "diff";
-	let diffViewMode: DiffViewMode = "inline";
 	let filesSelectedIndex = 0;
-	let openFilePath: string | null = null;
-	let openFileContent: string | null = null;
-	let openFileLoading = false;
-	let diffLoading = false;
 	let cachedWidth: number | undefined;
 	let cachedHeight: number | undefined;
 	let cachedLines: string[] | undefined;
@@ -109,40 +102,26 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 			width,
 			contentView,
 			diffViewMode,
+			detailContext,
 			diffScope,
-			currentDiff,
+			activeFilePath ?? "",
 			diffLoading ? "loading" : "ready",
-			activeDiffPath ?? "",
+			currentDiff,
 			filesSelectedIndex,
-			openFilePath ?? "",
-			openFileLoading ? "loading" : "ready",
-			openFileContent ?? "",
 		].join("\0");
 	}
 
 	function displayLines(width: number): string[] {
 		const key = displayCacheKey(width);
-		if (cachedDisplayLines && cachedDisplayKey === key) {
-			return cachedDisplayLines;
-		}
+		if (cachedDisplayLines && cachedDisplayKey === key) return cachedDisplayLines;
 
 		let lines: string[];
-		if (contentView === "diff") {
-			if (diffLoading) {
-				lines = [theme.fg("muted", " Loading diff…")];
-			} else {
-				lines = buildDiffDisplayLines(currentDiff, diffViewMode, width, theme);
-			}
-		} else if (contentView === "files") {
+		if (contentView === "files") {
 			lines = buildFilesListLines(group.paths, filesSelectedIndex, width, theme);
+		} else if (diffLoading) {
+			lines = [theme.fg("muted", detailContext === "full" ? " Loading file…" : " Loading diff…")];
 		} else {
-			lines = buildFileContentLines(
-				openFilePath ?? "",
-				openFileContent,
-				openFileLoading,
-				width,
-				theme,
-			);
+			lines = buildDiffDisplayLines(currentDiff, diffViewMode, width, theme);
 		}
 
 		cachedDisplayLines = lines;
@@ -171,109 +150,87 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 		tui.requestRender();
 	}
 
-	function switchContentView(next: ContentView) {
-		if (contentView === next) return;
-		contentView = next;
-		contentScroll = 0;
+	// Load the diff text for the current (scope, path, context). Called on entering
+	// detail and whenever the context (diff/full) or the target file/scope changes.
+	async function refreshDetail() {
+		const token = ++detailToken;
+		diffLoading = true;
+		currentDiff = "";
+		invalidate();
+		tui.requestRender();
+
+		const text = await loadDiff(diffScope, activeFilePath, detailContext === "full");
+		if (token !== detailToken) return;
+
+		currentDiff = text;
+		diffLoading = false;
 		invalidate();
 		tui.requestRender();
 	}
 
-	function toggleDiffView() {
-		if (contentView !== "diff") return;
+	function openFileDetail(path: string) {
+		const fileIndex = group.paths.indexOf(path);
+		if (fileIndex >= 0) filesSelectedIndex = fileIndex;
+		diffScope = "file";
+		activeFilePath = path;
+		contentView = "detail";
+		contentScroll = 0;
+		void refreshDetail();
+	}
+
+	function openGroupDetail() {
+		diffScope = "group";
+		activeFilePath = null;
+		contentView = "detail";
+		contentScroll = 0;
+		void refreshDetail();
+	}
+
+	function backToFiles() {
+		contentView = "files";
+		contentScroll = 0;
+		pendingG = false;
+		invalidate();
+		tui.requestRender();
+	}
+
+	function toggleLayout() {
 		diffViewMode = toggleViewMode(diffViewMode);
 		contentScroll = 0;
 		invalidate();
 		tui.requestRender();
 	}
 
-	function showGroupDiff() {
-		diffScope = "group";
-		activeDiffPath = null;
-		currentDiff = groupDiff;
-		diffLoading = false;
-		contentView = "diff";
+	function toggleContext() {
+		detailContext = detailContext === "diff" ? "full" : "diff";
 		contentScroll = 0;
-		invalidate();
-		tui.requestRender();
-	}
-
-	async function loadFileDiff(path: string) {
-		const fileIndex = group.paths.indexOf(path);
-		if (fileIndex >= 0) filesSelectedIndex = fileIndex;
-
-		diffScope = "file";
-		activeDiffPath = path;
-		currentDiff = "";
-		diffLoading = true;
-		contentView = "diff";
-		contentScroll = 0;
-		invalidate();
-		tui.requestRender();
-
-		const fileDiff = await diffForPath(path);
-		if (activeDiffPath !== path) return;
-
-		currentDiff = fileDiff;
-		diffLoading = false;
-		invalidate();
-		tui.requestRender();
-	}
-
-	async function loadFile(path: string) {
-		const fileIndex = group.paths.indexOf(path);
-		if (fileIndex >= 0) filesSelectedIndex = fileIndex;
-
-		openFilePath = path;
-		openFileContent = null;
-		openFileLoading = true;
-		contentView = "file";
-		contentScroll = 0;
-		invalidate();
-		tui.requestRender();
-
-		const content = await readFile(path);
-		if (openFilePath !== path) return;
-
-		openFileContent = content;
-		openFileLoading = false;
-		invalidate();
-		tui.requestRender();
+		void refreshDetail();
 	}
 
 	function contentPaneLabel(): string {
 		const active = focus === "content";
 		const prefix = active ? theme.fg("accent", "▸ ") : theme.fg("dim", "  ");
 
-		let title = "Changes";
-		if (contentView === "files") title = `Files (${group.paths.length})`;
-		if (contentView === "file") title = "File";
-		if (contentView === "diff" && diffScope === "file" && activeDiffPath) {
-			title = activeDiffPath.split("/").pop() ?? activeDiffPath;
+		let title: string;
+		let hint: string;
+		if (contentView === "files") {
+			title = `Files (${group.paths.length})`;
+			hint = theme.fg("dim", "Enter view · Tab actions");
+		} else {
+			title =
+				diffScope === "file" && activeFilePath
+					? (activeFilePath.split("/").pop() ?? activeFilePath)
+					: "All changes";
+			const ctxLabel = detailContext === "full" ? "full file" : "diff";
+			const layoutLabel = diffViewMode === "inline" ? "unified" : "old │ new";
+			hint = theme.fg("dim", `${ctxLabel} · ${layoutLabel}`);
 		}
-
-		const modeLabel = contentViewLabel(
-			contentView,
-			diffViewMode,
-			contentView === "file" ? (openFilePath ?? undefined) : (activeDiffPath ?? undefined),
-		);
-
-		const viewHint =
-			contentView === "diff"
-				? diffScope === "file"
-					? theme.fg("dim", "file diff")
-					: diffViewMode === "inline"
-						? theme.fg("dim", "group · unified")
-						: theme.fg("dim", "group · old │ new")
-				: contentView === "files"
-					? theme.fg("dim", "Enter diff · o full")
-					: theme.fg("dim", openFilePath ?? "");
 
 		return (
 			prefix +
 			(active ? theme.fg("text", title) : theme.fg("dim", title)) +
-			theme.fg("dim", `  ${modeLabel}  `) +
-			viewHint
+			theme.fg("dim", "  ") +
+			hint
 		);
 	}
 
@@ -318,16 +275,141 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 			return true;
 		}
 		if (keys.halfPageUp(data)) {
-			const half = Math.max(1, Math.floor(currentContentHeight / 2));
-			contentScroll = Math.max(0, contentScroll - half);
+			contentScroll = Math.max(0, contentScroll - Math.max(1, Math.floor(currentContentHeight / 2)));
 			return true;
 		}
 		if (keys.halfPageDown(data)) {
-			const half = Math.max(1, Math.floor(currentContentHeight / 2));
-			contentScroll = Math.min(maxScroll, contentScroll + half);
+			contentScroll = Math.min(maxScroll, contentScroll + Math.max(1, Math.floor(currentContentHeight / 2)));
 			return true;
 		}
 		return false;
+	}
+
+	function handleActionsInput(data: string): void {
+		if (keys.left(data)) {
+			pendingG = false;
+			switchPane("content");
+			return;
+		}
+		const actionIdx = keys.actionIndex(data);
+		if (actionIdx !== null && actionIdx < ACTIONS.length) {
+			onDone(ACTIONS[actionIdx]!.value as ReviewAction);
+			return;
+		}
+		if (keys.up(data)) {
+			pendingG = false;
+			actionSelectedIndex = actionSelectedIndex === 0 ? ACTIONS.length - 1 : actionSelectedIndex - 1;
+			selectList.setSelectedIndex(actionSelectedIndex);
+			invalidate();
+			tui.requestRender();
+			return;
+		}
+		if (keys.down(data)) {
+			pendingG = false;
+			actionSelectedIndex = actionSelectedIndex === ACTIONS.length - 1 ? 0 : actionSelectedIndex + 1;
+			selectList.setSelectedIndex(actionSelectedIndex);
+			invalidate();
+			tui.requestRender();
+			return;
+		}
+		if (keys.confirm(data)) {
+			pendingG = false;
+			onDone(ACTIONS[actionSelectedIndex]!.value as ReviewAction);
+			return;
+		}
+		if (keys.cancel(data)) {
+			pendingG = false;
+			onDone("stop");
+			return;
+		}
+		selectList.handleInput(data);
+		invalidate();
+		tui.requestRender();
+	}
+
+	function handleFilesInput(data: string): void {
+		const maxIndex = Math.max(0, group.paths.length - 1);
+		const maxScroll = Math.max(0, group.paths.length - currentContentHeight);
+
+		if (matchesKey(data, "d") || matchesKey(data, "D")) {
+			openGroupDetail();
+			return;
+		}
+		if (keys.confirm(data) || keys.right(data)) {
+			const path = group.paths[filesSelectedIndex];
+			if (path) openFileDetail(path);
+			return;
+		}
+		if (keys.cancel(data)) {
+			onDone("stop");
+			return;
+		}
+
+		if (keys.up(data)) {
+			filesSelectedIndex = Math.max(0, filesSelectedIndex - 1);
+			if (filesSelectedIndex < contentScroll) contentScroll = filesSelectedIndex;
+		} else if (keys.down(data)) {
+			filesSelectedIndex = Math.min(maxIndex, filesSelectedIndex + 1);
+			if (filesSelectedIndex >= contentScroll + currentContentHeight) {
+				contentScroll = filesSelectedIndex - currentContentHeight + 1;
+			}
+		} else if (keys.pageUp(data)) {
+			contentScroll = Math.max(0, contentScroll - currentContentHeight);
+			filesSelectedIndex = Math.max(filesSelectedIndex - currentContentHeight, 0);
+		} else if (keys.pageDown(data)) {
+			contentScroll = Math.min(maxScroll, contentScroll + currentContentHeight);
+			filesSelectedIndex = Math.min(maxIndex, filesSelectedIndex + currentContentHeight);
+		} else if (keys.goBottom(data)) {
+			filesSelectedIndex = maxIndex;
+		} else if (keys.goTop(data)) {
+			if (pendingG) {
+				filesSelectedIndex = 0;
+				contentScroll = 0;
+				pendingG = false;
+			} else {
+				pendingG = true;
+			}
+			invalidate();
+			tui.requestRender();
+			return;
+		} else {
+			return;
+		}
+
+		pendingG = false;
+		invalidate();
+		tui.requestRender();
+	}
+
+	function handleDetailInput(data: string): void {
+		if (matchesKey(data, "v") || matchesKey(data, "V")) {
+			toggleLayout();
+			return;
+		}
+		if (matchesKey(data, "t") || matchesKey(data, "T")) {
+			toggleContext();
+			return;
+		}
+		if (matchesKey(data, "f") || matchesKey(data, "F")) {
+			backToFiles();
+			return;
+		}
+		if (keys.cancel(data) || keys.left(data)) {
+			backToFiles();
+			return;
+		}
+
+		const lines = displayLines(tui.terminal.columns);
+		const maxScroll = Math.max(0, lines.length - currentContentHeight);
+		if (applyContentScroll(data, maxScroll)) {
+			invalidate();
+			tui.requestRender();
+			return;
+		}
+		if (keys.confirm(data)) {
+			pendingG = false;
+			switchPane("actions");
+		}
 	}
 
 	function handleInput(data: string): void {
@@ -341,191 +423,21 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 			switchPane(focus === "actions" ? "content" : "actions");
 			return;
 		}
-		if (keys.right(data) && focus === "content") {
+		if (keys.right(data) && focus === "content" && contentView === "files") {
+			// handled inside files (open file); fall through
+		} else if (keys.right(data) && focus === "content" && contentView === "detail") {
 			pendingG = false;
 			switchPane("actions");
-			return;
-		}
-		if (keys.left(data) && focus === "content" && contentView === "diff" && diffScope === "file") {
-			pendingG = false;
-			switchContentView("files");
 			return;
 		}
 
 		if (focus === "actions") {
-			if (keys.left(data)) {
-				pendingG = false;
-				switchPane("content");
-				return;
-			}
-
-			const actionIdx = keys.actionIndex(data);
-			if (actionIdx !== null && actionIdx < ACTIONS.length) {
-				onDone(ACTIONS[actionIdx]!.value as ReviewAction);
-				return;
-			}
-
-			if (keys.up(data)) {
-				pendingG = false;
-				actionSelectedIndex =
-					actionSelectedIndex === 0 ? ACTIONS.length - 1 : actionSelectedIndex - 1;
-				selectList.setSelectedIndex(actionSelectedIndex);
-				invalidate();
-				tui.requestRender();
-				return;
-			}
-			if (keys.down(data)) {
-				pendingG = false;
-				actionSelectedIndex =
-					actionSelectedIndex === ACTIONS.length - 1 ? 0 : actionSelectedIndex + 1;
-				selectList.setSelectedIndex(actionSelectedIndex);
-				invalidate();
-				tui.requestRender();
-				return;
-			}
-			if (keys.confirm(data)) {
-				pendingG = false;
-				onDone(ACTIONS[actionSelectedIndex]!.value as ReviewAction);
-				return;
-			}
-			if (keys.cancel(data)) {
-				pendingG = false;
-				onDone("stop");
-				return;
-			}
-
-			selectList.handleInput(data);
-			invalidate();
-			tui.requestRender();
+			handleActionsInput(data);
 			return;
 		}
 
-		if (matchesKey(data, "v") || matchesKey(data, "V")) {
-			if (contentView === "diff") toggleDiffView();
-			return;
-		}
-
-		if (matchesKey(data, "f") || matchesKey(data, "F")) {
-			if (contentView === "diff") {
-				switchContentView("files");
-			} else if (contentView === "files") {
-				showGroupDiff();
-			} else {
-				contentView = "diff";
-				contentScroll = 0;
-				openFilePath = null;
-				openFileContent = null;
-				openFileLoading = false;
-				invalidate();
-				tui.requestRender();
-			}
-			return;
-		}
-
-		if (matchesKey(data, "o") || matchesKey(data, "O")) {
-			if (contentView === "files") {
-				const path = group.paths[filesSelectedIndex];
-				if (path) void loadFile(path);
-			} else if (contentView === "diff" && activeDiffPath) {
-				void loadFile(activeDiffPath);
-			}
-			return;
-		}
-
-		if (contentView === "files") {
-			const maxIndex = Math.max(0, group.paths.length - 1);
-			const maxScroll = Math.max(0, group.paths.length - currentContentHeight);
-
-			if (keys.up(data)) {
-				filesSelectedIndex = Math.max(0, filesSelectedIndex - 1);
-				if (filesSelectedIndex < contentScroll) contentScroll = filesSelectedIndex;
-			} else if (keys.down(data)) {
-				filesSelectedIndex = Math.min(maxIndex, filesSelectedIndex + 1);
-				if (filesSelectedIndex >= contentScroll + currentContentHeight) {
-					contentScroll = filesSelectedIndex - currentContentHeight + 1;
-				}
-			} else if (keys.pageUp(data)) {
-				contentScroll = Math.max(0, contentScroll - currentContentHeight);
-				filesSelectedIndex = Math.max(filesSelectedIndex, contentScroll);
-			} else if (keys.pageDown(data)) {
-				contentScroll = Math.min(maxScroll, contentScroll + currentContentHeight);
-				filesSelectedIndex = Math.min(maxIndex, contentScroll);
-			} else if (keys.confirm(data)) {
-				const path = group.paths[filesSelectedIndex];
-				if (path) void loadFileDiff(path);
-				return;
-			} else if (keys.cancel(data)) {
-				showGroupDiff();
-				return;
-			} else {
-				return;
-			}
-
-			pendingG = false;
-			invalidate();
-			tui.requestRender();
-			return;
-		}
-
-		if (contentView === "file") {
-			const lines = displayLines(tui.terminal.cols);
-			const maxScroll = Math.max(0, lines.length - currentContentHeight);
-
-			if (keys.cancel(data)) {
-				switchContentView("files");
-				openFilePath = null;
-				openFileContent = null;
-				openFileLoading = false;
-				pendingG = false;
-				return;
-			}
-
-			if (applyContentScroll(data, maxScroll)) {
-				invalidate();
-				tui.requestRender();
-				return;
-			}
-
-			if (keys.confirm(data)) {
-				pendingG = false;
-				switchPane("actions");
-			} else {
-				return;
-			}
-
-			invalidate();
-			tui.requestRender();
-			return;
-		}
-
-		// diff view
-		const lines = displayLines(tui.terminal.cols);
-		const maxScroll = Math.max(0, lines.length - currentContentHeight);
-
-		if (keys.cancel(data) && diffScope === "file") {
-			pendingG = false;
-			switchContentView("files");
-			return;
-		}
-
-		if (applyContentScroll(data, maxScroll)) {
-			invalidate();
-			tui.requestRender();
-			return;
-		}
-
-		if (keys.confirm(data)) {
-			pendingG = false;
-			switchPane("actions");
-		} else if (keys.cancel(data)) {
-			onDone("stop");
-			return;
-		} else {
-			return;
-		}
-
-		invalidate();
-		tui.requestRender();
+		if (contentView === "files") handleFilesInput(data);
+		else handleDetailInput(data);
 	}
 
 	function render(width: number): string[] {
@@ -544,13 +456,9 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 			theme.fg("dim", `  ${group.layer}  ·  `) +
 			theme.fg("dim", "commit ") +
 			theme.fg("text", group.commitMessage);
-		for (const h of wrapTextWithAnsi(titleLine, innerW)) {
-			headerLines.push(pad(h, innerW));
-		}
+		for (const h of wrapTextWithAnsi(titleLine, innerW)) headerLines.push(pad(h, innerW));
 		const pathsLine = theme.fg("dim", summarizePaths(group.paths));
-		for (const p of wrapTextWithAnsi(pathsLine, innerW)) {
-			headerLines.push(pad(p, innerW));
-		}
+		for (const p of wrapTextWithAnsi(pathsLine, innerW)) headerLines.push(pad(p, innerW));
 
 		const allContentLines = displayLines(innerW);
 		const contentLabel = contentPaneLabel();
@@ -585,8 +493,7 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 			if (scrollIdx >= 0 && scrollIdx < lines.length) {
 				const hint = theme.fg("dim", ` · ${pos}`);
 				const base = lines[scrollIdx] ?? "";
-				const room = innerW - visibleWidth(base) - visibleWidth(hint);
-				if (room >= 0) {
+				if (innerW - visibleWidth(base) - visibleWidth(hint) >= 0) {
 					lines[scrollIdx] = pad(base + hint, innerW);
 				}
 			}
@@ -603,26 +510,19 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 
 		const actionLines = selectList.render(Math.max(1, innerW - 2));
 		for (let i = 0; i < actionRows; i++) {
-			const line = actionLines[i] ?? "";
-			lines.push(pad(` ${line}`, innerW));
+			lines.push(pad(` ${actionLines[i] ?? ""}`, innerW));
 		}
 
 		const footerHint =
-			contentView === "diff"
-				? diffScope === "file"
-					? "Tab pane · ↑↓ scroll · PgUp/PgDn · v split · f files · o full · Esc files"
-					: "Tab pane · ↑↓ scroll · PgUp/PgDn · v split · f files · Esc stop"
-				: contentView === "files"
-					? "Tab pane · ↑↓ · Enter diff · o full · f group · Esc group"
-					: "Tab pane · ↑↓ scroll · Esc files · f diff · o full";
+			contentView === "files"
+				? "Tab actions · ↑↓ · Enter view file · d all changes · Esc stop"
+				: "Tab actions · ↑↓ scroll · v unified/split · t diff/full · f files · Esc files";
 		lines.push(pad(theme.fg("dim", footerHint), innerW));
 
 		if (lines.length < targetH) {
 			const extra = targetH - lines.length;
 			const insertAt = headerLines.length + 1 + contentH;
-			for (let i = 0; i < extra; i++) {
-				lines.splice(insertAt, 0, pad("", innerW));
-			}
+			for (let i = 0; i < extra; i++) lines.splice(insertAt, 0, pad("", innerW));
 			currentContentHeight += extra;
 		} else if (lines.length > targetH) {
 			lines.length = targetH;
@@ -635,9 +535,5 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 		return lines;
 	}
 
-	return {
-		render,
-		handleInput,
-		invalidate,
-	};
+	return { render, handleInput, invalidate };
 }

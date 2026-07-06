@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { runGroupChat } from "./chat.ts";
 import { classifyPaths, isLocalDevOnly, type ReviewGroup } from "./classify.ts";
 import { createGit } from "./git.ts";
 import { createReviewPanel, type ReviewAction } from "./review-panel.ts";
@@ -15,6 +16,7 @@ import { createReviewPanel, type ReviewAction } from "./review-panel.ts";
 interface SessionCommit {
 	sha: string;
 	message: string;
+	paths: string[];
 }
 
 export default function planCommitExtension(pi: ExtensionAPI): void {
@@ -69,21 +71,23 @@ async function runPlanCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext): Pr
 					ctx.ui.notify(`Commit failed for: ${group.title}`, "error");
 					break;
 				}
-				sessionCommits.push({ sha, message: group.commitMessage });
-				ctx.ui.notify(`Committed ${sha} — ${group.commitMessage}`, "success");
+				sessionCommits.push({ sha, message: group.commitMessage, paths: group.paths });
+				ctx.ui.notify(`Committed ${sha} — ${group.commitMessage}`, "info");
 				break;
 			}
 			case "ask": {
-				const question = await ctx.ui.input(`Ask about: ${group.title}`, "Your question…");
-				if (!question?.trim()) break;
-
-				pi.sendUserMessage(
-					`[plan-commit] Question about review group "${group.title}" (${group.paths.join(", ")}):\n\n${question.trim()}\n\nAnswer only about this group's changes. Do not commit.`,
-					{ deliverAs: "followUp" },
-				);
-				await ctx.waitForIdle();
-				ctx.ui.notify("Agent answered — check chat, then continue review", "info");
-				i--;
+				// Pick who answers, then open a persistent chat panel that stays open
+				// until the user closes it (multiple follow-up questions in a row).
+				const choice = await ctx.ui.select(`Ask about: ${group.title}`, [
+					"Subagent — isolated, answers here in a chat panel",
+					"Main agent — full context, answers in the main chat",
+				]);
+				if (choice) {
+					const target = choice.startsWith("Subagent") ? "sub" : "main";
+					const diffText = await git.diffForPaths(group.paths);
+					await runGroupChat(pi, ctx, group, diffText, target);
+				}
+				i--; // re-review this same group after the chat closes
 				break;
 			}
 			case "edit": {
@@ -134,20 +138,17 @@ async function showGroup(
 	index: number,
 	total: number,
 ): Promise<ReviewAction> {
-	const diff = await git.diffForPaths(group.paths);
-
 	const action = await ctx.ui.custom<ReviewAction>(
 		(tui, theme, kb, done) =>
 			createReviewPanel({
 				group,
 				index,
 				total,
-				diff,
 				tui,
 				theme,
 				keybindings: kb,
-				diffForPath: (path) => git.diffForPaths([path]),
-				readFile: (path) => git.readWorkingFile(path),
+				loadDiff: (scope, path, full) =>
+					git.diffForPaths(scope === "group" ? group.paths : path ? [path] : [], { full }),
 				onDone: done,
 			}),
 		{
@@ -194,7 +195,7 @@ async function showSummary(
 		lines.push(`Left unstaged (local dev): ${excluded.join(", ")}`);
 	}
 
-	ctx.ui.notify(lines.join("\n"), commits.length > 0 ? "success" : "info");
+	ctx.ui.notify(lines.join("\n"), "info");
 }
 
 async function offerSquash(
@@ -224,11 +225,14 @@ async function offerSquash(
 		return;
 	}
 
-	const sha = await git.commitAll(message.trim());
+	// Only re-commit the session's own paths, so files the user had staged before
+	// running /plan-commit aren't swept into the squash commit.
+	const sessionPaths = [...new Set(commits.flatMap((c) => c.paths))];
+	const sha = await git.commitAll(message.trim(), sessionPaths);
 	if (!sha) {
 		ctx.ui.notify("Squash failed at commit", "error");
 		return;
 	}
 
-	ctx.ui.notify(`Squashed into ${sha} — ${message.trim()}`, "success");
+	ctx.ui.notify(`Squashed into ${sha} — ${message.trim()}`, "info");
 }
