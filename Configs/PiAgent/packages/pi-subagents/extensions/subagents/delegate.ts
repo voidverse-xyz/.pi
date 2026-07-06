@@ -52,6 +52,11 @@ const MAX_PARALLEL_TASKS = 8;
 const MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 const PER_TASK_OUTPUT_CAP = 50 * 1024;
+// When a task's output overflows the cap, keep the head AND the tail rather than
+// head-only: agents put their summary/conclusion (## Summary, ## Start Here, ## Completed)
+// at the end, so a head-only cut drops exactly the part the parent most needs.
+const TRUNCATED_TAIL_BYTES = 15 * 1024;
+const TRUNCATED_HEAD_BYTES = PER_TASK_OUTPUT_CAP - TRUNCATED_TAIL_BYTES;
 
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -238,14 +243,25 @@ function getResultOutput(result: SingleResult): string {
 	return getFinalOutput(result.messages) || "(no output)";
 }
 
+// Clamp a string to at most maxBytes UTF-8 bytes, taken from the start or the end.
+// The coarse char-slice first bounds the trim loop; the loop then removes whole chars
+// (never splitting a multi-byte sequence) until under the byte budget.
+function clampBytes(s: string, maxBytes: number, from: "start" | "end"): string {
+	if (Buffer.byteLength(s, "utf8") <= maxBytes) return s;
+	let out = from === "start" ? s.slice(0, maxBytes) : s.slice(-maxBytes);
+	while (Buffer.byteLength(out, "utf8") > maxBytes) {
+		out = from === "start" ? out.slice(0, -1) : out.slice(1);
+	}
+	return out;
+}
+
 function truncateParallelOutput(output: string): string {
 	const byteLength = Buffer.byteLength(output, "utf8");
 	if (byteLength <= PER_TASK_OUTPUT_CAP) return output;
-	let truncated = output.slice(0, PER_TASK_OUTPUT_CAP);
-	while (Buffer.byteLength(truncated, "utf8") > PER_TASK_OUTPUT_CAP) {
-		truncated = truncated.slice(0, -1);
-	}
-	return `${truncated}\n\n[Output truncated: ${byteLength - Buffer.byteLength(truncated, "utf8")} bytes omitted. Full output preserved in tool details.]`;
+	const head = clampBytes(output, TRUNCATED_HEAD_BYTES, "start");
+	const tail = clampBytes(output, TRUNCATED_TAIL_BYTES, "end");
+	const omitted = byteLength - Buffer.byteLength(head, "utf8") - Buffer.byteLength(tail, "utf8");
+	return `${head}\n\n[... ${omitted} bytes omitted from the middle; head + tail shown. Full output preserved in tool details. ...]\n\n${tail}`;
 }
 
 type DisplayItem = { type: "text"; text: string } | { type: "toolCall"; name: string; args: Record<string, any> };
