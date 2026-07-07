@@ -1,9 +1,9 @@
 /**
- * /browse-edits — a native TUI to browse, diff, question, and undo the agent's own
- * file changes this session (git-free).
+ * /changes (alias: /browse-edits) — a native TUI to browse, diff, question, and
+ * undo the agent's own file changes this session (git-free).
  *
  * The extension has two halves: a background tracker (registerTracker) that records
- * pre-image baselines as the agent edits, and the /browse-edits command — a command loop
+ * pre-image baselines as the agent edits, and the /changes command — a command loop
  * that collects the changeset, shows the full-screen panel, and services the actions
  * the panel resolves (ask main agent / ask subagent / undo), reopening the panel
  * after each.
@@ -18,10 +18,13 @@ import { undoFile } from "./undo.ts";
 export default function changesExtension(pi: ExtensionAPI): void {
 	registerTracker(pi);
 
-	pi.registerCommand("browse-edits", {
+	const command = {
 		description: "Browse, diff, question, and undo the agent's file changes this session",
-		handler: async (_args, ctx) => runChanges(pi, ctx),
-	});
+		handler: async (_args: string, ctx: ExtensionCommandContext) => runChanges(pi, ctx),
+	};
+
+	pi.registerCommand("changes", command);
+	pi.registerCommand("browse-edits", command);
 }
 
 function showPanel(

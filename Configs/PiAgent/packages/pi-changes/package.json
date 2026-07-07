@@ -1,7 +1,7 @@
 {
   "name": "pi-changes",
   "version": "1.0.0",
-  "description": "/browse-edits — a native TUI to browse, diff, question, and undo the agent's own file changes this session (git-free).",
+  "description": "/changes (alias: /browse-edits) — a native TUI to browse, diff, question, and undo the agent's own file changes this session (git-free).",
   "keywords": [
     "pi-package"
   ],
