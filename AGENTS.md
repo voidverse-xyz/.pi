@@ -139,9 +139,9 @@ shared repository using the `Reusable Artifact Capture` rules above.
 ## PiAgent Layout
 
 - `Configs/PiAgent/packages/`: source of truth for Pi extension packages
-  (`changes`, `codex-usage`, `command-safety`, `confirm-stop-agent`, `dir-git`,
-  `ipc`, `plan-commit`, `session-merge`, `status-line`, `steer-queue`,
-  `subagents`, `tool-monitor`, `user-inputs`, `user-summary` — `cursor` was
+  (`ask-user`, `changes`, `codex-usage`, `command-safety`, `confirm-stop-agent`,
+  `dir-git`, `ipc`, `plan-commit`, `session-merge`, `status-line`,
+  `steer-queue`, `subagents`, `tool-monitor`, `user-summary` — `cursor` was
   removed 2026-07-03). These packages are listed in `~/.pi/agent/settings.json`
   under `packages`.
 - `Configs/PiAgent/.pi/agent/skills/`: source of truth for the `plan-commit`

@@ -16,6 +16,7 @@ Alphabetical, matching `settings.json` `packages[]`.
 
 | Extension | Path | Description |
 |-----------|------|-------------|
+| ask-user | `packages/pi-ask-user/extensions/ask-user/` | LLM-callable `ask_user` tool — ask the user optional/defaulted/validated text, list, number, boolean, datetime, and file questions in a TUI panel; headless subagents forward to the parent via the optional `ipc` extension |
 | bookmark | `packages/pi-bookmark/extensions/bookmark/` | Bookmark entries with labels for `/tree` navigation via `setLabel` (`/bookmark`, `/unbookmark`) |
 | browse | `packages/pi-browse/extensions/browse/` | `/browse-files` — native two-pane file/dir tree browser; preview files/dirs and add `@file`, `@dir/`, or `@file:12-40` line-range references into the editor (add-to-chat) |
 | changes | `packages/pi-changes/extensions/changes/` | `/browse-edits` — native TUI to browse, diff, question, and undo the agent's own file changes this session (git-free) |
@@ -33,7 +34,6 @@ Alphabetical, matching `settings.json` `packages[]`.
 | steer-queue | `packages/pi-steer-queue/extensions/steer-queue/` | Owns a message typed while the agent is busy — steer, queue, or cancel — via an above-editor widget |
 | subagents | `packages/pi-subagents/extensions/subagents/` | Foreground agent switcher (`Alt+A` / `/agents`) re-skins the session's model+tools+prompt in the same thread (active shown on the status line) **plus** LLM-callable `delegate` delegation (single/parallel/chain, isolated `pi` processes) and `ask_parent`. Nesting is depth-capped (`/agents depth`, default 1) and privilege-gated; the switcher is disabled inside subagents. **Session subagent-persistence** (`/agents persistent on\|off`, session-scoped): when on, single-mode delegation to an agent reuses that agent's own persistent child session (linked via `parentSession`) so the same agent remembers its prior work across calls; parallel/chain stay ephemeral |
 | tool-monitor | `packages/pi-tool-monitor/extensions/tool-monitor/` | Running-tool indicator with a spinner in the footer, plus a `/tools` detail panel |
-| user-inputs | `packages/pi-user-inputs/extensions/user-inputs/` | LLM-callable `ask_user` tool — ask the user text/single/multi-choice questions in a TUI panel; headless subagents forward to the parent via the optional `ipc` extension |
 
 ## Agents
 

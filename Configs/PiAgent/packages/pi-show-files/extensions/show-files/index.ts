@@ -16,7 +16,7 @@
  *
  * /show-files reopens the session's last presentation after it's closed.
  *
- * Registered via pi.registerTool (modeled on pi-user-inputs); the panel reuses
+ * Registered via pi.registerTool (modeled on pi-ask-user); the panel reuses
  * pi-browse's tree/preview/add-to-chat machinery. Headless subagents get a
  * graceful error (no TUI to present on).
  */

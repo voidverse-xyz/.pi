@@ -35,7 +35,7 @@ import { getPiInvocation, writePromptToTempFile } from "./runner.ts";
 // The fd the child reaches its parent on for headless confirm / ask_user. The actual
 // transport lives in the standalone `ipc` extension; here we only spawn with the pipe and
 // hand it off over `pi.events` (channel "ipc:attach"), so delegate has no ipc import — and
-// no import of command-safety / user-inputs either. If `ipc` isn't installed the child
+// no import of command-safety / ask-user either. If `ipc` isn't installed the child
 // still runs; it just can't reach the parent (safety blocks, ask_user errors).
 const PI_IPC_FD_ENV = "PI_IPC_FD";
 function hasParentChannel(): boolean {

@@ -8,7 +8,7 @@
  * (which DOES have the TUI) to do it and forward the answer back.
  *
  * It is exposed to other extensions ONLY over `pi.events` — so command-safety,
- * user-inputs, and subagents depend on it through channel-name strings, never an import.
+ * ask-user, and subagents depend on it through channel-name strings, never an import.
  * If this extension is not installed, consumers see no claim on their probe and degrade
  * gracefully (safety blocks the command, ask_user errors, delegation still runs — the
  * child just can't reach the parent for confirm/ask).
@@ -56,7 +56,7 @@ function withUiLock<T>(present: () => Promise<T> | T): Promise<T> {
 }
 
 export default function ipc(pi: ExtensionAPI) {
-	// (1) Child side: a same-process consumer (command-safety / user-inputs running in a
+	// (1) Child side: a same-process consumer (command-safety / ask-user running in a
 	// headless child) wants to reach the parent over the inherited fd. Claim only when
 	// this process actually has a parent channel; otherwise leave it unclaimed so the
 	// consumer degrades. Claim MUST be synchronous so the consumer's probe sees it.

@@ -18,7 +18,7 @@
  *   - `m` a free-text note typed in an embedded editor.
  *
  * Layout/scroll/exact-height machinery follows pi-browse's panel (closure state,
- * pull-based render); the note editor follows pi-user-inputs' embedded Editor.
+ * pull-based render); the note editor follows pi-ask-user's embedded Editor.
  */
 
 import { readFile, readdir, stat } from "node:fs/promises";

@@ -9,7 +9,7 @@
  *
  * It is a minimal JSON-RPC-over-pipe, deliberately purpose-agnostic: callers pick a
  * `method` string and shape their own params/result. command-safety ("safety.confirm")
- * and user-inputs ("user.ask") are the first two consumers.
+ * and ask-user ("user.ask") are the first two consumers.
  *
  * Transport: a dedicated bidirectional pipe on a separate fd (NOT stdout, so control
  * traffic never interleaves with pi's JSON event stream). delegate.ts spawns the child
