@@ -1,5 +1,5 @@
 /**
- * /browse — a native Pi TUI file & directory tree browser.
+ * /browse-files — a native Pi TUI file & directory tree browser.
  *
  * Left pane: a lazy tree rooted at the working directory (dirs expand/collapse).
  * Right pane: a preview — file contents (with a movable line cursor and range
@@ -16,7 +16,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { createBrowsePanel } from "./panel.ts";
 
 export default function browseExtension(pi: ExtensionAPI): void {
-	pi.registerCommand("browse", {
+	pi.registerCommand("browse-files", {
 		description: "Browse the file/dir tree; preview files and add @-references to chat",
 		handler: async (_args, ctx) => runBrowse(ctx),
 	});
@@ -24,7 +24,7 @@ export default function browseExtension(pi: ExtensionAPI): void {
 
 async function runBrowse(ctx: ExtensionCommandContext): Promise<void> {
 	if (!ctx.hasUI) {
-		ctx.ui.notify("/browse requires interactive TUI mode", "error");
+		ctx.ui.notify("/browse-files requires interactive TUI mode", "error");
 		return;
 	}
 

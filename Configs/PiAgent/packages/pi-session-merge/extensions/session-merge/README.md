@@ -1,6 +1,6 @@
 # Session Merge
 
-`session-merge` adds `/merge`, a synthesis merge for Pi session branches.
+`session-merge` adds `/session-merge`, a synthesis merge for Pi session branches.
 
 It does not rewrite or delete the source session tree. Instead, it selects two
 or more branch leaves, asks the current model to synthesize the shared base and
@@ -10,11 +10,11 @@ custom message.
 ## Usage
 
 ```text
-/merge
-/merge <entry-id-or-label> <entry-id-or-label> [...]
+/session-merge
+/session-merge <entry-id-or-label> <entry-id-or-label> [...]
 ```
 
-With one argument, `/merge <entry>` merges the current leaf with that entry.
+With one argument, `/session-merge <entry>` merges the current leaf with that entry.
 Arguments can be exact entry IDs, unique ID prefixes, or exact single-token
 labels. Use the interactive picker for labels with spaces.
 

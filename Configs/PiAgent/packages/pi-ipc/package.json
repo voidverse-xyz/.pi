@@ -1,6 +1,7 @@
 {
   "name": "pi-ipc",
   "version": "1.0.0",
+  "type": "module",
   "description": "Parent↔subagent IPC transport for Pi, exposed to other extensions over pi.events (use-if-present, degrade-if-absent).",
   "keywords": ["pi-package"],
   "pi": {

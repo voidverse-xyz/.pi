@@ -10,7 +10,7 @@
  * It is exposed to other extensions ONLY over `pi.events` — so command-safety,
  * user-inputs, and subagents depend on it through channel-name strings, never an import.
  * If this extension is not installed, consumers see no claim on their probe and degrade
- * gracefully (safety blocks the command, user_inputs errors, delegation still runs — the
+ * gracefully (safety blocks the command, ask_user errors, delegation still runs — the
  * child just can't reach the parent for confirm/ask).
  *
  * Channels:
@@ -42,7 +42,7 @@ interface ClaimProbe {
 
 // Only one TUI panel can be on screen at once, but parallel subagents each ask for one
 // concurrently — presenting two at once drops all but one. Serialize every LOCAL
-// presentation (confirm / user_inputs) through this chain. Process-wide, so it covers
+// presentation (confirm / ask_user) through this chain. Process-wide, so it covers
 // every child of every subagent call. Forwarded requests deliberately DON'T take this
 // lock: they present at whatever ancestor owns the TUI, which serializes them there.
 let uiLock: Promise<unknown> = Promise.resolve();

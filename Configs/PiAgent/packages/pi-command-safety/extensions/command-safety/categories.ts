@@ -81,8 +81,10 @@ export const CATEGORY_ORDER: CategoryRule[] = [
 		category: "destructive",
 		patterns: [
 			// any rm invocation at the start of a command segment: `rm file`, `rm -rf dir`,
-			// `/bin/rm x`, `foo && rm y`. Bare `rm <file>` counts too — it still deletes.
-			new RegExp(String.raw`(?:^|[;|&])\s*(?:\S+/)?rm\b`),
+			// `/bin/rm x`, `foo && rm y`, a newline-separated `cd x\nrm y`, or a quoted
+			// `'rm' -rf /`. Bare `rm <file>` counts too — it still deletes. The `m` flag
+			// makes `^` match each line start; `\n` in the class covers `;`+newline forms.
+			new RegExp(String.raw`(?:^|[;|&\n])\s*['"]?(?:\S+/)?rm\b`, "m"),
 			// rm with a destructive flag anywhere in a segment, to catch prefixed forms
 			// the segment-start rule misses: `sudo rm -rf`, `xargs rm -f`, `time rm -r`.
 			new RegExp(String.raw`\brm\s+(?:-\S*[rRf]|--recursive|--force)`),
@@ -112,8 +114,8 @@ export const CATEGORY_ORDER: CategoryRule[] = [
 			new RegExp(String.raw`\b(?:shutdown|reboot|halt|poweroff)\b`, "i"),
 			new RegExp(String.raw`\binit\s+[06]\b`),
 			new RegExp(String.raw`\bcrontab\b${SEG}-r\b`),
-			// fork bomb
-			new RegExp(String.raw`:\(\)\s*\{\s*:\s*\|\s*:`),
+			// fork bomb — allow whitespace after the `:` name, e.g. `: () { :|:& };:`
+			new RegExp(String.raw`:\s*\(\)\s*\{\s*:\s*\|\s*:`),
 		],
 	},
 	{
@@ -268,7 +270,14 @@ function isReadOnlySafe(command: string): boolean {
 	for (const m of command.matchAll(/&>>?\s*([^\s|&;<>]+)/g)) {
 		if (m[1] !== "/dev/null") return false;
 	}
-	const segments = command.split(/&&|\|\||;|\||\n/).map((s) => s.trim()).filter(Boolean);
+	// Split on every command separator, including a bare `&` (background/async) —
+	// omitting it let `ls & ./evil.sh` collapse into one "safe" segment and run
+	// ungated. The lookbehind/lookahead keep this from splitting the `&` inside
+	// `&&`, `&>`/`&>>` (redirect), `>&`/`2>&1` (fd dup), or `|&` (pipe stderr).
+	const segments = command
+		.split(/&&|\|\||;|(?<![>&|\d])&(?![&>])|\||\n/)
+		.map((s) => s.trim())
+		.filter(Boolean);
 	if (segments.length === 0) return false;
 	for (const seg of segments) {
 		const tokens = seg.split(/\s+/).filter(Boolean);

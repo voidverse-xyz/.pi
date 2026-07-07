@@ -11,9 +11,7 @@
  * display it without this extension touching that extension's code at all.
  *
  * Command: `/codex-usage` shows the full picture (5h + 7d windows, plan,
- * credits) as a widget above the input editor, on a highlighted background
- * (customMessageBg) so it reads as distinct from the plain transcript/editor
- * area, auto-closing after 5s.
+ * credits) as a multi-line toast notification via `ctx.ui.notify()`.
  *
  * Footer only shows anything when both hold:
  *  - the active Pi model's provider is "openai-codex" (only relevant when
@@ -32,12 +30,9 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 
 const STATUS_KEY = "codex-usage";
-const WIDGET_KEY = "codex-usage-status";
-const WIDGET_AUTO_CLOSE_MS = 5000;
 const POLL_MS = 5 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 10_000;
 
@@ -66,7 +61,7 @@ const SUBSCRIPTION_AUTH_MODES: ReadonlySet<AuthMode> = new Set(["chatgpt", "chat
 const CODEX_PROVIDER_ID = "openai-codex";
 
 function formatWindowLabel(mins: number | null): string {
-	if (mins === null) return "?";
+	if (mins === null) return ""; // let callers fall back to their own label (e.g. "5h"/"7d")
 	if (mins % 1440 === 0) return `${mins / 1440}d`;
 	if (mins % 60 === 0) return `${mins / 60}h`;
 	if (mins < 60) return `${mins}m`;
@@ -83,14 +78,6 @@ function formatResetIn(resetsAt: number | null): string {
 	return `${Math.floor(totalMinutes / 60)}h`;
 }
 
-// Pads a line to full width, then applies a background so the fill covers the whole row
-// (not just the text) — same idea as pi-tui's internal applyBackgroundToLine, reimplemented
-// here since it isn't part of pi-tui's public export barrel.
-function applyBackgroundToLine(line: string, width: number, bgFn: (text: string) => string): string {
-	const padding = " ".repeat(Math.max(0, width - visibleWidth(line)));
-	return bgFn(line + padding);
-}
-
 function windowColor(percent: number): "dim" | "success" | "warning" | "error" {
 	if (percent > 90) return "error";
 	if (percent > 70) return "warning";
@@ -98,11 +85,16 @@ function windowColor(percent: number): "dim" | "success" | "warning" | "error" {
 	return "dim";
 }
 
+// Plain (un-themed) window text — shared by the colored footer status and the
+// notify() toast, which takes a single string with no theming.
+function formatWindowText(label: string, win: RateLimitWindow): string {
+	const pct = Math.round(win.usedPercent);
+	return `${formatWindowLabel(win.windowDurationMins) || label} ${pct}% (${formatResetIn(win.resetsAt)})`;
+}
+
 function formatWindow(label: string, win: RateLimitWindow | null, theme: ExtensionContext["ui"]["theme"]): string {
 	if (!win) return "";
-	const pct = Math.round(win.usedPercent);
-	const text = `${formatWindowLabel(win.windowDurationMins) || label} ${pct}% (${formatResetIn(win.resetsAt)})`;
-	return theme.fg(windowColor(pct), text);
+	return theme.fg(windowColor(Math.round(win.usedPercent)), formatWindowText(label, win));
 }
 
 // Minimal JSON-RPC client for `codex app-server --stdio` — newline-delimited JSON,
@@ -120,8 +112,6 @@ class CodexRateLimitClient {
 
 		const child = spawn("codex", ["app-server", "--stdio"], { stdio: ["pipe", "pipe", "pipe"] });
 		this.child = child;
-		child.stdout.setEncoding("utf8");
-		child.stdout.on("data", (chunk: string) => this.handleChunk(chunk));
 
 		const cleanup = () => {
 			this.child = undefined;
@@ -131,6 +121,16 @@ class CodexRateLimitClient {
 		};
 		child.on("exit", cleanup);
 		child.on("error", cleanup);
+
+		child.stdout.setEncoding("utf8");
+		child.stdout.on("data", (chunk: string) => this.handleChunk(chunk));
+		// Writing to a dead pipe (codex missing / app-server crashed) emits "error"
+		// on stdin, not on the ChildProcess — without this listener that becomes an
+		// uncaught exception and crashes Pi, defeating the "fail silently" contract.
+		child.stdin.on("error", cleanup);
+		// Drain stderr so a chatty app-server can't fill the OS pipe buffer (~64KB)
+		// and block, which would silently wedge every request behind its timeout.
+		child.stderr.resume();
 
 		this.initialized = this.request(child, "initialize", {
 			clientInfo: { name: "pi-codex-usage", title: null, version: "1.0.0" },
@@ -183,6 +183,12 @@ class CodexRateLimitClient {
 					reject(error);
 				},
 			});
+			if (!child.stdin.writable) {
+				clearTimeout(timer);
+				this.pending.delete(id);
+				reject(new Error("codex app-server unavailable"));
+				return;
+			}
 			child.stdin.write(`${JSON.stringify({ method, id, params })}\n`);
 		});
 	}
@@ -215,7 +221,6 @@ export default function (pi: ExtensionAPI) {
 	let client: CodexRateLimitClient | undefined;
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let refresh: (() => void) | undefined;
-	let widgetCloseTimer: ReturnType<typeof setTimeout> | undefined;
 
 	const ensureClient = (): CodexRateLimitClient => {
 		if (!client) client = new CodexRateLimitClient();
@@ -245,43 +250,22 @@ export default function (pi: ExtensionAPI) {
 				}
 
 				const snapshot = await activeClient.readRateLimits();
-				const theme = ctx.ui.theme;
-				const lines = [theme.fg("accent", "Codex usage")];
-				if (snapshot.planType) lines.push(theme.fg("dim", `Plan: ${snapshot.planType}`));
 
-				const fiveHour = formatWindow("5h", snapshot.primary, theme);
-				if (fiveHour) lines.push(fiveHour);
-				const weekly = formatWindow("7d", snapshot.secondary, theme);
-				if (weekly) lines.push(weekly);
-
+				// notify() takes a single un-themed string; embed newlines so it renders
+				// as a multi-line block (Pi builds a Text component from the string).
+				const lines: string[] = ["Codex usage"];
+				if (snapshot.planType) lines.push(`Plan: ${snapshot.planType}`);
+				if (snapshot.primary) lines.push(formatWindowText("5h", snapshot.primary));
+				if (snapshot.secondary) lines.push(formatWindowText("7d", snapshot.secondary));
 				if (snapshot.credits) {
 					const creditsText = snapshot.credits.unlimited
 						? "unlimited"
 						: (snapshot.credits.balance ?? "unknown");
-					lines.push(theme.fg("dim", `Credits: ${creditsText}`));
+					lines.push(`Credits: ${creditsText}`);
 				}
+				if (lines.length === 1) lines.push("no data available");
 
-				if (widgetCloseTimer) clearTimeout(widgetCloseTimer);
-				// Factory form (not the plain string[] overload) so each line can get a
-				// full-width background fill — visually distinct from the plain transcript/
-				// editor area, which has no background of its own.
-				ctx.ui.setWidget(
-					WIDGET_KEY,
-					(_tui, widgetTheme) => ({
-						render: (width: number): string[] => {
-							const fillBg = (text: string) => widgetTheme.bg("customMessageBg", text);
-							const blankRow = applyBackgroundToLine("", width, fillBg);
-							const contentRows = lines.map((line) => applyBackgroundToLine(`  ${line}`, width, fillBg));
-							return [blankRow, ...contentRows, blankRow];
-						},
-						invalidate() {},
-					}),
-					{ placement: "aboveEditor" },
-				);
-				widgetCloseTimer = setTimeout(() => {
-					ctx.ui.setWidget(WIDGET_KEY, undefined);
-					widgetCloseTimer = undefined;
-				}, WIDGET_AUTO_CLOSE_MS);
+				ctx.ui.notify(lines.join("\n"), "info");
 			} catch (error) {
 				ctx.ui.notify(
 					`Could not reach codex: ${error instanceof Error ? error.message : String(error)}`,
@@ -330,6 +314,9 @@ export default function (pi: ExtensionAPI) {
 		};
 
 		refresh();
+		// session_start can fire again (switch/resume) without an intervening
+		// shutdown — clear any prior interval so they don't accumulate.
+		if (pollTimer) clearInterval(pollTimer);
 		pollTimer = setInterval(refresh, POLL_MS);
 	});
 
@@ -337,11 +324,8 @@ export default function (pi: ExtensionAPI) {
 		if (pollTimer) clearInterval(pollTimer);
 		pollTimer = undefined;
 		refresh = undefined;
-		if (widgetCloseTimer) clearTimeout(widgetCloseTimer);
-		widgetCloseTimer = undefined;
 		client?.dispose();
 		client = undefined;
 		ctx.ui.setStatus(STATUS_KEY, undefined);
-		ctx.ui.setWidget(WIDGET_KEY, undefined);
 	});
 }

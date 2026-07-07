@@ -29,13 +29,14 @@ import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type AgentConfig, type AgentScope, discoverAgents, discoverContextFiles, discoverSkillPaths } from "./agents.ts";
 import { ASK_PARENT_ENV, canCallSpec, childEnv, currentDepth, resolveAskLimit, resolveMaxDepth, targetAllowedByCall } from "./depth.ts";
+import { type HubSession, hubFromCtx, isPersistenceEnabled, resolvePersistentSessionFile, withAgentLock } from "./persistence.ts";
 import { getPiInvocation, writePromptToTempFile } from "./runner.ts";
 
-// The fd the child reaches its parent on for headless confirm / user_inputs. The actual
+// The fd the child reaches its parent on for headless confirm / ask_user. The actual
 // transport lives in the standalone `ipc` extension; here we only spawn with the pipe and
 // hand it off over `pi.events` (channel "ipc:attach"), so delegate has no ipc import — and
 // no import of command-safety / user-inputs either. If `ipc` isn't installed the child
-// still runs; it just can't reach the parent (safety blocks, user_inputs errors).
+// still runs; it just can't reach the parent (safety blocks, ask_user errors).
 const PI_IPC_FD_ENV = "PI_IPC_FD";
 function hasParentChannel(): boolean {
 	return Boolean(process.env[PI_IPC_FD_ENV]);
@@ -226,11 +227,11 @@ function isFailedResult(result: SingleResult): boolean {
 function formatPausedResult(r: SingleResult): string {
 	const p = r.paused!;
 	// Tailor the escalation hint to who reads this. A top-level parent owns the TUI and
-	// user_inputs but has no parent of its own; a nested parent (itself a subagent) can
+	// ask_user but has no parent of its own; a nested parent (itself a subagent) can
 	// escalate further with ask_parent. Never name a tool the reader doesn't have.
 	const escalation = hasParentChannel()
-		? " — or, if you're also unsure, escalate with ask_parent to your own parent (or user_inputs, if you have it) before answering"
-		: " — or, if you're also unsure, ask the human with user_inputs before answering";
+		? " — or, if you're also unsure, escalate with ask_parent to your own parent (or ask_user, if you have it) before answering"
+		: " — or, if you're also unsure, ask the human with ask_user before answering";
 	return [
 		`⏸ Subagent "${r.agent}" paused and is asking you a question before it continues.`,
 		"",
@@ -346,6 +347,9 @@ async function runSingleAgent(
 	defaultAskLimit: number,
 	pi: ExtensionAPI,
 	parentContextFiles: string[],
+	// Non-null ⇒ run this agent in its persistent, reusable session (single mode only).
+	// Null ⇒ ephemeral `--no-session` (the default, and always for parallel/chain).
+	hub: HubSession | null,
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -364,12 +368,24 @@ async function runSingleAgent(
 	}
 
 	// ask_parent budget: the agent's own frontmatter `askLimit` wins; otherwise the
-	// user-configurable default (/subagent asklimit). Allowed only while this agent's ask
+	// user-configurable default (/agents asklimit). Allowed only while this agent's ask
 	// count is under that limit (see ask-parent.ts). Limit 0 ⇒ never granted.
 	const askLimit = agent.askLimit ?? defaultAskLimit;
 	const askAllowed = askLimit > 0 && (askCounts.get(agentName) ?? 0) < askLimit;
 
-	const args: string[] = ["--mode", "json", "-p", "--no-session"];
+	// Persistence: with a hub, resolve this agent's own reusable session and resume it
+	// (`--session <file>`), so the agent keeps its prior context across calls. Without a
+	// hub, run ephemeral (`--no-session`). Falls back to ephemeral if resolution fails.
+	let persistentSessionFile: string | undefined;
+	if (hub) {
+		try {
+			persistentSessionFile = (await resolvePersistentSessionFile(hub, agentName)).file;
+		} catch {
+			persistentSessionFile = undefined;
+		}
+	}
+
+	const args: string[] = ["--mode", "json", "-p", ...(persistentSessionFile ? ["--session", persistentSessionFile] : ["--no-session"])];
 	if (agent.model) args.push("--model", agent.model);
 	if (agent.tools && agent.tools.length > 0) {
 		// A restrictive `tools:` allowlist would hide ask_parent; add it back only when the
@@ -449,7 +465,7 @@ async function runSingleAgent(
 				// Carry the nesting depth (+1), the cap, and this child's call-list down
 				// so it can enforce the same limits — it runs --no-session and can't
 				// read entries. PI_IPC_FD tells the child which fd to reach the parent on when
-				// a headless capability (safety confirm, user_inputs) needs the TUI.
+				// a headless capability (safety confirm, ask_user) needs the TUI.
 				env: {
 					...childEnv(maxDepth, canCallSpec(agent), defaultAskLimit),
 					[PI_IPC_FD_ENV]: "3",
@@ -459,7 +475,7 @@ async function runSingleAgent(
 			});
 
 			// Hand the child's control pipe to the `ipc` extension (if installed) over
-			// pi.events; it serves the child's confirm / user_inputs requests on the parent's
+			// pi.events; it serves the child's confirm / ask_user requests on the parent's
 			// TUI, or forwards them further up. childName = agentName labels the asker chain.
 			// No listener (ipc not installed) ⇒ the child simply can't reach us.
 			const control = proc.stdio[3] as Duplex | null | undefined;
@@ -612,8 +628,8 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 	pi.on("turn_start", () => askCounts.clear());
 
 	pi.registerTool({
-		name: "subagent",
-		label: "Subagent",
+		name: "delegate",
+		label: "Delegate",
 		description: [
 			"Delegate a task to a specialized subagent that runs in its own isolated context window.",
 			"The subagent starts fresh and only sees the `task` string you give it, so include ALL context it needs.",
@@ -621,11 +637,12 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 			`Default agent scope is "user" (from ${path.join(getAgentDir(), "agents")}).`,
 			`To include project-local agents in ${CONFIG_DIR_NAME}/agents, set agentScope: "both" (or "project").`,
 		].join(" "),
-		promptSnippet: "subagent — delegate a task to a specialized agent with an isolated context window",
+		promptSnippet: "delegate — hand a self-contained task to a specialized agent with an isolated context window",
 		promptGuidelines: [
-			"Use subagent to offload a self-contained task (recon, planning, review, a focused implementation) so it does not consume the main context window.",
+			"Use delegate to offload a self-contained task (recon, planning, review, a focused implementation) so it does not consume the main context window.",
 			"The child cannot see this conversation — put every file path, requirement, and constraint it needs into `task`.",
 			"Use `chain` when a later step needs an earlier step's output ({previous}); use `tasks` for independent work to run in parallel.",
+			"When session subagent-persistence is enabled (the user sets it via /agents), delegating to the SAME agent again resumes its earlier session — it remembers its prior work, so give follow-ups to that same agent instead of re-explaining. Persistence applies to single-agent delegation; parallel/chain always start fresh.",
 		],
 		parameters: SubagentParams,
 
@@ -767,6 +784,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 						defaultAskLimit,
 						pi,
 						parentContextFiles,
+						null, // chain steps run ephemeral (fan-through pipeline, not a durable collaborator)
 					);
 					results.push(result);
 
@@ -853,6 +871,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 						defaultAskLimit,
 						pi,
 						parentContextFiles,
+						null, // parallel tasks run ephemeral (independent fan-out, and avoids same-agent write races)
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -881,21 +900,28 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 			}
 
 			if (params.agent && params.task) {
-				const result = await runSingleAgent(
-					ctx.cwd,
-					agents,
-					params.agent,
-					params.task,
-					params.cwd,
-					undefined,
-					signal,
-					onUpdate,
-					makeDetails("single"),
-					maxDepth,
-					defaultAskLimit,
-					pi,
-					parentContextFiles,
-				);
+				// Single-mode delegation honors session persistence: with it on, run this agent in
+				// its own reusable session (resumes prior context), serialized per agent so two
+				// concurrent same-agent calls can't race on the file.
+				const hub = isPersistenceEnabled() ? hubFromCtx(ctx) : null;
+				const runSingle = (h: HubSession | null) =>
+					runSingleAgent(
+						ctx.cwd,
+						agents,
+						params.agent!,
+						params.task!,
+						params.cwd,
+						undefined,
+						signal,
+						onUpdate,
+						makeDetails("single"),
+						maxDepth,
+						defaultAskLimit,
+						pi,
+						parentContextFiles,
+						h,
+					);
+				const result = hub ? await withAgentLock(hub, params.agent!, () => runSingle(hub)) : await runSingle(null);
 				if (result.paused) {
 					return {
 						content: [{ type: "text", text: formatPausedResult(result) }],
@@ -927,7 +953,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 			const scope: AgentScope = args.agentScope ?? "user";
 			if (args.chain && args.chain.length > 0) {
 				let text =
-					theme.fg("toolTitle", theme.bold("subagent ")) +
+					theme.fg("toolTitle", theme.bold("delegate ")) +
 					theme.fg("accent", `chain (${args.chain.length} steps)`) +
 					theme.fg("muted", ` [${scope}]`);
 				for (let i = 0; i < Math.min(args.chain.length, 3); i++) {
@@ -941,7 +967,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 			}
 			if (args.tasks && args.tasks.length > 0) {
 				let text =
-					theme.fg("toolTitle", theme.bold("subagent ")) +
+					theme.fg("toolTitle", theme.bold("delegate ")) +
 					theme.fg("accent", `parallel (${args.tasks.length} tasks)`) +
 					theme.fg("muted", ` [${scope}]`);
 				for (const t of args.tasks.slice(0, 3)) {
@@ -954,7 +980,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 			const agentName = args.agent || "...";
 			const preview = args.task ? (args.task.length > 60 ? `${args.task.slice(0, 60)}...` : args.task) : "...";
 			let text =
-				theme.fg("toolTitle", theme.bold("subagent ")) +
+				theme.fg("toolTitle", theme.bold("delegate ")) +
 				theme.fg("accent", agentName) +
 				theme.fg("muted", ` [${scope}]`);
 			text += `\n  ${theme.fg("dim", preview)}`;

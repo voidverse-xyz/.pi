@@ -50,11 +50,15 @@ function collectUsage(ctx: ExtensionContext) {
 	for (const entry of ctx.sessionManager.getEntries()) {
 		if (entry.type === "message" && entry.message.role === "assistant") {
 			const message = entry.message as AssistantMessage;
-			input += message.usage.input;
-			output += message.usage.output;
-			cost += message.usage.cost.total;
+			// usage can be absent on an aborted/errored assistant entry — guard so a
+			// single such entry doesn't throw inside render() and blank the footer.
+			const usage = message.usage;
+			if (!usage) continue;
+			input += usage.input;
+			output += usage.output;
+			cost += usage.cost?.total ?? 0;
 			if (message.timestamp >= hourAgo) {
-				lastHour += message.usage.input + message.usage.output;
+				lastHour += usage.input + usage.output;
 			}
 		}
 	}

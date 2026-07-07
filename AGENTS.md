@@ -139,10 +139,10 @@ shared repository using the `Reusable Artifact Capture` rules above.
 ## PiAgent Layout
 
 - `Configs/PiAgent/packages/`: source of truth for Pi extension packages
-  (`codex-usage`, `command-safety`, `confirm-stop-agent`, `dir-git`, `ipc`,
-  `plan-commit`, `session-merge`, `status-line`, `steer-queue`, `subagents`,
-  `tool-monitor`, `user-inputs`, `user-summary` — `cursor` was removed
-  2026-07-03). These packages are listed in `~/.pi/agent/settings.json`
+  (`changes`, `codex-usage`, `command-safety`, `confirm-stop-agent`, `dir-git`,
+  `ipc`, `plan-commit`, `session-merge`, `status-line`, `steer-queue`,
+  `subagents`, `tool-monitor`, `user-inputs`, `user-summary` — `cursor` was
+  removed 2026-07-03). These packages are listed in `~/.pi/agent/settings.json`
   under `packages`.
 - `Configs/PiAgent/.pi/agent/skills/`: source of truth for the `plan-commit`
   skill.
@@ -172,11 +172,23 @@ shared repository using the `Reusable Artifact Capture` rules above.
   selected session branches: it summarizes the shared base plus branch deltas
   into a visible custom message in a new session, optionally drafts or runs a
   kickoff prompt, and leaves source branches intact.
-  `user-summary` (added 2026-07-05) provides the LLM-callable `user_summary`
+  `user-summary` (added 2026-07-05) provides the LLM-callable `notify_user`
   tool: an end-of-turn transcript summary rendered as a custom message with
   optional `summary`, `info`, `warnings`, and `errors` bands. The bands have
   top/bottom padding and muted backgrounds. It also has a `/user-summary` demo
   command.
+  `changes` (added 2026-07-05) tracks the *main agent's own* `edit`/`write`
+  file changes this session via `tool_call`/`tool_execution_end`, persisting
+  first-touch pre-image baselines as `changes.baseline`/`changes.touch` session
+  entries (so they survive `/reload` and resume). `/changes` opens a full-screen
+  overlay to browse per-file diffs (git-free, via the SDK's
+  `generateUnifiedPatch`) and syntax-highlighted file contents (`highlightCode`),
+  ask about a change (routed to the main agent via `sendUserMessage`, or to an
+  isolated read-only child `pi` whose answer streams into the overlay), and undo
+  a file precisely (baseline restore; delete for agent-created files;
+  best-effort inverse edit replay when the baseline predates the extension).
+  Works in non-git directories; nothing here shells out to git. Bash-made
+  changes are out of scope by design.
 - `Configs/PiAgent/.pi/agent/themes/`: source of truth for custom Pi themes
   (`black-white`, a grayscale theme, added 2026-07-03).
 - On this host, `~/.pi/agent/settings.json` loads the package-backed

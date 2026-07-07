@@ -65,7 +65,7 @@ function capDiff(diff: string): string {
 
 export function buildMainAgentMessage(group: ReviewGroup, question: string): string {
 	return [
-		`[plan-commit] Question about review group "${group.title}" (${group.paths.join(", ")}):`,
+		`[git-commit] Question about review group "${group.title}" (${group.paths.join(", ")}):`,
 		"",
 		question.trim(),
 		"",

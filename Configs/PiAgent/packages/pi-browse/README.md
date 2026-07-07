@@ -1,13 +1,13 @@
 # pi-browse
 
-`/browse` — a native Pi TUI file & directory tree browser with **add-to-chat**.
+`/browse-files` — a native Pi TUI file & directory tree browser with **add-to-chat**.
 
 ## What it does
 
 A full-screen two-pane overlay:
 
 - **Left — tree.** A lazy filesystem tree rooted at the working directory. Directories
-  expand/collapse on demand (children are read only when first opened), so `/browse`
+  expand/collapse on demand (children are read only when first opened), so `/browse-files`
   never walks the whole tree up front. Everything is shown — dotfiles, ignored paths,
   `node_modules`, `.git` — no filtering.
 - **Right — preview.** Selecting a file shows its contents (with a line-number gutter

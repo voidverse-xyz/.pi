@@ -47,9 +47,20 @@ export interface IpcMeta {
 	from: string[];
 }
 
-/** True when this process was spawned with a parent IPC channel to reach. */
+/** A usable pipe fd from the env, or null — the single source of truth for both
+ * hasIpcChannel() (the claim probe) and getClient() (the actual connection), so a
+ * claim is never made on a channel that getClient() would then reject. */
+function parseChannelFd(): number | null {
+	const raw = process.env[IPC_FD_ENV];
+	if (!raw) return null;
+	const fd = Number(raw);
+	if (!Number.isInteger(fd) || fd < 3) return null;
+	return fd;
+}
+
+/** True when this process was spawned with a usable parent IPC channel to reach. */
 export function hasIpcChannel(): boolean {
-	return Boolean(process.env[IPC_FD_ENV]);
+	return parseChannelFd() !== null;
 }
 
 interface Envelope {
@@ -138,10 +149,8 @@ class IpcClient {
 let client: IpcClient | null = null;
 
 function getClient(): IpcClient | null {
-	const raw = process.env[IPC_FD_ENV];
-	if (!raw) return null;
-	const fd = Number(raw);
-	if (!Number.isInteger(fd) || fd < 3) return null;
+	const fd = parseChannelFd();
+	if (fd === null) return null;
 	if (!client) client = new IpcClient(fd);
 	return client;
 }

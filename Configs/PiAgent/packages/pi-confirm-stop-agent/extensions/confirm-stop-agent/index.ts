@@ -3,9 +3,8 @@
  *
  * Prompts for confirmation before actions that stop an in-flight agent run.
  *
- * Install globally:
- *   copy to %USERPROFILE%\.pi\agent\extensions\confirm-stop-agent\index.ts
- * Then: /reload
+ * Loaded as a pi package: its path is listed in ~/.pi/agent/settings.json
+ * `packages[]`. Edit, then /reload.
  */
 
 import type {

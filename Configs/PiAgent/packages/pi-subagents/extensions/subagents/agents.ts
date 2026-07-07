@@ -11,7 +11,7 @@
  *   description: What this agent does
  *   tools: read, grep, find, ls        # optional; omitted → inherit all tools
  *   model: gpt-5.5                      # optional; bare id or "provider/id"; omitted → inherit
- *   askLimit: 2                         # optional; overrides the /subagent asklimit default for this agent (0 = no ask_parent)
+ *   askLimit: 2                         # optional; overrides the /agents asklimit default for this agent (0 = no ask_parent)
  *   ---
  *   System prompt / instructions for the agent go here.
  *
@@ -46,7 +46,7 @@ export interface AgentConfig {
 	/**
 	 * How many times this agent may call ask_parent (frontmatter `askLimit:`) within a
 	 * user request before the tool is withheld from its re-runs. `undefined` ⇒ use the
-	 * user-configurable default (`/subagent asklimit`); 0 ⇒ never gets ask_parent.
+	 * user-configurable default (`/agents asklimit`); 0 ⇒ never gets ask_parent.
 	 * Enforced by delegate.ts, which counts asks per agent name and resets each turn.
 	 */
 	askLimit?: number;

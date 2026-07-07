@@ -27,7 +27,7 @@
  * Subagent awareness: the `subagent` delegation tool runs each subagent in its own
  * child `pi` process, so those subagents' tool calls never fire tool_execution_* on
  * THIS process's bus — a delegating turn would otherwise show as one opaque
- * "subagent" tool. We recover the inner calls from the subagent tool's streamed
+ * "delegate" tool. We recover the inner calls from the delegate tool's streamed
  * result details (see subagentChildren) and surface them everywhere: expanded into
  * the footer's running-tool list/count, indented under their parent in the /tools
  * list, and enumerated in the detail view. Granularity is message-level (a child
@@ -116,7 +116,7 @@ function statusColor(status: ToolStatus): "warning" | "error" | "success" {
 // (partialResult while running, result when done), so we reach in and surface those
 // inner calls as child rows. Shape mirrors SubagentDetails in
 // extensions/subagents/delegate.ts — read loosely, only what we need.
-const SUBAGENT_TOOL_NAME = "subagent";
+const DELEGATE_TOOL_NAME = "delegate";
 
 interface InnerToolCall {
 	id: string;
@@ -158,7 +158,7 @@ function innerCallsFromMessages(messages: unknown, agent: string | undefined): I
 // have none. When the parent has finished, nothing under it is still executing, so
 // any still-"running" leaf is clamped to done (e.g. an aborted child mid-call).
 function subagentChildren(run: ToolRun): InnerToolCall[] {
-	if (run.name !== SUBAGENT_TOOL_NAME) return [];
+	if (run.name !== DELEGATE_TOOL_NAME) return [];
 	const details = ((run.result as { details?: unknown })?.details ??
 		(run.partialResult as { details?: unknown })?.details) as { results?: unknown } | undefined;
 	const results = details?.results;
@@ -180,7 +180,7 @@ function subagentChildren(run: ToolRun): InnerToolCall[] {
 // subagents stay distinct); between inner calls, or for any ordinary tool, it's just
 // the tool's own name.
 function runningLeafNames(run: ToolRun): string[] {
-	if (run.name === SUBAGENT_TOOL_NAME) {
+	if (run.name === DELEGATE_TOOL_NAME) {
 		const inFlight = subagentChildren(run).filter((c) => c.status === "running");
 		if (inFlight.length > 0) return inFlight.map((c) => (c.agent ? `${c.agent}:${c.name}` : c.name));
 	}
@@ -347,7 +347,7 @@ class ToolMonitorComponent {
 		// For a subagent, the raw details JSON is a huge transcript dump; the useful
 		// view is the list of tools it ran, so surface that instead.
 		const children = subagentChildren(run);
-		if (run.name === SUBAGENT_TOOL_NAME) {
+		if (run.name === DELEGATE_TOOL_NAME) {
 			lines.push(this.theme.fg("dim", `Subagent tool calls (${children.length}):`));
 			if (children.length === 0) {
 				lines.push(this.theme.fg("muted", "  (none yet)"));

@@ -1,7 +1,7 @@
 /**
  * Plan Commit — layered git review with native Pi TUI
  *
- * /plan-commit — review uncommitted changes group by group,
+ * /git-commit — review uncommitted changes group by group,
  * commit on accept, optional squash at the end.
  *
  * User-level: ~/.pi/agent/extensions/plan-commit/
@@ -20,7 +20,7 @@ interface SessionCommit {
 }
 
 export default function planCommitExtension(pi: ExtensionAPI): void {
-	pi.registerCommand("plan-commit", {
+	pi.registerCommand("git-commit", {
 		description: "Layered review and commit with native TUI",
 		handler: async (_args, ctx) => runPlanCommit(pi, ctx),
 	});
@@ -95,7 +95,7 @@ async function runPlanCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext): Pr
 				if (!instruction?.trim()) break;
 
 				pi.sendUserMessage(
-					`[plan-commit] Edit request for review group "${group.title}" (${group.paths.join(", ")}):\n\n${instruction.trim()}\n\nApply the edits only for these files. Do not commit.`,
+					`[git-commit] Edit request for review group "${group.title}" (${group.paths.join(", ")}):\n\n${instruction.trim()}\n\nApply the edits only for these files. Do not commit.`,
 					{ deliverAs: "followUp" },
 				);
 				await ctx.waitForIdle();
@@ -226,7 +226,7 @@ async function offerSquash(
 	}
 
 	// Only re-commit the session's own paths, so files the user had staged before
-	// running /plan-commit aren't swept into the squash commit.
+	// running /git-commit aren't swept into the squash commit.
 	const sessionPaths = [...new Set(commits.flatMap((c) => c.paths))];
 	const sha = await git.commitAll(message.trim(), sessionPaths);
 	if (!sha) {

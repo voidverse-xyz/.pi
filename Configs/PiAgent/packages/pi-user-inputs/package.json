@@ -1,7 +1,7 @@
 {
   "name": "pi-user-inputs",
   "version": "1.0.0",
-  "description": "LLM-callable user_inputs tool — ask the user text/single/multi-choice questions in a TUI panel; headless subagents forward to the parent via the optional ipc extension.",
+  "description": "LLM-callable ask_user tool — ask the user text/single/multi-choice questions in a TUI panel; headless subagents forward to the parent via the optional ipc extension.",
   "keywords": ["pi-package"],
   "pi": {
     "extensions": ["./extensions"]

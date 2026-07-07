@@ -40,10 +40,10 @@ export const CANCALL_ENV = "PI_SUBAGENT_CANCALL";
  * spawn — the top-level agent (never spawned with it) never sees the tool.
  */
 export const ASK_PARENT_ENV = "PI_ASK_PARENT";
-/** The persisted cap, editable without launching Pi; written by `/subagent depth`. */
+/** The persisted cap, editable without launching Pi; written by `/agents depth`. */
 export const GLOBAL_CONFIG = join(getAgentDir(), "subagent-depth.json");
 export const HARD_DEFAULT = 1;
-/** Presets offered by the `/subagent depth` picker. */
+/** Presets offered by the `/agents depth` picker. */
 export const DEPTH_CHOICES = [1, 2, 3, 5];
 
 /** A positive integer ≥ 1, or undefined if the value isn't a usable depth. */
@@ -112,11 +112,11 @@ export function childEnv(maxDepth: number, childCanCall: string, askLimitDefault
 // file → hard default) and carried to descendants via ASK_LIMIT_ENV so a nested parent
 // applies the same default to agents it spawns.
 
-/** The persisted default, editable without launching Pi; written by `/subagent asklimit`. */
+/** The persisted default, editable without launching Pi; written by `/agents asklimit`. */
 export const ASK_LIMIT_CONFIG = join(getAgentDir(), "subagent-asklimit.json");
 /** Shipped default: an agent may ask its parent once per request unless it says otherwise. */
 export const ASK_LIMIT_HARD_DEFAULT = 1;
-/** Presets offered by the `/subagent asklimit` picker (0 = ask_parent off by default). */
+/** Presets offered by the `/agents asklimit` picker (0 = ask_parent off by default). */
 export const ASK_LIMIT_CHOICES = [0, 1, 2, 3, 5];
 
 /** A non-negative integer (0 = off is allowed), or undefined if not a usable limit. */

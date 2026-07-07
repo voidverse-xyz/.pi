@@ -1,7 +1,7 @@
 /**
  * The user-inputs ask flow, factored out of index.ts so it can run in two places:
  *
- *   - directly, when the agent calling user_inputs has the interactive TUI, and
+ *   - directly, when the agent calling ask_user has the interactive TUI, and
  *   - on behalf of a headless subagent: index.ts's `ipc:serve` handler runs the panel in
  *     the parent session when a "user.ask" is forwarded up through the optional `ipc`
  *     extension.

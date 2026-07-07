@@ -2,21 +2,23 @@
  * Session Merge - synthesize multiple Pi session branches into a new session.
  *
  * Usage:
- *   /merge
- *   /merge <entry-id-or-label> <entry-id-or-label> [...]
+ *   /session-merge
+ *   /session-merge <entry-id-or-label> <entry-id-or-label> [...]
  *
  * This is intentionally a synthesis merge, not an in-place tree rewrite:
  * selected branches stay untouched, and the merged continuation starts in a
  * new session with a visible context message.
  */
 
-import { complete, type Message } from "@earendil-works/pi-ai/compat";
+import { type ChildProcess, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { basename } from "node:path";
 import {
 	BorderedLoader,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type SessionEntry,
-	type SessionTreeNode,
+	TreeSelectorComponent,
 } from "@earendil-works/pi-coding-agent";
 
 const EXTENSION_ID = "session-merge";
@@ -66,7 +68,7 @@ const DEFAULT_KICKOFF = [
 ].join("\n");
 
 export default function sessionMerge(pi: ExtensionAPI): void {
-	pi.registerCommand("merge", {
+	pi.registerCommand("session-merge", {
 		description: "Merge selected session branches into a new synthesized session",
 		handler: async (args, ctx) => runMerge(pi, ctx, args),
 	});
@@ -211,41 +213,61 @@ function resolveSourcesFromArgs(ctx: ExtensionCommandContext, args: string): Sou
 	return sources;
 }
 
-async function selectSourcesInteractively(ctx: ExtensionCommandContext): Promise<SourceBranch[] | undefined> {
-	const leaves = collectLeaves(ctx.sessionManager.getTree()).map((entry) => sourceFromEntry(ctx, entry));
+/**
+ * Open the native session-tree selector (the same UI as `/tree`) so the user can pick one
+ * branch entry from the real tree view, then resolve/cancel. Reused each round to build up
+ * the merge set one branch at a time. Returns the chosen entry id, or undefined on Esc.
+ */
+function pickBranchFromTree(ctx: ExtensionCommandContext, initialSelectedId?: string): Promise<string | undefined> {
+	return ctx.ui.custom<string | undefined>((tui, _theme, _kb, done) => {
+		const tree = ctx.sessionManager.getTree();
+		const leafId = ctx.sessionManager.getLeafId();
+		const selector = new TreeSelectorComponent(
+			tree,
+			leafId,
+			tui.terminal.rows,
+			(entryId) => done(entryId), // onSelect (Enter)
+			() => done(undefined), // onCancel (Esc)
+			undefined, // no label editing from the merge picker
+			initialSelectedId,
+		);
+		selector.focused = true;
+		return selector;
+	});
+}
 
-	if (leaves.length < 2) {
+async function selectSourcesInteractively(ctx: ExtensionCommandContext): Promise<SourceBranch[] | undefined> {
+	if (collectLeaves(ctx.sessionManager.getTree()).length < 2) {
 		ctx.ui.notify("This session does not have at least two branch leaves to merge", "warning");
 		return undefined;
 	}
 
+	// One branch at a time from the /tree view: Enter picks the highlighted entry, Esc finishes
+	// (or cancels if fewer than two are chosen). Any entry is a valid source — its branch is
+	// root→entry — so alternate tips and divergence points can both be selected.
 	const selected = new Map<string, SourceBranch>();
-	const optionToSource = new Map<string, SourceBranch>();
+	let lastPickedId: string | undefined;
 
 	while (selected.size < MAX_SELECTED_BRANCHES) {
-		optionToSource.clear();
+		const pick = await pickBranchFromTree(ctx, lastPickedId);
+		if (pick === undefined) break; // Esc — done adding (validated below)
 
-		const options: string[] = [];
-		for (const source of leaves) {
-			if (selected.has(source.id)) continue;
-			const option = formatSourceOption(ctx, source);
-			optionToSource.set(option, source);
-			options.push(option);
+		if (selected.has(pick)) {
+			ctx.ui.notify("That branch is already selected — pick another, or Esc to merge", "info");
+			continue;
 		}
-
-		if (selected.size >= 2) {
-			options.unshift("Done - merge selected branches");
-		}
-		options.push("Cancel");
-
-		const choice = await ctx.ui.select(`Select branches to merge (${selected.size} selected)`, options);
-		if (!choice || choice === "Cancel") return undefined;
-		if (choice === "Done - merge selected branches") break;
-
-		const source = optionToSource.get(choice);
-		if (source) selected.set(source.id, source);
+		const entry = ctx.sessionManager.getEntry(pick);
+		if (!entry) continue;
+		const source = sourceFromEntry(ctx, entry);
+		selected.set(pick, source);
+		lastPickedId = pick;
+		ctx.ui.notify(`Added "${source.preview}" — ${selected.size} selected. Pick another, or Esc to merge.`, "info");
 	}
 
+	if (selected.size < 2) {
+		if (selected.size === 1) ctx.ui.notify("Select at least two branches to merge", "warning");
+		return undefined;
+	}
 	return [...selected.values()];
 }
 
@@ -343,50 +365,122 @@ function buildMergePrompt(sources: SourceBranch[], commonAncestor: SessionEntry 
 	].join("\n");
 }
 
+/**
+ * Re-invoke the current `pi` binary/script (handles bun single-file builds), so the
+ * merge synthesis runs as a child `pi` process rather than an in-process SDK call.
+ * The child authenticates itself the normal way — API key, ChatGPT/OAuth subscription,
+ * Bedrock, Vertex, whatever the model uses — so this extension never touches credentials.
+ * (Same helper the `subagents` and `changes` extensions use to spawn work.)
+ */
+function getPiInvocation(args: string[]): { command: string; args: string[] } {
+	const currentScript = process.argv[1];
+	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
+	if (currentScript && !isBunVirtualScript && existsSync(currentScript)) {
+		return { command: process.execPath, args: [currentScript, ...args] };
+	}
+	const execName = basename(process.execPath).toLowerCase();
+	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
+	if (!isGenericRuntime) return { command: process.execPath, args };
+	return { command: "pi", args };
+}
+
+/** Pull the assistant's text out of pi's `--mode json` newline-delimited event stream. */
+function extractAssistantText(stdout: string): string {
+	const chunks: string[] = [];
+	for (const line of stdout.split("\n")) {
+		if (!line.trim()) continue;
+		let event: { type?: string; message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
+		try {
+			event = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (event.type !== "message_end" || event.message?.role !== "assistant") continue;
+		for (const part of event.message.content ?? []) {
+			if (part.type === "text" && part.text) chunks.push(part.text);
+		}
+	}
+	return chunks.join("\n").trim();
+}
+
 async function generateMergeContext(ctx: ExtensionCommandContext, prompt: string): Promise<string | undefined> {
 	return ctx.ui.custom<string | undefined>((tui, theme, _kb, done) => {
 		const loader = new BorderedLoader(tui, theme, `Generating merge context with ${ctx.model!.id}...`);
-		loader.onAbort = () => done(undefined);
 
-		const run = async () => {
-			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model!);
-			if (!auth.ok || !auth.apiKey) {
-				throw new Error(auth.ok ? `No API key for ${ctx.model!.provider}` : auth.error);
-			}
+		const model = ctx.model!;
+		// One-shot synthesis in an isolated child `pi`: --system-prompt REPLACES the base
+		// coding-agent prompt with the merge instructions; --no-tools/--no-skills/
+		// --no-context-files keep it pure text synthesis (no tool use, no AGENTS.md bleed);
+		// --provider/--model pin it to this session's model, which the child authenticates
+		// on its own. The (potentially large) branch text goes in on stdin — no ARG_MAX limit.
+		const args = [
+			"--mode", "json",
+			"--print",
+			"--no-session",
+			"--no-tools",
+			"--no-skills",
+			"--no-context-files",
+			"--provider", model.provider,
+			"--model", model.id,
+			"--system-prompt", SYSTEM_PROMPT,
+		];
+		const inv = getPiInvocation(args);
 
-			const message: Message = {
-				role: "user",
-				content: [{ type: "text", text: prompt }],
-				timestamp: Date.now(),
-			};
+		let proc: ChildProcess;
+		try {
+			proc = spawn(inv.command, inv.args, { cwd: ctx.cwd, shell: false, stdio: ["pipe", "pipe", "pipe"] });
+		} catch (error) {
+			console.error("Session merge: failed to spawn pi:", error);
+			done(undefined);
+			return loader;
+		}
 
-			const response = await complete(
-				ctx.model!,
-				{ systemPrompt: SYSTEM_PROMPT, messages: [message] },
-				{
-					apiKey: auth.apiKey,
-					headers: auth.headers,
-					env: auth.env,
-					maxTokens: 8192,
-					signal: loader.signal,
-				},
-			);
-
-			if (response.stopReason === "aborted") return undefined;
-
-			return response.content
-				.filter((part): part is { type: "text"; text: string } => part.type === "text")
-				.map((part) => part.text)
-				.join("\n")
-				.trim();
+		let settled = false;
+		const finish = (value: string | undefined) => {
+			if (settled) return;
+			settled = true;
+			done(value || undefined);
 		};
 
-		run()
-			.then((summary) => done(summary || undefined))
-			.catch((error) => {
-				console.error("Session merge failed:", error);
-				done(undefined);
-			});
+		// Esc on the loader → kill the child and cancel.
+		loader.onAbort = () => {
+			try {
+				proc.kill("SIGTERM");
+			} catch {
+				/* ignore */
+			}
+			setTimeout(() => {
+				try {
+					if (!proc.killed) proc.kill("SIGKILL");
+				} catch {
+					/* ignore */
+				}
+			}, 3000);
+			finish(undefined);
+		};
+
+		let stdout = "";
+		let stderr = "";
+		proc.stdout?.on("data", (d: Buffer) => {
+			stdout += d.toString();
+		});
+		proc.stderr?.on("data", (d: Buffer) => {
+			stderr += d.toString();
+		});
+		// Feed the merge prompt on stdin, then close it. Ignore EPIPE if the child died early.
+		proc.stdin?.on("error", () => {});
+		proc.stdin?.end(prompt);
+
+		proc.on("error", (error) => {
+			console.error("Session merge: pi process error:", error);
+			finish(undefined);
+		});
+		proc.on("close", () => {
+			if (settled) return;
+			const text = extractAssistantText(stdout);
+			if (!text) console.error("Session merge: no output from pi.", stderr.trim() || "(no stderr)");
+			finish(text);
+		});
 
 		return loader;
 	});
@@ -404,13 +498,6 @@ function buildSessionName(sources: SourceBranch[]): string {
 	const names = sources.map((source) => source.label || source.id).join(" + ");
 	const full = `Merge: ${names}`;
 	return full.length > 80 ? `${full.slice(0, 77)}...` : full;
-}
-
-function formatSourceOption(ctx: ExtensionCommandContext, source: SourceBranch): string {
-	const current = ctx.sessionManager.getLeafId() === source.id ? " current" : "";
-	const label = source.label ? ` ${source.label}` : "";
-	const preview = source.preview ? ` - ${source.preview}` : "";
-	return `${source.id}${current}${label} [${source.type}]${preview}`;
 }
 
 function serializeEntries(entries: SessionEntry[]): string {

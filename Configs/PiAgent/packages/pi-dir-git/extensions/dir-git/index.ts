@@ -37,12 +37,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
 
 const WIDGET_KEY = "dir-git";
 const ICON_GIT_BRANCH = ""; // nf-oct-git_branch (U+F418)
@@ -77,8 +73,13 @@ interface GitState {
 	stashes: number;
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
-	const { stdout } = await execFileAsync("git", args, { cwd, timeout: GIT_TIMEOUT_MS });
+// pi.exec is the house wrapper over spawn (same one the git examples and plan-commit use);
+// it applies no tool_call/command-safety gating and honors pi's exec config. It resolves
+// with {code} instead of rejecting on nonzero, so re-throw to keep the throw-on-failure
+// contract every caller's try/catch already relies on (treating failure as "not a repo").
+async function git(pi: ExtensionAPI, cwd: string, args: string[]): Promise<string> {
+	const { stdout, code } = await pi.exec("git", args, { cwd, timeout: GIT_TIMEOUT_MS });
+	if (code !== 0) throw new Error(`git ${args[0] ?? ""} exited with code ${code}`);
 	return stdout;
 }
 
@@ -101,13 +102,13 @@ function formatCwd(cwd: string): string {
 // instead of resolving it on every poll.
 let layoutCache: { cwd: string; layout: Layout | null } | undefined;
 
-async function resolveLayout(cwd: string): Promise<Layout | null> {
+async function resolveLayout(pi: ExtensionAPI, cwd: string): Promise<Layout | null> {
 	if (layoutCache?.cwd === cwd) return layoutCache.layout;
 
 	let layout: Layout | null = null;
 	try {
 		// Output order matches the flag order: toplevel, common dir, git dir.
-		const out = await git(cwd, [
+		const out = await git(pi, cwd, [
 			"rev-parse",
 			"--path-format=absolute",
 			"--show-toplevel",
@@ -171,23 +172,23 @@ function parseBranch(header: string): string {
 	return (end === -1 ? header : header.slice(0, end)).trim();
 }
 
-async function countStashes(cwd: string): Promise<number> {
+async function countStashes(pi: ExtensionAPI, cwd: string): Promise<number> {
 	try {
-		const out = await git(cwd, ["stash", "list"]);
+		const out = await git(pi, cwd, ["stash", "list"]);
 		return out.split("\n").filter((line) => line.length > 0).length;
 	} catch {
 		return 0;
 	}
 }
 
-async function readGitState(cwd: string): Promise<GitState | null> {
-	const layout = await resolveLayout(cwd);
+async function readGitState(pi: ExtensionAPI, cwd: string): Promise<GitState | null> {
+	const layout = await resolveLayout(pi, cwd);
 	if (!layout) return null;
 
 	let status: string;
 	try {
 		// One call yields branch, upstream ahead/behind, and every changed path.
-		status = await git(cwd, ["status", "--porcelain", "--branch"]);
+		status = await git(pi, cwd, ["status", "--porcelain", "--branch"]);
 	} catch {
 		return null; // not a repo, or git unavailable
 	}
@@ -220,7 +221,7 @@ async function readGitState(cwd: string): Promise<GitState | null> {
 		dirty,
 		ahead: aheadMatch ? Number(aheadMatch[1]) : 0,
 		behind: behindMatch ? Number(behindMatch[1]) : 0,
-		stashes: await countStashes(cwd),
+		stashes: await countStashes(pi, cwd),
 	};
 }
 
@@ -321,7 +322,7 @@ export default function (pi: ExtensionAPI) {
 		};
 
 		refresh = () => {
-			readGitState(ctx.sessionManager.getCwd())
+			readGitState(pi, ctx.sessionManager.getCwd())
 				.then((s) => {
 					state = s;
 					rerender?.();

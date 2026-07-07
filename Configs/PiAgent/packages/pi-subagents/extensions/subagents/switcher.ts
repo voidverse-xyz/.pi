@@ -5,7 +5,7 @@
  *
  * Two entry points:
  *   - Alt+A          — cycle to the next agent (main → …agents… → main).
- *   - /subagent      — open the picker (or /subagent <name> to switch directly).
+ *   - /agents      — open the picker (or /agents <name> to switch directly).
  *
  * "main" = the plain Pi agent. The active agent shows on the left of the footer
  * status line (via setStatus + the status-line extension) and persists as a
@@ -38,6 +38,7 @@ import {
 	saveGlobalAskLimit,
 	saveGlobalDefault,
 } from "./depth.ts";
+import { isPersistenceEnabled, PERSISTENCE_ENTRY, setPersistenceEnabled } from "./persistence.ts";
 
 type PromptMode = "augment" | "replace";
 
@@ -67,6 +68,10 @@ const MAIN = "main";
 
 // nf-fa-sitemap (U+F0E8) — the subagent nesting-depth cap for this session.
 const ICON_DEPTH = "\u{f0e8}";
+
+// nf-fa-question_circle (U+F059) — the ask-parent budget (times a subagent may
+// pause to ask its parent). Sits just right of the depth widget.
+const ICON_ASK = "\u{f059}";
 
 export function registerSwitcher(pi: ExtensionAPI): void {
 	// Persona switching is a top-level, user-only feature. Inside a spawned subagent
@@ -178,7 +183,7 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 	}
 
 	// Publish just the ACTIVE agent as a footer status (not the whole roster — the
-	// full list lives in the /subagent picker). The status-line extension renders
+	// full list lives in the /agents picker). The status-line extension renders
 	// this key on the left of the status line. Cleared when there are no agents.
 	function buildStatus(theme: ExtensionContext["ui"]["theme"], maxDepth: number): string {
 		const name = active?.agent.name ?? MAIN;
@@ -186,7 +191,11 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		const modeTag = active && active.mode === "replace" ? theme.fg("warning", " replace") : "";
 		// Subagent nesting cap (the count) — sitemap icon, dim.
 		const depthTag = theme.fg("dim", ` ${ICON_DEPTH} ${maxDepth}`);
-		return chip + modeTag + depthTag;
+		// Ask-parent budget — question icon, dim. Right of the depth widget.
+		const askTag = theme.fg("dim", ` ${ICON_ASK} ${resolveAskLimit()}`);
+		// Session subagent-persistence, only when on (delegations reuse each agent's session).
+		const persistTag = isPersistenceEnabled() ? theme.fg("success", " persist") : "";
+		return chip + modeTag + depthTag + askTag + persistTag;
 	}
 
 	function updateStatus(ctx: ExtensionContext) {
@@ -232,7 +241,7 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 
 	async function showPicker(ctx: ExtensionContext) {
 		if (agents.length === 0) {
-			ctx.ui.notify(`No agents found. Add markdown files to ${getUserAgentsDir()} (see /subagent new).`, "warning");
+			ctx.ui.notify(`No agents found. Add markdown files to ${getUserAgentsDir()} (see /agents new).`, "warning");
 			return;
 		}
 
@@ -261,7 +270,7 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		await switchToAgentByName(choice, ctx);
 	}
 
-	// ---- create a new agent (/subagent new) --------------------------------
+	// ---- create a new agent (/agents new) --------------------------------
 
 	async function createAgent(ctx: ExtensionContext) {
 		const rawName = await ctx.ui.input("New agent name", "e.g. debugger");
@@ -346,7 +355,7 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 	// Alt+A steps to the next agent in the ring: main → …agents… → main.
 	async function cycleAgent(ctx: ExtensionContext) {
 		if (agents.length === 0) {
-			ctx.ui.notify(`No agents found. Add markdown files to ${getUserAgentsDir()} (see /subagent new).`, "warning");
+			ctx.ui.notify(`No agents found. Add markdown files to ${getUserAgentsDir()} (see /agents new).`, "warning");
 			return;
 		}
 		const order = [MAIN, ...agents.map((a) => a.name)];
@@ -361,10 +370,10 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		await switchToAgentByName(nextName, ctx);
 	}
 
-	// ---- nesting-depth cap (/subagent depth) -------------------------------
+	// ---- nesting-depth cap (/agents depth) -------------------------------
 
-	// `/subagent depth`     → show current + pick a preset
-	// `/subagent depth <N>` → set the cap to N
+	// `/agents depth`     → show current + pick a preset
+	// `/agents depth <N>` → set the cap to N
 	// The cap persists to subagent-depth.json and applies to this and future sessions.
 	async function handleDepth(rest: string, ctx: ExtensionContext) {
 		const parts = rest.split(/\s+/).filter(Boolean);
@@ -372,7 +381,7 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		if (parts.length > 0) {
 			const n = Number(parts[0]);
 			if (!Number.isInteger(n) || n < 1) {
-				ctx.ui.notify("Usage: /subagent depth <positive integer>", "error");
+				ctx.ui.notify("Usage: /agents depth <positive integer>", "error");
 				return;
 			}
 			saveDepth(n, ctx);
@@ -401,19 +410,19 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		ctx.ui.notify(`Subagent max depth set to ${n}`, "info");
 	}
 
-	// ---- default ask_parent limit (/subagent asklimit) ---------------------
+	// ---- default ask_parent limit (/agents asklimit) ---------------------
 
 	// The default ask_parent allowance for agents that don't set their own `askLimit`
 	// frontmatter. 0 = ask_parent off by default. Persists to subagent-asklimit.json.
-	// `/subagent asklimit`     → show current + pick a preset
-	// `/subagent asklimit <N>` → set the default to N
+	// `/agents asklimit`     → show current + pick a preset
+	// `/agents asklimit <N>` → set the default to N
 	async function handleAskLimit(rest: string, ctx: ExtensionContext) {
 		const parts = rest.split(/\s+/).filter(Boolean);
 
 		if (parts.length > 0) {
 			const n = Number(parts[0]);
 			if (!Number.isInteger(n) || n < 0) {
-				ctx.ui.notify("Usage: /subagent asklimit <non-negative integer>", "error");
+				ctx.ui.notify("Usage: /agents asklimit <non-negative integer>", "error");
 				return;
 			}
 			saveAskLimit(n, ctx);
@@ -441,12 +450,45 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		ctx.ui.notify(`Default ask_parent limit set to ${n}`, "info");
 	}
 
+	// ---- session subagent-persistence (/agents persistent) ---------------
+
+	// A per-session toggle: when ON, delegating (single mode) to an agent reuses that
+	// agent's own persistent session, so the same agent remembers its prior work across
+	// calls. Persisted as a session entry so /reload and resume keep the setting.
+	// `/agents persistent`        → toggle
+	// `/agents persistent on|off` → set explicitly
+	async function handlePersistence(rest: string, ctx: ExtensionContext) {
+		const arg = rest.trim().toLowerCase();
+		let target: boolean;
+		if (arg === "" || arg === "toggle") target = !isPersistenceEnabled();
+		else if (arg === "on" || arg === "true" || arg === "yes") target = true;
+		else if (arg === "off" || arg === "false" || arg === "no") target = false;
+		else {
+			ctx.ui.notify("Usage: /agents persistent [on|off]", "error");
+			return;
+		}
+		setPersistenceEnabled(target);
+		pi.appendEntry(PERSISTENCE_ENTRY, { enabled: target });
+		updateStatus(ctx);
+		ctx.ui.notify(
+			target
+				? "Subagent persistence ON — delegating to an agent reuses its session; the same agent remembers prior work."
+				: "Subagent persistence OFF — each delegation starts the agent fresh.",
+			"info",
+		);
+	}
+
 	// ---- parent menu -------------------------------------------------------
 
-	// `/subagent` opens this menu; each item routes to a sub-picker.
+	// `/agents` opens this menu; each item routes to a sub-picker.
 	async function showMenu(ctx: ExtensionContext) {
 		const items: SelectItem[] = [
 			{ value: "switch", label: "Switch agent", description: "Pick which agent you're talking to" },
+			{
+				value: "persistent",
+				label: "Task persistence",
+				description: `Reuse each agent's session across calls, so it remembers prior work (current: ${isPersistenceEnabled() ? "on" : "off"})`,
+			},
 			{
 				value: "depth",
 				label: "Nesting depth",
@@ -460,6 +502,7 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		];
 		const choice = await selectFromList(ctx, "Subagent", items);
 		if (choice === "switch") await showPicker(ctx);
+		else if (choice === "persistent") await handlePersistence("", ctx);
 		else if (choice === "depth") await handleDepth("", ctx);
 		else if (choice === "asklimit") await handleAskLimit("", ctx);
 	}
@@ -473,7 +516,7 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand("subagent", {
+	pi.registerCommand("agents", {
 		description: "Subagent menu — switch agent, set the nesting-depth cap or the default ask-parent limit",
 		handler: async (args, ctx) => {
 			const arg = args.trim();
@@ -497,18 +540,23 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 				await createAgent(ctx);
 				return;
 			}
-			// `/subagent depth [N]` → the nesting cap.
+			// `/agents depth [N]` → the nesting cap.
 			const [head, ...tail] = arg.split(/\s+/);
 			if (head.toLowerCase() === "depth") {
 				await handleDepth(tail.join(" "), ctx);
 				return;
 			}
-			// `/subagent asklimit [N]` → the default ask_parent allowance.
+			// `/agents asklimit [N]` → the default ask_parent allowance.
 			if (head.toLowerCase() === "asklimit") {
 				await handleAskLimit(tail.join(" "), ctx);
 				return;
 			}
-			// `/subagent <name>` → switch to that agent directly.
+			// `/agents persistent [on|off]` → session subagent-persistence toggle.
+			if (head.toLowerCase() === "persistent" || head.toLowerCase() === "persist") {
+				await handlePersistence(tail.join(" "), ctx);
+				return;
+			}
+			// `/agents <name>` → switch to that agent directly.
 			await switchToAgentByName(arg, ctx);
 		},
 	});
@@ -534,6 +582,13 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 			const agent = agents.find((a) => a.name === last.data!.name);
 			if (agent) await applyAgent(agent, last.data.mode ?? "augment", ctx, true);
 		}
+
+		// Restore the session subagent-persistence toggle (default off if never set).
+		const lastPersist = entries
+			.filter((e: { type: string; customType?: string }) => e.type === "custom" && e.customType === PERSISTENCE_ENTRY)
+			.pop() as { data?: { enabled?: boolean } } | undefined;
+		setPersistenceEnabled(Boolean(lastPersist?.data?.enabled));
+
 		updateStatus(ctx);
 	});
 

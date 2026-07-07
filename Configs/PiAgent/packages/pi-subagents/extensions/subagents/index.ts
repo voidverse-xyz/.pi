@@ -3,10 +3,10 @@
  * (markdown files in ~/.pi/agent/agents/*.md and <repo>/.pi/agents/*.md):
  *
  *   1. Foreground switcher (switcher.ts)
- *      Alt+A or /subagent opens a picker of the available agents; selecting one
+ *      Alt+A or /agents opens a picker of the available agents; selecting one
  *      re-skins THIS session (same thread) with that agent's model, tools, and
  *      system prompt. The active agent shows on the footer status line;
- *      /subagent main restores defaults.
+ *      /agents main restores defaults.
  *
  *   2. Delegation tool (delegate.ts)
  *      An LLM-callable `subagent` tool the main agent uses to hand a self-contained

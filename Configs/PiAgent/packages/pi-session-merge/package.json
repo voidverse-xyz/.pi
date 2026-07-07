@@ -1,7 +1,7 @@
 {
   "name": "pi-session-merge",
   "version": "1.0.0",
-  "description": "/merge — synthesize multiple session branches into a new session via an LLM completion.",
+  "description": "/session-merge — synthesize multiple session branches into a new session via a one-off child pi process.",
   "keywords": [
     "pi-package"
   ],
@@ -11,7 +11,6 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"
   }
 }

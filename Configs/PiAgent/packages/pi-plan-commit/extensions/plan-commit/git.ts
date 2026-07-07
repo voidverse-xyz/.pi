@@ -114,7 +114,7 @@ export function createGit(pi: ExtensionAPI, cwd: string) {
 
 	// Commit only the given paths from the index. Used after a soft reset to squash
 	// the session's own commits — scoping to `paths` avoids sweeping in any files the
-	// user had staged before /plan-commit ran (a plain `git commit` would grab those).
+	// user had staged before /git-commit ran (a plain `git commit` would grab those).
 	async function commitAll(message: string, paths: string[]): Promise<string | null> {
 		const args = ["commit", "--no-verify", "-m", message];
 		if (paths.length > 0) args.push("--", ...paths);

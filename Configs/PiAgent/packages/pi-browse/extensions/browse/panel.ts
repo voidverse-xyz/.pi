@@ -1,5 +1,5 @@
 /**
- * /browse — two-pane file/dir tree browser overlay.
+ * /browse-files — two-pane file/dir tree browser overlay.
  *
  *  ┌ left: lazy tree (dirs expand/collapse) ─┬ right: preview ─────────────┐
  *  │ selecting a file shows its content       │ a directory shows a listing │

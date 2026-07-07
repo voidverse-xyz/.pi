@@ -6,10 +6,10 @@
  * PER-AGENT ALLOWANCE. The tool is registered only when delegate.ts sets PI_ASK_PARENT=1
  * on the spawned child — which it does only while that agent still has ask budget this
  * request. An agent's budget is its frontmatter `askLimit`, or the user-configurable
- * default (`/subagent asklimit`) when it sets none; 0 ⇒ never granted. The top-level
+ * default (`/agents asklimit`) when it sets none; 0 ⇒ never granted. The top-level
  * agent is never spawned with the flag, so it never sees the tool (a "summarize → ask →
  * exit" tool would only confuse a top-level agent that has no parent — it talks to the
- * human directly through user_inputs instead).
+ * human directly through ask_user instead).
  *
  * The flow is "summarize → ask → exit", NOT a blocking mid-run round-trip. That is a
  * deliberate consequence of how delegation works: while a subagent runs, the PARENT

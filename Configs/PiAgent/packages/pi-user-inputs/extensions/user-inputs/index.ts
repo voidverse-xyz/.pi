@@ -1,7 +1,7 @@
 /**
  * User Inputs — an LLM-callable tool for asking the user structured questions.
  *
- * Registered via pi.registerTool as `user_inputs`, so the *agent* invokes it
+ * Registered via pi.registerTool as `ask_user`, so the *agent* invokes it
  * whenever it has a question or wants to ask the user something, and the user
  * answers inside a native Pi TUI panel. (This has to be a tool, not a skill or a
  * plain slash command: a skill is only markdown instructions, and a command can't
@@ -14,7 +14,7 @@
  *   - "multi" — pick any number of a list of options.
  *
  * The panel UI, normalization, and answer summary live in ask.ts. When a headless
- * subagent calls user_inputs it has no local TUI, so this tool forwards the request via
+ * subagent calls ask_user it has no local TUI, so this tool forwards the request via
  * the optional `ipc` extension (over pi.events, no import) and the parent runs the panel
  * — naming the asking subagent so the user knows the question isn't from the main agent.
  * If `ipc` isn't installed the tool returns a graceful error instead.
@@ -109,16 +109,16 @@ function errorResult(message: string): { content: { type: "text"; text: string }
 
 export default function userInputs(pi: ExtensionAPI) {
 	pi.registerTool({
-		name: "user_inputs",
+		name: "ask_user",
 		label: "User Inputs",
 		description:
 			"Ask the user one or more questions and wait for their answers. Use this whenever you have a question, " +
 			"need to clarify requirements, want a preference, or must confirm a decision before proceeding. Each input " +
 			"is 'text' (free text), 'radio' (pick one), or 'multi' (pick several). List inputs always include a " +
 			"'Something else…' escape hatch and let the user attach a note.",
-		promptSnippet: "user_inputs — ask the user text / single-choice / multi-choice questions and get their answers",
+		promptSnippet: "ask_user — ask the user text / single-choice / multi-choice questions and get their answers",
 		promptGuidelines: [
-			"When you need information only the user can provide, call user_inputs instead of guessing or asking in prose.",
+			"When you need information only the user can provide, call ask_user instead of guessing or asking in prose.",
 			"Give every input a clear title and a description, and give list options descriptive titles.",
 			"Prefer 'radio'/'multi' with concrete options when the space of answers is known; the user can still pick 'Something else…' or add a note.",
 		],
@@ -139,7 +139,7 @@ export default function userInputs(pi: ExtensionAPI) {
 				// user sees which subagent asked. If ipc isn't installed or there's no parent
 				// channel, nothing claims the probe and we return a graceful error.
 				const res = await busCall<UserInputsResult>(pi, "ipc:client", "user.ask", { inputs });
-				if (!res.ok) return errorResult(`Error: user_inputs unavailable (${res.error}).`);
+				if (!res.ok) return errorResult(`Error: ask_user unavailable (${res.error}).`);
 				result = res.value;
 			}
 
@@ -148,7 +148,7 @@ export default function userInputs(pi: ExtensionAPI) {
 
 		renderCall(args, theme, _context) {
 			const inputs = Array.isArray(args.inputs) ? (args.inputs as Input[]) : [];
-			let text = theme.fg("toolTitle", theme.bold("user_inputs "));
+			let text = theme.fg("toolTitle", theme.bold("ask_user "));
 			text += theme.fg("muted", `${inputs.length} input${inputs.length !== 1 ? "s" : ""}`);
 			const titles = inputs.map((i) => i.title).filter(Boolean).join(", ");
 			if (titles) text += theme.fg("dim", ` (${titles})`);

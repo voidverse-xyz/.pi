@@ -51,3 +51,22 @@ test("existing category classification is unchanged", () => {
 	assert.equal(classifyCommand("echo hi > file"), "other"); // redirect to a real file
 	assert.equal(classifyCommand("some-unknown-tool --flag"), "other");
 });
+
+test("bare `&` background operator does not hide an ungated command", () => {
+	// Previously the segment splitter omitted `&`, so a safe leading command let the
+	// rest of the line run unclassified (null) — a max-mode fail-open.
+	assert.equal(classifyCommand("ls & ./evil.sh"), "other");
+	assert.equal(classifyCommand("pwd & danger-cmd arg"), "other");
+	assert.equal(classifyCommand("ls & ls & danger"), "other");
+	// but `&` inside fd-dup / redirect-all / logical-and / pipe must NOT split a segment:
+	assert.equal(classifyCommand("cat foo.txt 2>&1"), null);
+	assert.equal(classifyCommand("ls &> /dev/null"), null);
+	assert.equal(classifyCommand("git status && git log"), null);
+});
+
+test("destructive rm is caught on later lines, when quoted, and fork bomb with a space", () => {
+	assert.equal(classifyCommand("cd /tmp\nrm secret.db"), "destructive"); // newline-separated
+	assert.equal(classifyCommand("'rm' -rf /"), "destructive"); // single-quoted
+	assert.equal(classifyCommand('"rm" -rf /'), "destructive"); // double-quoted
+	assert.equal(classifyCommand(": () { :|:& };:"), "destructive"); // space after `:`
+});
