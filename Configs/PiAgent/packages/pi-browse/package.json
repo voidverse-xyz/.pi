@@ -1,7 +1,7 @@
 {
   "name": "pi-browse",
   "version": "1.0.0",
-  "description": "/browse-files — a native TUI file & directory tree browser with add-to-chat.",
+  "description": "/browse (alias: /browse-files) — a native TUI file & directory tree browser with add-to-chat.",
   "keywords": [
     "pi-package"
   ],

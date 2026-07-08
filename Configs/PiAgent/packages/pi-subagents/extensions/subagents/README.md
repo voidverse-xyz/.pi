@@ -20,7 +20,8 @@ The ` N` (sitemap icon) on the left is the subagent nesting cap for this sess
 | Trigger             | Effect                                                      |
 |---------------------|------------------------------------------------------------|
 | **Alt+A**           | Cycle to the next agent (`main` → …agents… → `main`)        |
-| `/agents`         | Menu: Switch agent · Task persistence · Nesting depth · Ask-parent limit |
+| `/agents`         | Menu: Switch agent · Task persistence · Nesting depth · Ask-parent limit · Running tasks |
+| `/agents running` | List live delegations; pick one to cancel it (see §2)      |
 | `/agents <name>`  | Switch to `<name>` directly                                |
 | `/agents main`    | Restore the plain Pi agent                                 |
 | `/agents new`     | Scaffold a new agent file in `~/.pi/agent/agents/`         |
@@ -79,6 +80,61 @@ re-explaining — it remembers what it already did.
   resume keep it. Nested subagents never persist (the setting is top-level only).
 - Persistent agent sessions are ordinary sessions on disk — browse or resume them
   from the session selector like any other.
+
+### Sandboxing — `readOnly` and `allowedPaths` (hard-enforced)
+
+Delegated runs can be sandboxed beyond a `tools:` allowlist. Both knobs live in the
+agent's frontmatter **and** as per-call / per-task-item delegate params; the layers
+combine so a call (or a nested spawn) can only ever **tighten** — `readOnly` is
+sticky once set anywhere, `allowedPaths` intersect.
+
+- **`readOnly: true`** — the child cannot mutate: `edit`/`write` are blocked (and
+  excluded from its tool set), and `bash` runs only commands the command-safety
+  classifier proves read-only (`ls`, `cat`, `grep`, `rg`, `git status/log/diff`, … —
+  no redirections, no command substitution).
+- **`allowedPaths: src, docs/api`** — the file tools (`read`, `edit`, `write`, `ls`,
+  `find`, `grep`) may only touch paths inside the listed roots (relative entries
+  resolve against the run's cwd). `bash` is additionally restricted to read-only
+  commands with no `..` traversal whose absolute/`~` path tokens stay inside the
+  roots — and is blocked outright when the child's cwd is outside them.
+
+Enforcement is a blocking `tool_call` handler (guard.ts) inside the child process —
+the policy travels via `PI_SUBAGENT_READONLY` / `PI_SUBAGENT_ALLOWED_PATHS` env, so
+grandchildren inherit it automatically. The child's system prompt states the sandbox
+so it works within it instead of retrying blocked calls. Limits: containment is
+lexical (a pre-existing symlink inside a root can point outside), and path checks
+cover the built-in file tools; bash stays classified regardless.
+
+### Caps — `maxRuntime` and `maxTokens`
+
+Also frontmatter **and** per-call/per-item params (minimum wins when both set):
+
+- **`maxRuntime: 300`** — wall-clock seconds; the child is stopped when exceeded.
+- **`maxTokens: 200000`** — cumulative input+output tokens across the child's turns
+  (cache traffic excluded).
+
+A capped run isn't discarded: the tool result is labeled (`⏱ … stopped after
+exceeding its cap`) and carries the partial output, so the parent can decide whether
+to narrow the task and retry.
+
+### Structured output — `outputSchema`
+
+Pass a JSON Schema (single mode, or per task/chain item) and the child is instructed
+to make its **final message nothing but conforming JSON**. The parent validates it
+(typebox `Value.Check`; markdown fences stripped) and returns the canonical JSON as
+the tool result — chain `{previous}` gets the validated JSON too. On a parse or
+validation failure the result is an error listing the violations plus the raw
+output, so the parent LLM can correct the task and retry.
+
+### Live view & cancel — `/agents running`
+
+While delegations run, the parent LLM is frozen inside the tool call — so cancelling
+a runaway child is the **user's** move. The footer shows `▶N` while N children run;
+`/agents running` (or the menu's **Running tasks**) lists them (agent, elapsed,
+tokens, task) and cancelling one kills just that child. Its task returns
+`⛔ cancelled by the user` with partial output — parallel siblings keep going, a
+chain stops at that step. (A detached/background mode with an LLM-callable cancel is
+a possible follow-up; today the roster is user-facing only.)
 
 ## 3. Nesting limits — depth cap + privilege
 
@@ -162,6 +218,10 @@ model: gpt-5.5                       # optional — bare id or "provider/id"; om
 mode: replace                        # optional — "replace" or "augment" (default)
 canDelegateTo: scout, planner        # optional — agents this one may delegate to ("*"=any; unset=none)
 askLimit: 2                          # optional — overrides the /agents asklimit default for this agent (0=off; see §4)
+readOnly: true                       # optional — hard read-only sandbox for delegated runs (see §2)
+allowedPaths: src, docs/api          # optional — path sandbox for delegated runs (relative → run cwd; see §2)
+maxRuntime: 300                      # optional — wall-clock cap in seconds for a delegated run
+maxTokens: 200000                    # optional — cumulative input+output token cap for a delegated run
 ---
 
 System prompt / instructions for the agent go here.

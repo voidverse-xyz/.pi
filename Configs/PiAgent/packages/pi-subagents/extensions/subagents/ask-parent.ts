@@ -13,14 +13,14 @@
  *
  * The flow is "summarize → ask → exit", NOT a blocking mid-run round-trip. That is a
  * deliberate consequence of how delegation works: while a subagent runs, the PARENT
- * AGENT (the LLM) is frozen inside the `subagent` tool call — it cannot think, so it
+ * AGENT (the LLM) is frozen inside the `delegate` tool call — it cannot think, so it
  * cannot answer a live question. The only moment the parent LLM can answer is when its
  * turn resumes, i.e. after the child's tool call returns. So:
  *
  *   1. The subagent calls ask_parent({ summary, question }) and ends its turn.
  *   2. delegate.ts (the parent's code) sees this tool call in the child's output
  *      stream, captures {summary, question} from its arguments, and cleanly stops the
- *      child — surfacing the pause as the `subagent` tool result.
+ *      child — surfacing the pause as the `delegate` tool result.
  *   3. The parent's turn resumes; the parent LLM reads the question + progress summary,
  *      answers it from its broader context, and delegates a continuation (to the same
  *      agent, another agent, or by finishing the work itself) carrying the goal, the

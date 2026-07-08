@@ -1,5 +1,5 @@
 /**
- * /browse-files — two-pane file/dir tree browser overlay.
+ * /browse — two-pane file/dir tree browser overlay.
  *
  *  ┌ left: lazy tree (dirs expand/collapse) ─┬ right: preview ─────────────┐
  *  │ selecting a file shows its content       │ a directory shows a listing │
@@ -10,6 +10,12 @@
  * a selected line range (`@path:12-40`). The overlay stays open so several
  * references can be gathered before closing.
  *
+ * Filter (/): an embedded editor in the footer fuzzy-filters the visible tree
+ * rows by name/path (order-preserving — no score re-sort). Only nodes already
+ * loaded/expanded are matched; the lazy tree is never force-loaded. Enter keeps
+ * the filter, Esc clears it; Esc in the tree also clears an active filter
+ * before it closes the panel (q always closes).
+ *
  * Layout/scroll/exact-height machinery is adapted from the plan-commit review
  * panel and the pi-changes panel (closure state, pull-based render).
  */
@@ -19,7 +25,7 @@ import { stat } from "node:fs/promises";
 import type { ExtensionCommandContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Editor, type EditorTheme, fuzzyMatch, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { appendToEditor, dirMention, fileMention, linesMention } from "./add-to-chat.ts";
 import { createNavKeys } from "./keys.ts";
 import { createRoot, flatten, loadChildren, type TreeNode } from "./tree.ts";
@@ -49,6 +55,34 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 	let focus: Focus = "tree";
 	let pendingG = false;
 
+	// Tree filter state — fuzzy-filters the currently visible (loaded) rows.
+	let treeFilter = "";
+	let editingFilter = false;
+	const editorTheme: EditorTheme = {
+		borderColor: (s) => theme.fg("accent", s),
+		selectList: {
+			selectedPrefix: (t) => theme.fg("accent", t),
+			selectedText: (t) => theme.fg("accent", t),
+			description: (t) => theme.fg("muted", t),
+			scrollInfo: (t) => theme.fg("dim", t),
+			noMatch: (t) => theme.fg("warning", t),
+		},
+	};
+	const filterEditor = new Editor(tui, editorTheme);
+	filterEditor.onChange = (text) => {
+		applyTreeFilter(text);
+		rerender();
+	};
+	filterEditor.onSubmit = (text) => {
+		// Enter keeps the filter and returns focus to the tree. Re-apply the
+		// submitted text: Editor.submitValue() fires onChange("") before
+		// onSubmit, so applyTreeFilter("") has already run by the time we
+		// get here (same re-apply idiom as pi-show-files' search editor).
+		editingFilter = false;
+		applyTreeFilter(text);
+		rerender();
+	};
+
 	// Preview state
 	let previewNode: TreeNode | null = null;
 	let previewKind: PreviewKind = "empty";
@@ -76,7 +110,12 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 	}
 
 	function rebuildRows() {
-		rows = flatten(root);
+		// Filter over the flattened visible rows only — never force-loads the
+		// lazy tree — and preserve flatten order (no fuzzy-score re-sort).
+		const all = flatten(root);
+		rows = treeFilter
+			? all.filter((n) => fuzzyMatch(treeFilter, `${n.name} ${n.rel}`).matches)
+			: all;
 		if (treeSelected >= rows.length) treeSelected = Math.max(0, rows.length - 1);
 	}
 
@@ -179,6 +218,42 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 	}
 	void initialLoad();
 
+	// ── tree filter ──────────────────────────────────────────────────────────────
+
+	// Re-filter, then re-seat the selection: stay on the same node when it is
+	// still visible, otherwise fall back to the first visible row.
+	function applyTreeFilter(q: string) {
+		treeFilter = q;
+		const prev = selectedNode();
+		rebuildRows();
+		let idx = prev ? rows.indexOf(prev) : -1;
+		if (idx < 0) idx = 0;
+		treeSelected = Math.min(idx, Math.max(0, rows.length - 1));
+		treeScroll = 0;
+		if (treeSelected >= treeScroll + contentH) treeScroll = treeSelected - contentH + 1;
+		const cur = selectedNode();
+		if (cur !== prev) void loadPreview(cur);
+	}
+
+	function openFilter() {
+		editingFilter = true;
+		filterEditor.setText(treeFilter);
+		rerender();
+	}
+
+	// Filter input (embedded footer editor, same idiom as pi-show-files' search).
+	// onChange live-applies; Enter keeps the filter; Esc clears it.
+	function handleFilterInput(data: string): void {
+		if (keys.cancel(data)) {
+			editingFilter = false;
+			applyTreeFilter("");
+			rerender();
+			return;
+		}
+		filterEditor.handleInput(data);
+		rerender();
+	}
+
 	// ── tree navigation ──────────────────────────────────────────────────────────
 
 	function moveTree(delta: number) {
@@ -228,8 +303,24 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 	}
 
 	function handleTreeInput(data: string): void {
-		if (keys.cancel(data) || data === "q") {
+		if (keys.cancel(data)) {
+			// Esc clears an active filter before it closes the panel (q always closes).
+			pendingG = false;
+			if (treeFilter) {
+				applyTreeFilter("");
+				rerender();
+			} else {
+				onDone();
+			}
+			return;
+		}
+		if (data === "q") {
 			onDone();
+			return;
+		}
+		if (data === "/") {
+			pendingG = false;
+			openFilter();
 			return;
 		}
 		if (keys.tab(data) || keys.right(data)) {
@@ -393,7 +484,8 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 	}
 
 	function handleInput(data: string): void {
-		if (focus === "tree") handleTreeInput(data);
+		if (editingFilter) handleFilterInput(data);
+		else if (focus === "tree") handleTreeInput(data);
 		else handlePreviewInput(data);
 	}
 
@@ -401,6 +493,9 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 
 	function treeColumn(width: number): string[] {
 		const out: string[] = [];
+		if (rows.length === 0 && treeFilter) {
+			out.push(pad(theme.fg("dim", truncateToWidth("  (no matches)", Math.max(1, width), "…")), width));
+		}
 		const visible = rows.slice(treeScroll, treeScroll + contentH);
 		for (let i = 0; i < visible.length; i++) {
 			const node = visible[i]!;
@@ -493,9 +588,13 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 		header.push(pad(truncateToWidth(title, innerW, "…"), innerW));
 
 		// pane labels row
+		const filterInfo = treeFilter
+			? theme.fg("accent", truncateToWidth(`  /${treeFilter}`, Math.max(1, leftW - 8), "…"))
+			: "";
 		const treeLabel =
 			(focus === "tree" ? theme.fg("accent", "▸ ") : theme.fg("dim", "  ")) +
-			(focus === "tree" ? theme.fg("text", "Tree") : theme.fg("dim", "Tree"));
+			(focus === "tree" ? theme.fg("text", "Tree") : theme.fg("dim", "Tree")) +
+			filterInfo;
 		const node = previewNode;
 		let prevTitle = "Preview";
 		if (node) prevTitle = node.rel || node.name;
@@ -509,8 +608,22 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 			selInfo;
 		const labelRow = pad(treeLabel, leftW) + sep + pad(prevLabel, rightW);
 
-		const footerRows = 2;
-		const overhead = header.length + 1 /*labels*/ + footerRows;
+		// Footer: the hint row, or the filter input block (variable height).
+		const footer: string[] = [rule(innerW)];
+		if (editingFilter) {
+			footer.push(pad(theme.fg("accent", " Filter tree (fuzzy)") + theme.fg("dim", "  (Enter keep, Esc clear)"), innerW));
+			for (const l of filterEditor.render(Math.max(10, innerW - 2))) footer.push(pad(` ${l}`, innerW));
+		} else {
+			const hint =
+				focus === "tree"
+					? "↑↓ move · → expand · ← collapse/parent · Enter open · / filter · a add · Tab preview · q close"
+					: previewKind === "file"
+						? "↑↓ line · s select · a add" + (selAnchor !== null ? " range" : " file") + " · Esc/Tab tree · q close"
+						: "↑↓ scroll · a add dir · Esc/Tab tree · q close";
+			footer.push(pad(theme.fg("dim", ` ${truncateToWidth(hint, innerW - 2, "…")}`), innerW));
+		}
+
+		const overhead = header.length + 1 /*labels*/ + footer.length;
 		contentH = Math.max(1, targetH - overhead);
 
 		// clamp scroll
@@ -525,14 +638,7 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 			lines.push(`${leftCol[i] ?? pad("", leftW)}${sep}${rightCol[i] ?? pad("", rightW)}`);
 		}
 
-		lines.push(rule(innerW));
-		const hint =
-			focus === "tree"
-				? "↑↓ move · → expand · ← collapse/parent · Enter open · a add · Tab preview · q close"
-				: previewKind === "file"
-					? "↑↓ line · s select · a add" + (selAnchor !== null ? " range" : " file") + " · Esc/Tab tree · q close"
-					: "↑↓ scroll · a add dir · Esc/Tab tree · q close";
-		lines.push(pad(theme.fg("dim", ` ${truncateToWidth(hint, innerW - 2, "…")}`), innerW));
+		lines.push(...footer);
 
 		if (lines.length < targetH) {
 			const insertAt = header.length + 1 + contentH;

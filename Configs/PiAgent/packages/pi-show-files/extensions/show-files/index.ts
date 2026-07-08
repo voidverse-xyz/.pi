@@ -17,8 +17,11 @@
  * /show-files reopens the session's last presentation after it's closed.
  *
  * Registered via pi.registerTool (modeled on pi-ask-user); the panel reuses
- * pi-browse's tree/preview/add-to-chat machinery. Headless subagents get a
- * graceful error (no TUI to present on).
+ * pi-browse's tree/preview/add-to-chat machinery. Headless subagents forward
+ * the presentation to the parent session's TUI via the optional `ipc`
+ * extension (like ask_user); the panel then names the asking subagent chain,
+ * mentions land in the PARENT's chat editor, and the outcome is relayed back
+ * to the child. Without pi-ipc they get a graceful error instead.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -26,6 +29,56 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type FileSpec, type PresentedFile, resolveFiles } from "./files.ts";
 import { createShowFilesPanel, type ShowFilesOutcome } from "./panel.ts";
+
+// ---------------------------------------------------------------------------
+// Optional ipc capability (no import — pure runtime rendezvous over pi.events).
+//
+// A headless subagent has no local TUI, so it forwards the presentation up to
+// its parent. The transport lives in the standalone `ipc` extension; we reach
+// it by emitting an `ipc:client` probe carrying a `claim` callback. If `ipc`
+// is installed AND this process has a parent channel, it claims synchronously
+// and does the fd round-trip; otherwise nothing claims and we return a
+// graceful error. No import means dropping `ipc` can't break this extension's
+// load.
+//
+// Message contract:
+//   method: "files.show"
+//   params  (child → parent): { title: string; summary?: string; files: FileSpec[] }
+//                             // each .path ABSOLUTE (pre-resolved against the child's cwd)
+//   result  (parent → child): { outcome: ShowFilesOutcome;   // parent-relative rels
+//                               shown: string[]; missing: string[] }
+//   errors: a thrown Error message propagates back as the busCall rejection
+// ---------------------------------------------------------------------------
+
+type ClaimFn = (params: unknown, meta: { method: string; from: string[] }) => Promise<unknown> | unknown;
+type IpcResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+interface ForwardedShowResult {
+	outcome: ShowFilesOutcome;
+	shown: string[];
+	missing: string[];
+}
+
+// Captured at session_start so the parent-side ipc:serve handler can render the
+// panel on this process's TUI when a headless child forwards a files.show up to us.
+let currentCtx: ExtensionContext | undefined;
+
+function busCall<T>(pi: ExtensionAPI, channel: string, method: string, params: unknown): Promise<IpcResult<T>> {
+	let claimed: ClaimFn | null = null;
+	pi.events.emit(channel, {
+		method,
+		claim: (fn: ClaimFn) => {
+			claimed = fn;
+		},
+	});
+	if (!claimed) return Promise.resolve({ ok: false, error: "no ipc provider" });
+	return Promise.resolve()
+		.then(() => (claimed as ClaimFn)(params, { method, from: [] }))
+		.then(
+			(value) => ({ ok: true, value: value as T }) as IpcResult<T>,
+			(err) => ({ ok: false, error: err instanceof Error ? err.message : String(err) }) as IpcResult<T>,
+		);
+}
 
 // ---------------------------------------------------------------------------
 // Schema — what the agent fills in.
@@ -73,9 +126,16 @@ interface ShowFilesDetails extends ShowFilesOutcome {
 	shown: string[];
 	missing: string[];
 	presented: boolean;
+	/** True when the panel ran on the parent session's TUI (forwarded over ipc). */
+	forwarded?: boolean;
 }
 
-function summarize(title: string, files: PresentedFile[], outcome: ShowFilesOutcome): string {
+function summarize(
+	title: string,
+	files: PresentedFile[],
+	outcome: ShowFilesOutcome,
+	opts?: { forwarded?: boolean },
+): string {
 	const missing = files.filter((f) => f.kind === "missing").map((f) => f.rel);
 	const parts: string[] = [];
 	let head = `Presented "${title}" (${files.length} file${files.length !== 1 ? "s" : ""})`;
@@ -87,8 +147,13 @@ function summarize(title: string, files: PresentedFile[], outcome: ShowFilesOutc
 			: "User closed the panel without opening any file previews.",
 	);
 	if (outcome.added.length > 0)
-		parts.push(`User added to the chat editor (will arrive as context with their next message): ${outcome.added.join(" ")}.`);
+		parts.push(
+			opts?.forwarded
+				? `User added to the parent session's chat editor (context arrives with the user's next message to the parent agent, not to you): ${outcome.added.join(" ")}.`
+				: `User added to the chat editor (will arrive as context with their next message): ${outcome.added.join(" ")}.`,
+		);
 	if (outcome.note) parts.push(`Note from user: "${outcome.note}"`);
+	if (opts?.forwarded) parts.push("(Shown on the parent session's screen — this subagent has no TUI.)");
 	return parts.join("\n");
 }
 
@@ -100,10 +165,11 @@ async function presentPanel(
 	title: string,
 	summary: string | undefined,
 	files: PresentedFile[],
+	from?: string[],
 ): Promise<ShowFilesOutcome> {
 	return ctx.ui.custom<ShowFilesOutcome>(
 		(tui, theme, keybindings, done) =>
-			createShowFilesPanel({ title, summary, files, ctx, tui, theme, keybindings, onDone: done }),
+			createShowFilesPanel({ title, summary, files, from, ctx, tui, theme, keybindings, onDone: done }),
 		{
 			overlay: true,
 			overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 },
@@ -123,13 +189,16 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 			"Present a curated set of files to the user in a full-screen browsable panel. Use it when the user asks " +
 			"which files implement a feature, where the docs for something live, or wants a guided tour of part of the " +
 			"codebase. Give the presentation a title and short summary; give each file a title and a why-it-matters " +
-			"description, optionally grouped into sections, with line regions highlighting the exact code. The result " +
-			"reports what the user opened, what they added to chat, and any note they typed — use that feedback.",
+			"description, optionally grouped into sections, with line regions highlighting the exact code. Markdown and " +
+			"HTML files preview rendered by default (give regions when exact lines matter — that forces the raw view). " +
+			"From a subagent the panel appears on the parent session's screen and mentions go to the parent's chat " +
+			"editor. The result reports what the user opened, what they added to chat, and any note they typed — use " +
+			"that feedback.",
 		promptSnippet:
 			"show_files — present an annotated, browsable set of files (titles, descriptions, highlighted line regions) to the user",
 		promptGuidelines: [
 			'When the user asks "which files do X" or "show me the docs/code for Y", call show_files with the relevant files instead of listing paths in prose.',
-			"Order files most-important-first, give each a short title and a one-sentence description, and use `regions` to point at the exact lines (with a note) rather than making the user hunt.",
+			"Order files most-important-first, give each a short title and a one-sentence description, and use `regions` to point at the exact lines (with a note) rather than making the user hunt. Markdown/HTML preview rendered unless the spec has regions.",
 			"Use `group` to section 4+ files (e.g. 'Core flow', 'Tests', 'Config').",
 			"Read the tool result: it says which files the user actually opened, what they pulled into chat, and any note they typed — follow up on that instead of re-explaining everything.",
 		],
@@ -139,27 +208,6 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 			const specs = params.files as FileSpec[];
 			const files = await resolveFiles(ctx.cwd, specs);
 			const missing = files.filter((f) => f.kind === "missing").map((f) => f.rel);
-
-			if (ctx.mode !== "tui" || !ctx.hasUI) {
-				const details: ShowFilesDetails = {
-					title: params.title,
-					shown: [],
-					missing,
-					presented: false,
-					opened: [],
-					added: [],
-				};
-				return {
-					content: [
-						{
-							type: "text",
-							text: "Error: show_files needs the interactive TUI (headless session — describe the files in prose instead).",
-						},
-					],
-					details,
-					isError: true,
-				};
-			}
 
 			if (files.every((f) => f.kind === "missing")) {
 				const details: ShowFilesDetails = {
@@ -176,6 +224,53 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 					],
 					details,
 					isError: true,
+				};
+			}
+
+			if (ctx.mode !== "tui" || !ctx.hasUI) {
+				// Headless subagent — forward to the parent's TUI via the optional `ipc`
+				// extension. Paths are pre-resolved to absolute against THIS process's cwd
+				// so the parent presents the same files regardless of its own cwd. The
+				// parent stamps our identity onto the request's `from`, so the user sees
+				// which subagent is showing files. If ipc isn't installed or there's no
+				// parent channel, nothing claims the probe and we return a graceful error.
+				const fwdFiles = specs.map((s, i) => ({ ...s, path: files[i]!.abs }));
+				const res = await busCall<ForwardedShowResult>(pi, "ipc:client", "files.show", {
+					title: params.title,
+					summary: params.summary,
+					files: fwdFiles,
+				});
+				if (!res.ok) {
+					const details: ShowFilesDetails = {
+						title: params.title,
+						shown: [],
+						missing,
+						presented: false,
+						opened: [],
+						added: [],
+					};
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Error: show_files needs an interactive UI and none is reachable (${res.error}). Describe the files in prose instead.`,
+							},
+						],
+						details,
+						isError: true,
+					};
+				}
+				const details: ShowFilesDetails = {
+					title: params.title,
+					shown: res.value.shown,
+					missing: res.value.missing,
+					presented: true,
+					forwarded: true,
+					...res.value.outcome,
+				};
+				return {
+					content: [{ type: "text", text: summarize(params.title, files, res.value.outcome, { forwarded: true }) }],
+					details,
 				};
 			}
 
@@ -211,6 +306,7 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 				details.opened.length > 0 ? `opened ${details.opened.length}/${details.shown.length}` : "nothing opened";
 			let head = `${theme.fg("success", "✓ ")}${theme.fg("accent", details.title)}${theme.fg("muted", ` — ${openedTxt}`)}`;
 			if (details.missing.length > 0) head += theme.fg("warning", ` · ${details.missing.length} missing`);
+			if (details.forwarded) head += theme.fg("dim", " · via parent");
 			lines.push(head);
 			if (details.added.length > 0) lines.push(theme.fg("text", `  added to chat: ${details.added.join(" ")}`));
 			if (details.note) lines.push(theme.fg("text", `  note: ${details.note}`));
@@ -218,10 +314,49 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	// Parent side: when a headless child forwards a "files.show" up through the `ipc`
+	// extension, ipc probes `ipc:serve` for a capability that can render it. Claim it
+	// only when this process has an interactive TUI (otherwise ipc forwards further
+	// up). The claim is synchronous so the probe sees it; `meta.from` names the
+	// asking subagent chain. pi-ipc serializes local presentations process-wide, so
+	// parallel forwarding subagents show one panel after another.
+	pi.events.on("ipc:serve", (data) => {
+		const { method, claim } = data as { method: string; claim: (fn: ClaimFn) => void };
+		if (method !== "files.show" || currentCtx?.mode !== "tui" || !currentCtx.hasUI) return;
+		claim(async (params, meta) => {
+			const req = params as { title?: string; summary?: string; files?: FileSpec[] };
+			const ctx = currentCtx as ExtensionContext;
+			const title = typeof req.title === "string" && req.title ? req.title : "Files";
+			const summary = typeof req.summary === "string" && req.summary ? req.summary : undefined;
+			const specs = Array.isArray(req.files) ? req.files : [];
+			if (specs.length === 0) throw new Error("no files given");
+			const files = await resolveFiles(ctx.cwd, specs);
+			const missing = files.filter((f) => f.kind === "missing").map((f) => f.rel);
+			if (files.every((f) => f.kind === "missing"))
+				throw new Error(`none of the given paths exist: ${missing.join(", ")}. Fix the paths and retry.`);
+			// Deliberate: a forwarded presentation becomes this session's "last" one, so
+			// /show-files on the parent reopens the most recent thing that was on screen.
+			lastPresentation = { title, summary, specs };
+			const outcome = await presentPanel(ctx, title, summary, files, meta.from);
+			const result: ForwardedShowResult = { outcome, shown: files.map((f) => f.rel), missing };
+			return result;
+		});
+	});
+
+	pi.on("session_start", (_event, ctx) => {
+		currentCtx = ctx;
+	});
+
+	pi.on("session_shutdown", () => {
+		currentCtx = undefined;
+	});
+
 	pi.registerCommand("show-files", {
 		description: "Reopen the agent's last show_files presentation",
 		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) {
+			// ctx.ui.custom() needs a real TUI, not just any UI surface — gate on the
+			// mode explicitly (a non-"tui" ctx with hasUI would fault in presentPanel).
+			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				ctx.ui.notify("/show-files requires interactive TUI mode", "error");
 				return;
 			}

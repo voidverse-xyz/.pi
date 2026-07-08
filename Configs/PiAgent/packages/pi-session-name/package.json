@@ -1,7 +1,7 @@
 {
   "name": "pi-session-name",
   "version": "1.0.0",
-  "description": "Name sessions for the session selector via setSessionName (/session-rename).",
+  "description": "Name sessions for the session selector via setSessionName (/session-rename [name | --clear]) plus heuristic auto-naming from the first prompt.",
   "keywords": [
     "pi-package"
   ],

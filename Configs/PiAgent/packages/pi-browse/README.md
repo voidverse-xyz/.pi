@@ -1,13 +1,14 @@
 # pi-browse
 
-`/browse-files` — a native Pi TUI file & directory tree browser with **add-to-chat**.
+`/browse` (alias: `/browse-files`) — a native Pi TUI file & directory tree browser with
+**add-to-chat**.
 
 ## What it does
 
 A full-screen two-pane overlay:
 
 - **Left — tree.** A lazy filesystem tree rooted at the working directory. Directories
-  expand/collapse on demand (children are read only when first opened), so `/browse-files`
+  expand/collapse on demand (children are read only when first opened), so `/browse`
   never walks the whole tree up front. Everything is shown — dotfiles, ignored paths,
   `node_modules`, `.git` — no filtering.
 - **Right — preview.** Selecting a file shows its contents (with a line-number gutter
@@ -31,6 +32,22 @@ clear the selection. With no selection, `a` in the preview adds the whole file.
 
 The overlay stays open so you can add several references in one pass.
 
+## Filter
+
+Press **`/`** in the tree pane to open a filter input in the footer. Typing
+fuzzy-filters the visible tree rows by name and path, live, preserving tree order
+(no relevance re-sort). Only nodes you have already expanded are matched — the lazy
+tree is never force-loaded, so expand a directory first to filter inside it.
+
+- **Enter** keeps the filter and returns focus to the tree (the active query shows
+  next to the `Tree` label).
+- **Esc** in the input clears the filter.
+- **Esc** in the tree with a filter active clears it (a second `Esc` closes the
+  panel; `q` always closes immediately).
+
+If nothing matches, the tree shows a dim `(no matches)` line. When the selected node
+is filtered out, the selection re-seats onto the first visible row.
+
 ## Keys
 
 **Tree pane**
@@ -41,10 +58,12 @@ The overlay stays open so you can add several references in one pass.
 | `→`/`l` | expand directory |
 | `←`/`h` | collapse / jump to parent |
 | `Enter` | expand dir, or open file into preview |
+| `/` | filter the tree (fuzzy) |
 | `a` | add selected file/dir to chat |
 | `Tab` | focus the preview pane |
 | `g`/`G`, `PgUp`/`PgDn`, `Ctrl+U`/`Ctrl+D` | scroll |
-| `Esc` / `q` | close |
+| `Esc` | clear filter, else close |
+| `q` | close |
 
 **Preview pane (file)**
 

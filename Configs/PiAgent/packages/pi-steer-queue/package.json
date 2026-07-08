@@ -1,7 +1,7 @@
 {
   "name": "pi-steer-queue",
   "version": "1.0.0",
-  "description": "Owns a message typed while the agent is busy — steer, queue, or cancel — via an above-editor widget.",
+  "description": "Owns messages typed while the agent is busy — a pending-message queue with cancel, edit, reorder, send-now, and steer/queue control via an above-editor widget and a /queue panel.",
   "keywords": [
     "pi-package"
   ],

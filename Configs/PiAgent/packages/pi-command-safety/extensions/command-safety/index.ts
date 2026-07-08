@@ -25,6 +25,10 @@
  * workspace copy), so `/safety` changes and the startup default survive restarts.
  * Edit that file's `"mode"` to change the startup default without launching pi.
  *
+ * Every decision (auto-allowed read-only, mode-off auto-run, user approve/deny)
+ * is appended to `<agent-dir>/command-safety-audit.jsonl` — see audit.ts. A
+ * `/command-safety-log` command prints the recent entries.
+ *
  * Only agent `bash` tool calls are gated — user-run `!` commands are never
  * intercepted. In a non-interactive process (print/json) there is no local UI to
  * confirm with: a subagent spawned by the delegation tool forwards the confirmation
@@ -41,6 +45,7 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { AUDIT_PATH, auditLog, readRecentEntries } from "./audit.ts";
 import { CATEGORY_META, type Category, classifyCommand } from "./categories.ts";
 import { confirmGatedCommand } from "./confirm.ts";
 
@@ -138,8 +143,15 @@ export default function (pi: ExtensionAPI) {
 		if (typeof command !== "string" || command.trim() === "") return undefined;
 
 		const category = classifyCommand(command);
-		if (!category) return undefined;
-		if (!MODE_CATEGORIES[currentMode].has(category)) return undefined;
+		if (!category) {
+			auditLog({ command, category: "read-only", mode: currentMode, decision: "auto-allowed", source: "auto", forwarded: false });
+			return undefined;
+		}
+		if (!MODE_CATEGORIES[currentMode].has(category)) {
+			// Gated category, but the current mode doesn't confirm it (e.g. mode=off).
+			auditLog({ command, category, mode: currentMode, decision: "auto-allowed", source: "auto", forwarded: false });
+			return undefined;
+		}
 
 		if (!ctx.hasUI) {
 			// Headless subagent: forward the confirmation up to the parent's TUI via the
@@ -147,7 +159,13 @@ export default function (pi: ExtensionAPI) {
 			// no parent channel (e.g. a plain `pi -p` run), nothing claims the probe and we
 			// fail safe by blocking.
 			const res = await busCall<{ approved: boolean }>(pi, "ipc:client", "safety.confirm", { command, category });
-			if (res.ok && res.value.approved) return undefined;
+			if (res.ok && res.value.approved) {
+				auditLog({ command, category, mode: currentMode, decision: "approved", source: "user", forwarded: true });
+				return undefined;
+			}
+			// res.ok means a human declined on the parent's TUI; otherwise nothing claimed
+			// the probe and the block happened with no human involved.
+			auditLog({ command, category, mode: currentMode, decision: "denied", source: res.ok ? "user" : "auto", forwarded: res.ok });
 			return {
 				block: true,
 				reason: res.ok
@@ -157,6 +175,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const approved = await confirmGatedCommand(ctx, category, command);
+		auditLog({ command, category, mode: currentMode, decision: approved ? "approved" : "denied", source: "user", forwarded: false });
 		if (!approved) {
 			ctx.ui.notify(`Blocked ${CATEGORY_META[category].label.toLowerCase()} command`, "warning");
 			return { block: true, reason: `Blocked by command-safety (${category}; declined by user)` };
@@ -197,6 +216,27 @@ export default function (pi: ExtensionAPI) {
 			saveMode(arg);
 			updateStatus(ctx);
 			ctx.ui.notify(`Command safety: ${arg}`, "info");
+		},
+	});
+
+	pi.registerCommand("command-safety-log", {
+		description: "Show the last 20 command-safety audit entries",
+		handler: async (_args, ctx) => {
+			const entries = readRecentEntries(20);
+			if (entries.length === 0) {
+				ctx.ui.notify(`No command-safety audit entries yet.\nLog: ${AUDIT_PATH}`, "info");
+				return;
+			}
+			const lines = entries.map((e) => {
+				// "2026-07-06T12:34:56.789Z" → "2026-07-06 12:34:56" for readability.
+				const ts = e.ts.replace("T", " ").replace(/\.\d+Z?$/, "");
+				const cmd = e.command.length > 80 ? `${e.command.slice(0, 77)}...` : e.command;
+				const via = e.forwarded ? ", via subagent" : "";
+				return `${ts}  ${e.decision.padEnd(12)} ${e.category}/${e.mode} (${e.source}${via})  $ ${cmd}`;
+			});
+			lines.push("");
+			lines.push(`Log: ${AUDIT_PATH} (append-only, grows unbounded)`);
+			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});
 

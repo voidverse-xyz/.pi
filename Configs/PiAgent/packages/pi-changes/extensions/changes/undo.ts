@@ -10,6 +10,9 @@
  *    refuse rather than guess.
  *
  * A drift check warns when the file changed outside the agent since its last edit.
+ * `undoAllFiles` applies the baseline paths to every undoable file behind a single
+ * confirmation that lists exactly what will happen (baseline-unknown and binary
+ * files are skipped and reported, never guessed at in bulk).
  * Runs from the command loop with the overlay closed, so `ctx.ui.confirm` is safe.
  */
 
@@ -29,6 +32,29 @@ function appendUndone(pi: ExtensionAPI, abs: string): void {
 	pi.appendEntry(UNDONE_TYPE, { v: 1, path: abs });
 }
 
+/** Restore the captured pre-image (recreating the file if since deleted) and mark undone. */
+async function restoreBaseline(pi: ExtensionAPI, fc: FileChange): Promise<void> {
+	await withFileMutationQueue(fc.abs, async () => {
+		await fs.promises.mkdir(path.dirname(fc.abs), { recursive: true });
+		await fs.promises.writeFile(fc.abs, fc.baseline?.content ?? "", "utf8");
+	});
+	appendUndone(pi, fc.abs);
+}
+
+/** Delete an agent-created file (tolerating it already being gone) and mark undone. */
+async function deleteCreated(pi: ExtensionAPI, fc: FileChange): Promise<void> {
+	await withFileMutationQueue(fc.abs, async () => {
+		await fs.promises.unlink(fc.abs).catch(() => {});
+	});
+	appendUndone(pi, fc.abs);
+}
+
+/** True when the file changed outside the agent since its last tracked edit. */
+function hasDrift(fc: FileChange): boolean {
+	if (!fc.currentExists || fc.currentUnreadable || fc.current === null || !fc.lastPostHash) return false;
+	return sha256(fc.current) !== fc.lastPostHash;
+}
+
 export async function undoFile(
 	pi: ExtensionAPI,
 	ctx: ExtensionCommandContext,
@@ -43,14 +69,12 @@ export async function undoFile(
 	}
 
 	// Drift: the file changed outside the agent's edit/write since its last touch.
-	if (fc.currentExists && !fc.currentUnreadable && fc.current !== null && fc.lastPostHash) {
-		if (sha256(fc.current) !== fc.lastPostHash) {
-			const ok = await ctx.ui.confirm(
-				"File changed outside the agent",
-				`${fc.rel} changed since the agent's last edit. Undo anyway (this discards those outside changes)?`,
-			);
-			if (!ok) return { ok: false, message: "Undo cancelled", level: "info" };
-		}
+	if (hasDrift(fc)) {
+		const ok = await ctx.ui.confirm(
+			"File changed outside the agent",
+			`${fc.rel} changed since the agent's last edit. Undo anyway (this discards those outside changes)?`,
+		);
+		if (!ok) return { ok: false, message: "Undo cancelled", level: "info" };
 	}
 
 	if (!fc.hasBaseline) return undoBaselineUnknown(pi, ctx, fc);
@@ -58,11 +82,7 @@ export async function undoFile(
 	const base = fc.baseline!;
 	try {
 		if (base.existed) {
-			await withFileMutationQueue(fc.abs, async () => {
-				await fs.promises.mkdir(path.dirname(fc.abs), { recursive: true });
-				await fs.promises.writeFile(fc.abs, base.content ?? "", "utf8");
-			});
-			appendUndone(pi, fc.abs);
+			await restoreBaseline(pi, fc);
 			return { ok: true, message: `Reverted ${fc.rel} to its pre-session state`, level: "info" };
 		}
 
@@ -70,15 +90,100 @@ export async function undoFile(
 		if (fc.currentExists) {
 			const ok = await ctx.ui.confirm("Delete agent-created file?", fc.rel);
 			if (!ok) return { ok: false, message: "Undo cancelled", level: "info" };
-			await withFileMutationQueue(fc.abs, async () => {
-				await fs.promises.unlink(fc.abs).catch(() => {});
-			});
 		}
-		appendUndone(pi, fc.abs);
+		await deleteCreated(pi, fc);
 		return { ok: true, message: `Removed agent-created ${fc.rel}`, level: "info" };
 	} catch (e) {
 		return { ok: false, message: `Undo failed for ${fc.rel}: ${String(e)}`, level: "error" };
 	}
+}
+
+// ── Restore all ───────────────────────────────────────────────────────────────
+
+interface RestorePlanItem {
+	fc: FileChange;
+	action: "restore" | "delete";
+	note?: string;
+}
+
+/** Cap the confirmation listing so a huge changeset can't flood the dialog. */
+const MAX_LISTED = 20;
+
+/**
+ * Undo every undoable change behind ONE confirmation listing what will happen:
+ * captured baselines restored, agent-created files deleted; baseline-unknown,
+ * binary/oversized, already-reverted, and already-deleted files skipped (and
+ * reported). Reuses the same restore/delete paths as the single-file undo.
+ */
+export async function undoAllFiles(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	changes: FileChange[],
+): Promise<UndoOutcome> {
+	const plan: RestorePlanItem[] = [];
+	const skipped: { fc: FileChange; reason: string }[] = [];
+
+	for (const fc of changes) {
+		if (fc.status === "reverted") {
+			skipped.push({ fc, reason: "already reverted" });
+		} else if (!fc.hasBaseline) {
+			skipped.push({ fc, reason: "no captured baseline" });
+		} else if (fc.baseline!.unrestorable) {
+			skipped.push({ fc, reason: "original was binary or too large" });
+		} else if (fc.baseline!.existed) {
+			plan.push({
+				fc,
+				action: "restore",
+				note: hasDrift(fc) ? "changed outside the agent — those changes will be discarded" : undefined,
+			});
+		} else if (fc.currentExists) {
+			plan.push({ fc, action: "delete" });
+		} else {
+			skipped.push({ fc, reason: "already deleted" });
+		}
+	}
+
+	if (plan.length === 0) {
+		return {
+			ok: false,
+			message: `Nothing to restore — ${skipped.length} file${skipped.length === 1 ? "" : "s"} skipped`,
+			level: "warning",
+		};
+	}
+
+	const lines: string[] = [];
+	for (const item of plan.slice(0, MAX_LISTED)) {
+		lines.push(`${item.action === "restore" ? "restore" : "delete "} ${item.fc.rel}${item.note ? ` — ${item.note}` : ""}`);
+	}
+	if (plan.length > MAX_LISTED) lines.push(`…and ${plan.length - MAX_LISTED} more`);
+	for (const s of skipped.slice(0, MAX_LISTED)) lines.push(`skip    ${s.fc.rel} — ${s.reason}`);
+	if (skipped.length > MAX_LISTED) lines.push(`…and ${skipped.length - MAX_LISTED} more skipped`);
+
+	const ok = await ctx.ui.confirm("Restore ALL agent changes?", lines.join("\n"));
+	if (!ok) return { ok: false, message: "Restore all cancelled", level: "info" };
+
+	let restored = 0;
+	let deleted = 0;
+	let failed = 0;
+	let firstError = "";
+	for (const item of plan) {
+		try {
+			if (item.action === "restore") {
+				await restoreBaseline(pi, item.fc);
+				restored++;
+			} else {
+				await deleteCreated(pi, item.fc);
+				deleted++;
+			}
+		} catch (e) {
+			failed++;
+			if (!firstError) firstError = `${item.fc.rel}: ${String(e)}`;
+		}
+	}
+
+	let message = `Restore all: restored ${restored}, deleted ${deleted}, skipped ${skipped.length}`;
+	if (failed) message += `, failed ${failed} (first: ${firstError})`;
+	return { ok: failed === 0, message, level: failed ? "error" : "info" };
 }
 
 async function undoBaselineUnknown(

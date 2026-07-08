@@ -1,8 +1,8 @@
 /**
- * Lazy filesystem tree model for the /browse-files panel.
+ * Lazy filesystem tree model for the /browse panel.
  *
  * Nodes are loaded on demand: a directory's children are read only when it is
- * first expanded, so opening /browse-files never walks the whole tree up front.
+ * first expanded, so opening /browse never walks the whole tree up front.
  * "Show everything" — no gitignore/dotfile filtering (per the extension's remit);
  * unreadable directories simply expand to an empty child list.
  */

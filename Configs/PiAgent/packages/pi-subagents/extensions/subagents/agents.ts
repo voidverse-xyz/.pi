@@ -12,6 +12,10 @@
  *   tools: read, grep, find, ls        # optional; omitted → inherit all tools
  *   model: gpt-5.5                      # optional; bare id or "provider/id"; omitted → inherit
  *   askLimit: 2                         # optional; overrides the /agents asklimit default for this agent (0 = no ask_parent)
+ *   readOnly: true                      # optional; hard read-only sandbox for delegated runs (see guard.ts)
+ *   allowedPaths: src, docs/api         # optional; path sandbox for delegated runs (relative → child cwd)
+ *   maxRuntime: 300                     # optional; wall-clock cap (seconds) for a delegated run
+ *   maxTokens: 200000                   # optional; cumulative input+output token cap for a delegated run
  *   ---
  *   System prompt / instructions for the agent go here.
  *
@@ -50,6 +54,26 @@ export interface AgentConfig {
 	 * Enforced by delegate.ts, which counts asks per agent name and resets each turn.
 	 */
 	askLimit?: number;
+	/**
+	 * Hard read-only sandbox (frontmatter `readOnly: true`): the spawned child may not
+	 * edit/write files, and bash is allowed only for provably read-only commands
+	 * (classified by pi-command-safety's conservative classifier). Enforced in-child by
+	 * guard.ts via a blocking tool_call handler; delegate calls can turn it ON for a run
+	 * but never off. Applies to delegation only — the foreground switcher ignores it.
+	 */
+	readOnly?: boolean;
+	/**
+	 * Path sandbox (frontmatter `allowedPaths:`, comma list): file tools may only touch
+	 * paths inside these roots, and bash is restricted to provably read-only commands
+	 * whose path-looking tokens stay inside them. Relative entries resolve against the
+	 * child's cwd at spawn time. Enforced in-child by guard.ts; delegate calls can only
+	 * tighten the set.
+	 */
+	allowedPaths?: string[];
+	/** Wall-clock cap in seconds for a delegated run (frontmatter `maxRuntime:`); the child is stopped when exceeded. */
+	maxRuntime?: number;
+	/** Cumulative token cap (input+output across turns) for a delegated run (frontmatter `maxTokens:`). */
+	maxTokens?: number;
 	/**
 	 * How to scope the child's skill catalog (frontmatter `skills:`):
 	 *   - omitted (`undefined`) ⇒ inherit the full auto-discovered catalog (unchanged).
@@ -153,6 +177,18 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 		const askLimitNum = Number(frontmatter.askLimit);
 		const askLimit = Number.isInteger(askLimitNum) && askLimitNum >= 0 ? askLimitNum : undefined;
 
+		// Sandbox + budget frontmatter. All optional; delegate.ts merges these with
+		// per-call params (calls may only tighten, never loosen).
+		const readOnly = frontmatter.readOnly?.trim().toLowerCase() === "true" || undefined;
+		const allowedPaths = frontmatter.allowedPaths
+			?.split(",")
+			.map((p: string) => p.trim())
+			.filter(Boolean);
+		const maxRuntimeNum = Number(frontmatter.maxRuntime);
+		const maxRuntime = Number.isFinite(maxRuntimeNum) && maxRuntimeNum > 0 ? maxRuntimeNum : undefined;
+		const maxTokensNum = Number(frontmatter.maxTokens);
+		const maxTokens = Number.isInteger(maxTokensNum) && maxTokensNum > 0 ? maxTokensNum : undefined;
+
 		// `skills:` scopes the child catalog: "none" ⇒ --no-skills; a comma list ⇒ only those
 		// named skills; omitted ⇒ inherit the full catalog.
 		const rawSkills = frontmatter.skills?.trim();
@@ -171,6 +207,10 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
 			mode,
 			canDelegateTo,
 			askLimit,
+			readOnly,
+			allowedPaths: allowedPaths && allowedPaths.length > 0 ? allowedPaths : undefined,
+			maxRuntime,
+			maxTokens,
 			skills,
 			systemPrompt: body,
 			source,

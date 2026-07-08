@@ -14,6 +14,7 @@ it runs. User-typed `!` commands are never intercepted — only agent tool calls
 | `categories.ts` | **The data.** Which commands map to which category, and how each category is confirmed. | Adding/adjusting commands or category behavior. **This is the file you want 90% of the time.** |
 | `index.ts` | The wiring. `tool_call` hook, mode gating (`off`/`on`/`max`), the `/safety` command, mode persistence, status-line glyph. | Adding a new category, or changing which modes gate which categories. |
 | `delayed-confirm.ts` | The confirmation dialog UI (countdown lock, key handling). | Changing how the prompt looks/behaves. Rarely. |
+| `audit.ts` | The decision audit log (JSONL append + reader for `/command-safety-log`). | Changing what gets logged or the entry shape. |
 | `README.md` | This file. | Keep in sync when structure changes. |
 
 ## How classification works
@@ -95,6 +96,28 @@ All in `categories.ts` unless noted:
 3. Add a `CATEGORY_ORDER` block at the correct severity position (order matters).
 4. **In `index.ts`:** add the category to the appropriate `MODE_CATEGORIES` sets,
    or no mode will gate it.
+
+## Audit log
+
+Every decision is appended as one JSON line to
+`~/.pi/agent/command-safety-audit.jsonl`:
+
+```json
+{"ts":"2026-07-06T12:34:56.789Z","command":"rm -rf build","category":"destructive","mode":"max","decision":"denied","source":"user","forwarded":false}
+```
+
+- `decision`: `auto-allowed` (read-only builtin, or the mode doesn't gate the
+  category — e.g. `mode=off`), `approved`, or `denied`.
+- `source`: `user` when a human confirmed/declined; `auto` when no human was
+  involved (read-only pass-through, mode pass-through, or a headless block with
+  no parent to ask).
+- `forwarded`: `true` when the confirmation came from a headless subagent and
+  was answered on the parent's TUI via the optional `ipc` extension.
+
+`/command-safety-log` prints the last 20 entries and the log path. Writes are
+best-effort: any failure is silently swallowed so auditing can never block a
+command. The file is append-only and **grows unbounded** — there is no rotation
+yet; truncate or delete it manually if it gets large.
 
 ## Testing & reloading
 

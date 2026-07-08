@@ -1,7 +1,7 @@
 {
   "name": "pi-subagents",
   "version": "1.0.0",
-  "description": "Subagents for Pi: a foreground agent switcher plus an LLM-callable delegation tool (single/parallel/chain) spawning isolated pi processes, with nesting-depth control and ask_parent.",
+  "description": "Subagents for Pi: a foreground agent switcher plus an LLM-callable delegate tool (single/parallel/chain) spawning isolated pi processes, with nesting-depth control, ask_parent, hard readOnly/allowedPaths sandboxing, maxRuntime/maxTokens caps, outputSchema validation, and user-cancellable live delegations.",
   "keywords": ["pi-package"],
   "pi": {
     "extensions": ["./extensions"]

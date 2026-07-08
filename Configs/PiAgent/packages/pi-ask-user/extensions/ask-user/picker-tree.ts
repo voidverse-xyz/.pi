@@ -1,10 +1,11 @@
 /**
- * Lazy filesystem tree model for the /browse-files panel.
+ * Lazy filesystem tree model for the ask_user file-picker input.
  *
  * Nodes are loaded on demand: a directory's children are read only when it is
- * first expanded, so opening /browse-files never walks the whole tree up front.
- * "Show everything" — no gitignore/dotfile filtering (per the extension's remit);
- * unreadable directories simply expand to an empty child list.
+ * first expanded, so opening the picker never walks the whole tree up front.
+ * "Show everything" — no gitignore/dotfile filtering; unreadable directories
+ * simply expand to an empty child list. The tree is rooted at the asking
+ * agent's cwd.
  */
 
 import { readdir, stat } from "node:fs/promises";
@@ -13,7 +14,7 @@ import { join, relative } from "node:path";
 export interface TreeNode {
 	name: string;
 	abs: string;
-	/** Path relative to the browse root (cwd). "" for the root itself. */
+	/** Path relative to the picker root (cwd). "" for the root itself. */
 	rel: string;
 	isDir: boolean;
 	depth: number;

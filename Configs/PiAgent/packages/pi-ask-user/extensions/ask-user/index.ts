@@ -9,13 +9,10 @@
  * `questionnaire.ts` examples.)
  *
  * One call can bundle several inputs, each of these types:
- *   - "text"     — a free-text answer.
- *   - "radio"    — pick exactly one of a list of options.
- *   - "multi"    — pick any number of a list of options.
- *   - "number"   — enter a numeric value.
- *   - "boolean"  — choose Yes/No.
- *   - "datetime" — enter a date/time string.
- *   - "file"     — pick or type a file/directory path.
+ *   - "text"  — a free-text answer.
+ *   - "radio" — pick exactly one of a list of options.
+ *   - "multi" — pick any number of a list of options.
+ *   - "file"  — pick or type a file/directory path.
  *
  * The panel UI, normalization, and answer summary live in ask.ts. When a headless
  * subagent calls ask_user it has no local TUI, so this tool forwards the request via
@@ -39,6 +36,7 @@ import {
 	summarizeAnswers,
 	type UserInputsResult,
 	validateInputs,
+	validateRawInputs,
 } from "./ask.ts";
 
 // ---------------------------------------------------------------------------
@@ -83,15 +81,24 @@ function busCall<T>(pi: ExtensionAPI, channel: string, method: string, params: u
 const OptionSchema = Type.Object({
 	title: Type.String({ description: "Short label for this option" }),
 	description: Type.Optional(Type.String({ description: "Optional detail shown beneath the option" })),
-});
+	value: Type.Optional(
+		Type.String({ description: "Optional stable value returned when this option is selected, instead of its display title." }),
+	),
+}, { additionalProperties: false });
 
 const InputSchema = Type.Object({
-	type: StringEnum(["text", "radio", "multi", "number", "boolean", "datetime", "file"] as const, {
+	type: StringEnum(["text", "radio", "multi", "file"] as const, {
 		description:
 			"'text' for a free-text answer, 'radio' to pick exactly one option, 'multi' to pick any number of options, " +
-			"'number' for a numeric value, 'boolean' for Yes/No, 'datetime' for a date/time string, and 'file' to pick or type a path",
+			"and 'file' to pick or type a path",
 	}),
 	title: Type.String({ description: "The question or field title shown to the user" }),
+	id: Type.Optional(
+		Type.String({
+			description:
+				"Optional stable identifier echoed back in this input's answer. Set it (and unique per call) to correlate answers programmatically instead of matching on title.",
+		}),
+	),
 	description: Type.Optional(Type.String({ description: "Optional context shown beneath the title" })),
 	options: Type.Optional(
 		Type.Array(OptionSchema, {
@@ -103,44 +110,34 @@ const InputSchema = Type.Object({
 	default: Type.Optional(
 		Type.String({
 			description:
-				"Default value. For text/file: value/path; radio: option title; number: e.g. '8080'; boolean: 'true' or 'false'; datetime: ISO-like value or 'now'. Do not use for multi inputs.",
+				"Default value. For text/file: the value/path; radio: an option's title or value. Do not use for multi inputs.",
 		}),
 	),
 	defaults: Type.Optional(
-		Type.Array(Type.String({ description: "Option title selected by default" }), {
-			description: "Default selected option titles for multi inputs.",
+		Type.Array(Type.String({ description: "An option's title or value, selected by default" }), {
+			description: "Default selected options for multi inputs (match each by option title or value).",
 		}),
 	),
 	pattern: Type.Optional(Type.String({ description: "Text inputs only: JavaScript regular expression the answer must match." })),
 	patternHint: Type.Optional(Type.String({ description: "Text inputs only: human-readable hint shown when pattern validation fails." })),
-	minSelections: Type.Optional(Type.Number({ description: "Multi inputs only: minimum number of selections." })),
-	maxSelections: Type.Optional(Type.Number({ description: "Multi inputs only: maximum number of selections." })),
-	min: Type.Optional(Type.Number({ description: "Number inputs only: minimum allowed value." })),
-	max: Type.Optional(Type.Number({ description: "Number inputs only: maximum allowed value." })),
-	confirmValue: Type.Optional(
-		Type.String({
-			description:
-				"Text inputs only: require the user to retype this exact value. Use for confirmations before destructive choices; confirmation fields must be required.",
-		}),
-	),
-	granularity: Type.Optional(
-		StringEnum(["date", "time", "datetime"] as const, {
-			description: "Datetime inputs only: expected granularity. Defaults to 'datetime'.",
-		}),
-	),
 	fileKind: Type.Optional(
 		StringEnum(["file", "directory", "any"] as const, {
 			description: "File inputs only: restrict the path to files, directories, or either. Defaults to 'any'.",
 		}),
 	),
-});
+}, { additionalProperties: false });
 
-const UserInputsParams = Type.Object({
-	inputs: Type.Array(InputSchema, { description: "One or more inputs to ask the user, shown as tabs" }),
-});
+const UserInputsParams = Type.Object(
+	{
+		inputs: Type.Array(InputSchema, { description: "One or more inputs to ask the user, shown as tabs" }),
+	},
+	{ additionalProperties: false },
+);
 
 function errorResult(message: string): { content: { type: "text"; text: string }[]; details: UserInputsResult } {
-	return { content: [{ type: "text", text: message }], details: { answers: [], cancelled: true } };
+	// cancelled:false — this is a failure to present the tool, not a user cancellation, so the
+	// renderer shows the error rather than "Cancelled".
+	return { content: [{ type: "text", text: message }], details: { answers: [], cancelled: false, error: message } };
 }
 
 // ---------------------------------------------------------------------------
@@ -154,34 +151,43 @@ export default function askUser(pi: ExtensionAPI) {
 		description:
 			"Ask the user one or more questions and wait for their answers. Use this whenever you have a question, " +
 			"need to clarify requirements, want a preference, or must confirm a decision before proceeding. Inputs can be " +
-			"text, radio, multi, number, boolean, datetime, or file. Inputs may be optional, have defaults, and include validation.",
+			"text, radio, multi, or file. Inputs may be optional, have defaults, and include validation.",
 		promptSnippet: "ask_user — ask the user text / single-choice / multi-choice / typed questions and get their answers",
 		promptGuidelines: [
 			"When you need information only the user can provide, call ask_user instead of guessing or asking in prose.",
 			"Give every ask_user input a clear title and description, use optional for nice-to-have answers, and provide default/defaults when a best guess exists.",
-			"Prefer typed ask_user inputs (number, boolean, datetime, file, radio, multi) over free text when the answer shape is known.",
-			"Use ask_user confirmValue on a required text input when the user must retype a name to confirm a destructive decision; use a required boolean when a simple yes/no confirmation is enough.",
+			"Prefer typed ask_user inputs (file, radio, multi) over free text when the answer shape is known; for a number use text with a pattern like '^-?\\d+$'.",
+			"For a yes/no confirmation, use a required radio with two options rather than free text.",
+			"Set a stable `id` on each input (and `options[].value`) when you will process answers programmatically — answers echo the id and the selected option's value.",
 		],
 		parameters: UserInputsParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const rawErr = validateRawInputs(params.inputs);
+			if (rawErr) return errorResult(rawErr);
 			const inputs = normalizeInputs(params.inputs as RawInput[]);
 			const err = validateInputs(inputs);
 			if (err) return errorResult(err);
 
 			let result: UserInputsResult;
 			if (ctx.mode === "tui") {
-				// The calling agent has the TUI — ask directly (from is empty: it's this agent).
+				// The calling agent has the terminal TUI — show the rich custom panel directly
+				// (from is empty: it's this agent).
 				result = await showUserInputs(ctx, inputs, [], ctx.cwd);
 			} else {
-				// Headless subagent — forward to the parent's TUI via the optional `ipc`
-				// extension. The parent stamps our identity onto the request's `from`, so the
-				// user sees which subagent asked. If ipc isn't installed or there's no parent
-				// channel, nothing claims the probe and we return a graceful error. Send raw
-				// inputs so non-serializable normalized defaults (Set/RegExp) are rebuilt on
-				// the presenting side.
+				// No local terminal panel (ctx.ui.custom is tui-only). First try to forward to a
+				// parent session's TUI via the optional `ipc` extension — the headless-subagent
+				// case. The parent stamps our identity onto the request's `from`, so the user sees
+				// which subagent asked. Send raw inputs so non-serializable normalized defaults
+				// (Set/RegExp) are rebuilt on the presenting side.
 				const res = await busCall<UserInputsResult>(pi, "ipc:client", "user.ask", { inputs: params.inputs, cwd: ctx.cwd });
-				if (!res.ok) return errorResult(`Error: ask_user unavailable (${res.error}).`);
+				if (!res.ok) {
+					// No terminal here and no parent session to forward to — there is no user to
+					// answer. Tell the model so it stops waiting and proceeds on its own.
+					return errorResult(
+						`Error: no user is available to answer ask_user (${ctx.mode} mode, no reachable interactive session). Proceed without asking — make reasonable assumptions and state them.`,
+					);
+				}
 				result = res.value;
 			}
 
@@ -203,29 +209,30 @@ export default function askUser(pi: ExtensionAPI) {
 				const t = result.content[0];
 				return new Text(t?.type === "text" ? t.text : "", 0, 0);
 			}
+			if (details.error) {
+				return new Text(theme.fg("error", details.error), 0, 0);
+			}
 			if (details.cancelled) {
 				return new Text(theme.fg("warning", "Cancelled"), 0, 0);
 			}
 			const answers = Array.isArray(details.answers) ? details.answers : [];
 			const lines = answers.map((a) => {
-				if (a.skipped) return `${theme.fg("dim", "○ ")}${theme.fg("accent", a.title)}: ${theme.fg("dim", "(skipped)")}`;
-				const head = `${theme.fg("success", "✓ ")}${theme.fg("accent", a.title)}: `;
-				if (a.type === "text" || a.type === "number" || a.type === "datetime") {
+				const idTag = a.id ? theme.fg("dim", ` [${a.id}]`) : "";
+				if (a.skipped) return `${theme.fg("dim", "○ ")}${theme.fg("accent", a.title)}${idTag}: ${theme.fg("dim", "(skipped)")}`;
+				const head = `${theme.fg("success", "✓ ")}${theme.fg("accent", a.title)}${idTag}: `;
+				if (a.type === "text") {
 					return head + theme.fg("text", a.text ?? "");
-				}
-				if (a.type === "boolean") {
-					const note = a.note ? theme.fg("dim", `  — ${a.note}`) : "";
-					return head + theme.fg("text", a.text ?? String(a.value ?? "")) + note;
 				}
 				if (a.type === "file") {
 					const path = a.path && a.text && a.path !== a.text ? theme.fg("dim", `  (${a.path})`) : "";
-					const note = a.note ? theme.fg("dim", `  — ${a.note}`) : "";
-					return head + theme.fg("text", a.text ?? a.path ?? "") + path + note;
+					return head + theme.fg("text", a.text ?? a.path ?? "") + path;
 				}
 				const picks = (a.selections ?? []).map((s) => (s.custom ? `${s.title} (else)` : s.title)).join(", ");
-				const note = a.note ? theme.fg("dim", `  — ${a.note}`) : "";
-				return head + theme.fg("text", picks || "(none)") + note;
+				return head + theme.fg("text", picks || "(none)");
 			});
+			if (details.note) {
+				lines.push(`${theme.fg("dim", "✎ ")}${theme.fg("accent", "Notes")}: ${theme.fg("text", details.note)}`);
+			}
 			return new Text(lines.join("\n"), 0, 0);
 		},
 	});
@@ -239,6 +246,8 @@ export default function askUser(pi: ExtensionAPI) {
 		if (method !== "user.ask" || currentCtx?.mode !== "tui") return;
 		claim(async (params, meta) => {
 			const request = params as { inputs?: RawInput[]; cwd?: string };
+			const rawErr = validateRawInputs(request.inputs ?? []);
+			if (rawErr) throw new Error(rawErr);
 			const inputs = normalizeInputs(request.inputs ?? []);
 			const err = validateInputs(inputs);
 			if (err) throw new Error(err);

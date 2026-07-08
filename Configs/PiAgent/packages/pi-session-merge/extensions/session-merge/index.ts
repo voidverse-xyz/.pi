@@ -2,7 +2,7 @@
  * Session Merge - synthesize multiple Pi session branches into a new session.
  *
  * Usage:
- *   /session-merge
+ *   /session-merge (alias: /merge)
  *   /session-merge <entry-id-or-label> <entry-id-or-label> [...]
  *
  * This is intentionally a synthesis merge, not an in-place tree rewrite:
@@ -18,6 +18,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type SessionEntry,
+	type SessionTreeNode,
 	TreeSelectorComponent,
 } from "@earendil-works/pi-coding-agent";
 
@@ -68,10 +69,13 @@ const DEFAULT_KICKOFF = [
 ].join("\n");
 
 export default function sessionMerge(pi: ExtensionAPI): void {
-	pi.registerCommand("session-merge", {
-		description: "Merge selected session branches into a new synthesized session",
-		handler: async (args, ctx) => runMerge(pi, ctx, args),
-	});
+	const command = {
+		description: "Merge selected session branches into a new synthesized session (alias: /merge)",
+		handler: async (args: string, ctx: ExtensionCommandContext) => runMerge(pi, ctx, args),
+	};
+
+	pi.registerCommand("session-merge", command);
+	pi.registerCommand("merge", command);
 }
 
 async function runMerge(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<void> {
@@ -508,7 +512,7 @@ function serializeEntries(entries: SessionEntry[]): string {
 function serializeEntry(entry: SessionEntry): string {
 	if (entry.type === "message") {
 		const role = entry.message.role;
-		return `[${entry.id}] ${role}:\n${contentToText(entry.message.content)}`;
+		return `[${entry.id}] ${role}:\n${contentToText((entry.message as { content?: unknown }).content)}`;
 	}
 
 	if (entry.type === "compaction") {
@@ -536,7 +540,7 @@ function serializeEntry(entry: SessionEntry): string {
 
 function previewEntry(entry: SessionEntry): string {
 	let text = "";
-	if (entry.type === "message") text = contentToText(entry.message.content);
+	if (entry.type === "message") text = contentToText((entry.message as { content?: unknown }).content);
 	else if (entry.type === "compaction") text = entry.summary;
 	else if (entry.type === "branch_summary") text = entry.summary;
 	else if (entry.type === "custom_message") text = contentToText(entry.content);

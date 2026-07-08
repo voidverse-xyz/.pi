@@ -33,6 +33,8 @@ interface ReviewPanelOptions {
 	group: ReviewGroup;
 	index: number;
 	total: number;
+	/** Accept reports instead of committing; the header shows a dry-run marker. */
+	dryRun?: boolean;
 	tui: TUI;
 	theme: Theme;
 	keybindings: KeybindingsManager;
@@ -42,7 +44,7 @@ interface ReviewPanelOptions {
 }
 
 export function createReviewPanel(opts: ReviewPanelOptions): Component {
-	const { group, index, total, tui, theme, keybindings, loadDiff, onDone } = opts;
+	const { group, index, total, dryRun, tui, theme, keybindings, loadDiff, onDone } = opts;
 	const keys = createReviewKeys(keybindings);
 
 	// Task 2: open on the Files list, with the content (tab) pane focused — not Actions.
@@ -331,7 +333,7 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 		const maxIndex = Math.max(0, group.paths.length - 1);
 		const maxScroll = Math.max(0, group.paths.length - currentContentHeight);
 
-		if (matchesKey(data, "d") || matchesKey(data, "D")) {
+		if (matchesKey(data, "d") || data === "D") {
 			openGroupDetail();
 			return;
 		}
@@ -382,15 +384,15 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 	}
 
 	function handleDetailInput(data: string): void {
-		if (matchesKey(data, "v") || matchesKey(data, "V")) {
+		if (matchesKey(data, "v") || data === "V") {
 			toggleLayout();
 			return;
 		}
-		if (matchesKey(data, "t") || matchesKey(data, "T")) {
+		if (matchesKey(data, "t") || data === "T") {
 			toggleContext();
 			return;
 		}
-		if (matchesKey(data, "f") || matchesKey(data, "F")) {
+		if (matchesKey(data, "f") || data === "F") {
 			backToFiles();
 			return;
 		}
@@ -454,7 +456,8 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 			theme.bold(`${index + 1}/${total} `) +
 			theme.fg("text", group.title) +
 			theme.fg("dim", `  ${group.layer}  ·  `) +
-			theme.fg("dim", "commit ") +
+			(dryRun ? theme.fg("warning", "DRY RUN ") : "") +
+			theme.fg("dim", dryRun ? "would commit " : "commit ") +
 			theme.fg("text", group.commitMessage);
 		for (const h of wrapTextWithAnsi(titleLine, innerW)) headerLines.push(pad(h, innerW));
 		const pathsLine = theme.fg("dim", summarizePaths(group.paths));

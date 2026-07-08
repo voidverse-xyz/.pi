@@ -24,6 +24,19 @@
  *    around the content. Arrow keys + Enter drill into one to see its live streaming output;
  *    Escape/'b' goes back to the list; Escape/'q'/Ctrl+C closes the overlay entirely.
  *
+ *    Each row (and the detail header) shows a duration - elapsed-so-far for running calls,
+ *    total for finished ones - from the startedAt/endedAt stamps the run map already keeps.
+ *    Running durations count up live: the component owns a DURATION_TICK_MS interval that
+ *    calls tui.requestRender() while ≥1 run is live (the overlay-scoped analogue of the
+ *    footer spinner's re-publish tick) and is cleared when the overlay closes.
+ *
+ *    '/' opens a single-line filter (pi-tui Input, same idiom as plan-commit's Ask panel):
+ *    case-insensitive substring match on the tool name and, for subagent rows, the inner
+ *    tool names / agent labels. While the input is focused it owns every key except
+ *    Ctrl+C (so "q"/"x" are typeable); Enter applies the filter and returns focus to the
+ *    list, Escape clears it. With a filter applied but unfocused, Escape clears the filter
+ *    first and only a second Escape closes the overlay.
+ *
  * Subagent awareness: the `subagent` delegation tool runs each subagent in its own
  * child `pi` process, so those subagents' tool calls never fire tool_execution_* on
  * THIS process's bus — a delegating turn would otherwise show as one opaque
@@ -48,7 +61,7 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Input, matchesKey, truncateToWidth, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 const STATUS_KEY = "tool-monitor";
 const MAX_FINISHED_HISTORY = 100;
@@ -58,6 +71,11 @@ const WIDGET_ICON = ">_"; // terminal prompt - plain ASCII, not a Nerd Font glyp
 // so it renders on any terminal. ~100ms per frame is the usual spinner cadence.
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL_MS = 100;
+
+// Re-render cadence for the /tools overlay while ≥1 run is live, so elapsed-time
+// columns count up on screen. Coarser than the spinner (durations only show 0.1s
+// resolution) but still smooth; the tick is a no-op when nothing is running.
+const DURATION_TICK_MS = 250;
 
 // Outer inset from the terminal edges (as full-screen as reasonably possible while
 // still reading as a floating overlay rather than literally the whole terminal).
@@ -106,6 +124,24 @@ function statusColor(status: ToolStatus): "warning" | "error" | "success" {
 	if (status === "running") return "warning";
 	if (status === "error") return "error";
 	return "success";
+}
+
+// Elapsed-so-far for a running call, total wall time for a finished one, straight
+// from the timestamps tool_execution_start/end already stamp on the run.
+function runDurationMs(run: ToolRun): number {
+	return (run.endedAt ?? Date.now()) - run.startedAt;
+}
+
+// Compact human duration for list rows / the detail header. Sub-10s keeps one
+// decimal so quick tools don't all flatten to "0s"; longer spans use whole units.
+function formatDuration(ms: number): string {
+	const clamped = Math.max(0, ms);
+	if (clamped < 10_000) return `${(clamped / 1000).toFixed(1)}s`;
+	const totalSec = Math.round(clamped / 1000);
+	if (totalSec < 60) return `${totalSec}s`;
+	const totalMin = Math.floor(totalSec / 60);
+	if (totalMin < 60) return `${totalMin}m ${String(totalSec % 60).padStart(2, "0")}s`;
+	return `${Math.floor(totalMin / 60)}h ${String(totalMin % 60).padStart(2, "0")}m`;
 }
 
 // The `subagent` delegation tool (extensions/subagents) runs each subagent in a
@@ -175,6 +211,18 @@ function subagentChildren(run: ToolRun): InnerToolCall[] {
 	return calls;
 }
 
+// Filter predicates for the /tools overlay: case-insensitive substring match on
+// the tool name, plus (for subagent rows) the inner tool names and agent labels,
+// since those are what the list actually displays. `query` is pre-lowercased.
+function childMatchesQuery(child: InnerToolCall, query: string): boolean {
+	return child.name.toLowerCase().includes(query) || (child.agent?.toLowerCase().includes(query) ?? false);
+}
+
+function runMatchesQuery(run: ToolRun, query: string): boolean {
+	if (run.name.toLowerCase().includes(query)) return true;
+	return subagentChildren(run).some((child) => childMatchesQuery(child, query));
+}
+
 // A running tool's contribution to the footer's leaf-tool list: a running subagent
 // resolves to the inner tool names currently in flight (agent-qualified so parallel
 // subagents stay distinct); between inner calls, or for any ordinary tool, it's just
@@ -196,6 +244,13 @@ class ToolMonitorComponent {
 	private selectedId: string | undefined;
 	// Content-line index (within renderList output) of the selected row, or null.
 	private highlightRow: number | null = null;
+	// '/' filter for the list view. The Input stays around (holding its text) even
+	// when unfocused, so an applied filter survives drilling into a detail view.
+	private readonly filterInput = new Input();
+	private filterFocused = false;
+	// Keeps elapsed-time columns counting up while ≥1 run is live; a no-op tick
+	// otherwise. Cleared in close() - every exit path funnels through there.
+	private readonly durationTimer: ReturnType<typeof setInterval>;
 
 	constructor(
 		private readonly tui: TUI,
@@ -204,9 +259,37 @@ class ToolMonitorComponent {
 		private readonly ctx: ExtensionCommandContext,
 		private readonly runs: Map<string, ToolRun>,
 		private readonly order: string[],
-	) {}
+	) {
+		this.filterInput.onSubmit = () => this.blurFilter(false);
+		this.filterInput.onEscape = () => this.blurFilter(true);
+		this.durationTimer = setInterval(() => {
+			for (const run of this.runs.values()) {
+				if (run.status === "running") {
+					this.tui.requestRender();
+					return;
+				}
+			}
+		}, DURATION_TICK_MS);
+	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.filterInput.invalidate();
+	}
+
+	private close(): void {
+		clearInterval(this.durationTimer);
+		this.done();
+	}
+
+	private blurFilter(clear: boolean): void {
+		if (clear) this.filterInput.setValue("");
+		this.filterFocused = false;
+		this.filterInput.focused = false;
+	}
+
+	private filterQuery(): string {
+		return this.filterInput.getValue().trim().toLowerCase();
+	}
 
 	private currentItems(): ToolRun[] {
 		const items: ToolRun[] = [];
@@ -217,7 +300,8 @@ class ToolMonitorComponent {
 		// Running tool calls pinned to the top; recency (most recent first) is
 		// preserved within each group via the stable sort.
 		items.sort((a, b) => Number(b.status === "running") - Number(a.status === "running"));
-		return items;
+		const query = this.filterQuery();
+		return query === "" ? items : items.filter((run) => runMatchesQuery(run, query));
 	}
 
 	private attemptAbort(run: ToolRun | undefined): void {
@@ -236,6 +320,17 @@ class ToolMonitorComponent {
 	}
 
 	private handleListInput(data: string): void {
+		// While the filter input is focused it owns every key except ctrl+c, so
+		// letters like "q"/"x" are typeable as filter text. Enter/escape hand focus
+		// back via the Input's own onSubmit/onEscape callbacks (see constructor).
+		if (this.filterFocused) {
+			if (matchesKey(data, "ctrl+c")) {
+				this.close();
+				return;
+			}
+			this.filterInput.handleInput(data);
+			return;
+		}
 		const items = this.currentItems();
 		if (matchesKey(data, "up")) {
 			this.selectedIndex = items.length === 0 ? 0 : (this.selectedIndex - 1 + items.length) % items.length;
@@ -249,8 +344,14 @@ class ToolMonitorComponent {
 			}
 		} else if (data === "x") {
 			this.attemptAbort(items[this.selectedIndex]);
+		} else if (data === "/") {
+			this.filterFocused = true;
+			this.filterInput.focused = true;
+		} else if (matchesKey(data, "escape") && this.filterQuery() !== "") {
+			// First escape clears an applied filter; a second one closes the overlay.
+			this.filterInput.setValue("");
 		} else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || data === "q") {
-			this.done();
+			this.close();
 		}
 	}
 
@@ -260,7 +361,7 @@ class ToolMonitorComponent {
 			return;
 		}
 		if (matchesKey(data, "ctrl+c")) {
-			this.done();
+			this.close();
 			return;
 		}
 		if (data === "x") {
@@ -297,15 +398,26 @@ class ToolMonitorComponent {
 
 	private renderList(width: number): string[] {
 		this.highlightRow = null;
+		const query = this.filterQuery();
 		const items = this.currentItems();
-		const lines: string[] = [
-			this.theme.fg("accent", "Tool Monitor"),
-			this.theme.fg("dim", "up/down: navigate  enter: view  x: abort  esc/q: close"),
-			"",
-		];
+		const hints = this.filterFocused
+			? "type to filter  enter: apply  esc: clear filter  ctrl+c: close"
+			: query !== ""
+				? "up/down: navigate  enter: view  /: edit filter  esc: clear filter  x: abort  q: close"
+				: "up/down: navigate  enter: view  /: filter  x: abort  esc/q: close";
+		const lines: string[] = [this.theme.fg("accent", "Tool Monitor"), this.theme.fg("dim", hints)];
+
+		// Filter row, shown while editing or while a filter is applied. The Input
+		// renders its own cursor when focused; unfocused it's just the query text.
+		if (this.filterFocused || query !== "") {
+			const label = "filter: ";
+			const inputLine = this.filterInput.render(Math.max(1, width - label.length))[0] ?? "";
+			lines.push(truncateToWidth(this.theme.fg("dim", label) + inputLine, width));
+		}
+		lines.push("");
 
 		if (items.length === 0) {
-			lines.push(this.theme.fg("dim", "No tool executions yet."));
+			lines.push(this.theme.fg("dim", query !== "" ? "No tool executions match the filter." : "No tool executions yet."));
 			return lines;
 		}
 
@@ -317,10 +429,15 @@ class ToolMonitorComponent {
 			if (selected) this.highlightRow = lines.length;
 			const marker = selected ? ">" : " ";
 			const label = `${marker} ${run.name} ${statusLabel(run.status)}`;
-			lines.push(truncateToWidth(this.theme.fg(statusColor(run.status), label), width));
+			const duration = this.theme.fg("dim", ` ${formatDuration(runDurationMs(run))}`);
+			lines.push(truncateToWidth(this.theme.fg(statusColor(run.status), label) + duration, width));
 			// Inner subagent tool calls, indented beneath their parent so a delegating
 			// turn shows the bash/read/edit its subagents ran, not just "subagent".
+			// Under a filter that the parent itself doesn't match, only the matching
+			// children are listed (they're what earned the parent its row).
+			const parentMatched = query === "" || run.name.toLowerCase().includes(query);
 			for (const child of subagentChildren(run)) {
+				if (!parentMatched && !childMatchesQuery(child, query)) continue;
 				const prefix = child.agent ? `[${child.agent}] ` : "";
 				const childLabel = `    ${prefix}${child.name} ${statusLabel(child.status)}`;
 				lines.push(truncateToWidth(this.theme.fg(statusColor(child.status), childLabel), width));
@@ -337,9 +454,10 @@ class ToolMonitorComponent {
 			return this.renderList(width);
 		}
 
+		const duration = formatDuration(runDurationMs(run));
 		const lines: string[] = [
 			this.theme.fg("accent", `Tool: ${run.name}`),
-			this.theme.fg(statusColor(run.status), `Status: ${run.status}`),
+			this.theme.fg(statusColor(run.status), `Status: ${run.status} · ${duration}${run.status === "running" ? " elapsed" : ""}`),
 			this.theme.fg("dim", "esc/b: back  x: abort (stops whole turn)  ctrl+c: close"),
 			"",
 		];

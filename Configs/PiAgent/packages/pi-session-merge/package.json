@@ -1,7 +1,7 @@
 {
   "name": "pi-session-merge",
   "version": "1.0.0",
-  "description": "/session-merge — synthesize multiple session branches into a new session via a one-off child pi process.",
+  "description": "/session-merge (alias: /merge) — synthesize multiple session branches into a new session via a one-off child pi process.",
   "keywords": [
     "pi-package"
   ],

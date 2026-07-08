@@ -1,7 +1,7 @@
 /**
- * Notify User - LLM-callable user notice: successes, warnings, errors, and status summaries.
+ * Notify User - LLM-callable user notice: successes, warnings, errors, and status updates.
  *
- * The agent calls `notify_user` with any mix of title, summary, severity,
+ * The agent calls `notify_user` with any mix of title, severity,
  * successes, info, warnings, and errors. Every field is optional; empty calls
  * are treated as a no-op rather than a hard failure. Non-empty notices are
  * appended just after the agent_end hook settles, so the rendered block lands
@@ -12,7 +12,7 @@
  * so the user sees it before the turn finishes.
  *
  * Severity (explicit, or inferred from which sections are non-empty) colors
- * the title/summary band — green/yellow/red for success/warning/error, the
+ * the title band — green/yellow/red for success/warning/error, the
  * neutral theme background for info — and sets the urgent-toast level.
  */
 
@@ -27,9 +27,8 @@ type Severity = "success" | "info" | "warning" | "error";
 
 const SEVERITIES: readonly Severity[] = ["success", "info", "warning", "error"];
 
-interface SummaryData {
+interface NoticeData {
 	title?: string;
-	summary?: string;
 	severity?: Severity;
 	successes: string[];
 	info: string[];
@@ -37,7 +36,7 @@ interface SummaryData {
 	errors: string[];
 }
 
-interface SummaryDetails extends SummaryData {
+interface NoticeDetails extends NoticeData {
 	queued: boolean;
 	displayed: boolean;
 	counts: {
@@ -50,7 +49,6 @@ interface SummaryDetails extends SummaryData {
 
 const NotifyUserParams = Type.Object({
 	title: Type.Optional(Type.String({ description: "Optional short title for the notice" })),
-	summary: Type.Optional(Type.String({ description: "Optional main summary text shown before message sections" })),
 	severity: Type.Optional(
 		Type.Union(
 			[Type.Literal("success"), Type.Literal("info"), Type.Literal("warning"), Type.Literal("error")],
@@ -71,23 +69,23 @@ const NotifyUserParams = Type.Object({
 				"Also show an immediate toast notification now, instead of only the end-of-turn block. Use for warnings/errors the user should see before the turn finishes.",
 		}),
 	),
-});
+}, { additionalProperties: false });
 
 export default function notifyUser(pi: ExtensionAPI): void {
-	const pendingSummaries: SummaryData[] = [];
+	const pendingNotices: NoticeData[] = [];
 
-	pi.registerMessageRenderer<SummaryDetails>(CUSTOM_TYPE, (message, _options, theme) => {
-		const details = message.details as SummaryDetails | undefined;
-		const data = details ? normalizeSummary(details) : normalizeSummary({ summary: message.content });
+	pi.registerMessageRenderer<NoticeDetails>(CUSTOM_TYPE, (message, _options, theme) => {
+		const details = message.details as NoticeDetails | undefined;
+		const data = details ? normalizeNotice(details) : normalizeNotice({ title: message.content });
 		return {
-			render: (width: number) => renderSummaryLines(data, theme, Math.max(30, width)),
+			render: (width: number) => renderNoticeLines(data, theme, Math.max(30, width)),
 			invalidate: () => undefined,
 		};
 	});
 
 	pi.on("agent_end", (_event, ctx) => {
-		if (pendingSummaries.length === 0) return;
-		const summaries = pendingSummaries.splice(0);
+		if (pendingNotices.length === 0) return;
+		const notices = pendingNotices.splice(0);
 
 		const flushWhenIdle = () => {
 			if (!ctx.isIdle() || ctx.hasPendingMessages()) {
@@ -95,7 +93,7 @@ export default function notifyUser(pi: ExtensionAPI): void {
 				return;
 			}
 
-			for (const data of summaries) {
+			for (const data of notices) {
 				pi.sendMessage(
 					{
 						customType: CUSTOM_TYPE,
@@ -115,23 +113,23 @@ export default function notifyUser(pi: ExtensionAPI): void {
 		name: "notify_user",
 		label: "Notify User",
 		description:
-			"Show the user a highly visible notice block: a status summary, completed work (successes), warnings " +
+			"Show the user a highly visible notice block: a status update, completed work (successes), warnings " +
 			"about risks or caveats, or errors for things that failed. The block renders at the end of the turn and " +
 			"is color-banded by severity (explicit via severity, or inferred from the sections); set urgent: true to " +
-			"also pop an immediate toast now. All fields are optional: title, summary, severity, successes, info, " +
+			"also pop an immediate toast now. All fields are optional: title, severity, successes, info, " +
 			"warnings, errors, urgent.",
-		promptSnippet: "notify_user — surface a visible notice to the user: summary, successes, warnings, or errors",
+		promptSnippet: "notify_user — surface a visible notice to the user: successes, warnings, or errors",
 		promptGuidelines: [
 			"Use notify_user to make sure the user actually sees something important: a completed-work recap (severity: 'success' with successes), a risk or caveat (warnings), or a failure (errors). Prose in your response can be skimmed past; this block is visually distinct.",
 			"Set severity explicitly when the overall outcome differs from what the sections imply — e.g. severity: 'success' for a recap that includes a minor warning. When omitted, severity is inferred: errors > warnings > successes > info.",
 			"Set urgent: true when the user should see it before the turn finishes — e.g. a destructive action you are about to take, or an error that blocks the rest of the work.",
-			"Keep each item concise; prefer one to three items per section. Do not duplicate your whole response into the summary.",
+			"Keep each item concise; prefer one to three items per section. Do not duplicate your whole response into the notice.",
 			"Do not use this tool for questions; use ask_user when you need an answer.",
 		],
 		parameters: NotifyUserParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const data = normalizeSummary(params);
+			const data = normalizeNotice(params);
 			const details = buildDetails(data, false, false);
 
 			if (!hasContent(data)) {
@@ -152,7 +150,6 @@ export default function notifyUser(pi: ExtensionAPI): void {
 					data.title ||
 					data.errors[0] ||
 					data.warnings[0] ||
-					data.summary ||
 					data.successes[0] ||
 					data.info[0] ||
 					"Notice from agent";
@@ -163,7 +160,7 @@ export default function notifyUser(pi: ExtensionAPI): void {
 				}
 			}
 
-			pendingSummaries.push(data);
+			pendingNotices.push(data);
 			return {
 				content: [
 					{
@@ -178,21 +175,21 @@ export default function notifyUser(pi: ExtensionAPI): void {
 		},
 
 		renderCall(args, theme) {
-			const data = normalizeSummary(args);
+			const data = normalizeNotice(args);
 			const label = data.title || "Notice";
-			const countText = formatCounts(summaryCounts(data));
+			const countText = formatCounts(noticeCounts(data));
 			const detail = countText ? `${label} (${countText})` : label;
 			return new Text(`${theme.fg("toolTitle", theme.bold("notify_user "))}${theme.fg("muted", detail)}`, 0, 0);
 		},
 
 		renderResult(result, _options, theme) {
-			const details = result.details as SummaryDetails | undefined;
+			const details = result.details as NoticeDetails | undefined;
 			if (!details) {
 				const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 				return new Text(text, 0, 0);
 			}
 
-			const data = normalizeSummary(details);
+			const data = normalizeNotice(details);
 			const severity = resolveSeverity(data);
 			const status = details.displayed
 				? theme.fg("success", "displayed")
@@ -201,7 +198,7 @@ export default function notifyUser(pi: ExtensionAPI): void {
 					: theme.fg("dim", "not queued");
 			const severityWord = theme.fg(severityColorName(severity), severity);
 			const title = data.title ? ` ${theme.fg("accent", data.title)}` : "";
-			const countText = formatCounts(summaryCounts(data));
+			const countText = formatCounts(noticeCounts(data));
 			const counts = countText ? theme.fg("dim", ` (${countText})`) : "";
 			return new Text(`${status} ${severityWord}${title}${counts}`, 0, 0);
 		},
@@ -209,11 +206,10 @@ export default function notifyUser(pi: ExtensionAPI): void {
 
 }
 
-function normalizeSummary(raw: unknown): SummaryData {
+function normalizeNotice(raw: unknown): NoticeData {
 	const value = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
 	return {
 		title: normalizeText(value.title),
-		summary: normalizeText(value.summary),
 		severity: normalizeSeverity(value.severity),
 		successes: normalizeList(value.successes),
 		info: normalizeList(value.info),
@@ -235,14 +231,14 @@ function normalizeList(value: unknown): string[] {
 	return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
 }
 
-function hasContent(data: SummaryData): boolean {
+function hasContent(data: NoticeData): boolean {
 	return Boolean(
-		data.title || data.summary || data.successes.length || data.info.length || data.warnings.length || data.errors.length,
+		data.title || data.successes.length || data.info.length || data.warnings.length || data.errors.length,
 	);
 }
 
 /** Explicit severity wins; otherwise the worst non-empty section decides. */
-function resolveSeverity(data: SummaryData): Severity {
+function resolveSeverity(data: NoticeData): Severity {
 	if (data.severity) return data.severity;
 	if (data.errors.length) return "error";
 	if (data.warnings.length) return "warning";
@@ -254,7 +250,7 @@ function severityColorName(severity: Severity): "success" | "muted" | "warning" 
 	return severity === "info" ? "muted" : severity;
 }
 
-function summaryCounts(data: SummaryData): SummaryDetails["counts"] {
+function noticeCounts(data: NoticeData): NoticeDetails["counts"] {
 	return {
 		successes: data.successes.length,
 		info: data.info.length,
@@ -264,7 +260,7 @@ function summaryCounts(data: SummaryData): SummaryDetails["counts"] {
 }
 
 /** Only non-zero sections, pluralized: "3 done, 1 info, 2 warnings, 1 error". Empty string when all are zero. */
-function formatCounts(counts: SummaryDetails["counts"]): string {
+function formatCounts(counts: NoticeDetails["counts"]): string {
 	const parts: string[] = [];
 	if (counts.successes) parts.push(`${counts.successes} done`);
 	if (counts.info) parts.push(`${counts.info} info`);
@@ -273,17 +269,17 @@ function formatCounts(counts: SummaryDetails["counts"]): string {
 	return parts.join(", ");
 }
 
-function buildDetails(data: SummaryData, queued: boolean, displayed: boolean): SummaryDetails {
+function buildDetails(data: NoticeData, queued: boolean, displayed: boolean): NoticeDetails {
 	return {
 		...data,
 		queued,
 		displayed,
-		counts: summaryCounts(data),
+		counts: noticeCounts(data),
 	};
 }
 
-function renderSummaryLines(
-	data: SummaryData,
+function renderNoticeLines(
+	data: NoticeData,
 	theme: {
 		bg(color: "customMessageBg", text: string): string;
 	},
@@ -294,13 +290,12 @@ function renderSummaryLines(
 	const lines: string[] = [];
 	const severity = resolveSeverity(data);
 
-	if (data.title || data.summary) {
-		// Severity colors the title/summary band; plain info keeps the neutral theme background.
+	if (data.title) {
+		// Severity colors the title band; plain info keeps the neutral theme background.
 		const bg = severity === "info" ? (text: string) => theme.bg("customMessageBg", text) : severityBandBg(severity);
 		const tag = severity === "info" ? "" : `[${severity}]`;
-		const headingLines = wrapTextWithAnsi(data.title || "Notice", contentWidth);
-		const summaryLines = data.summary ? wrapTextWithAnsi(data.summary, contentWidth) : [];
-		addSummaryBand(lines, renderWidth, headingLines[0] ?? "Notice", tag, [...headingLines.slice(1), ...summaryLines], bg);
+		const headingLines = wrapTextWithAnsi(data.title, contentWidth);
+		addTitleBand(lines, renderWidth, headingLines[0] ?? "Notice", tag, headingLines.slice(1), bg);
 	}
 
 	addBand(lines, renderWidth, "Done", data.successes, severityBandBg("success"));
@@ -311,7 +306,7 @@ function renderSummaryLines(
 	return lines.length > 0 ? lines : [theme.bg("customMessageBg", " Notice ")];
 }
 
-function addSummaryBand(
+function addTitleBand(
 	lines: string[],
 	renderWidth: number,
 	heading: string,

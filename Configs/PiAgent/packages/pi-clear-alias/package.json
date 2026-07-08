@@ -1,0 +1,16 @@
+{
+  "name": "pi-clear-alias",
+  "version": "1.0.0",
+  "description": "Provide /clear as a muscle-memory alias for Pi's /new command.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

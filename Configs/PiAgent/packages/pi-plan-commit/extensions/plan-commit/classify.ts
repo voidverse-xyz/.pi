@@ -1,3 +1,19 @@
+/**
+ * Config-driven grouping of changed paths for the /git-commit review flow.
+ *
+ * Each changed path is tested against config.exclude first (excluded paths
+ * never appear in review groups), then against config.groups in order — the
+ * first rule whose patterns match claims the path. Paths matching no rule fall
+ * into per-directory fallback groups appended after the configured ones.
+ *
+ * The former hardcoded project rules live on as DEFAULT_CONFIG in config.ts.
+ * Pure module (glob + template rendering only) — harness-testable with
+ * `node --experimental-strip-types`.
+ */
+
+import { type PlanCommitConfig, renderCommitMessage } from "./config.ts";
+import { matchesAnyGlob } from "./glob.ts";
+
 export interface ReviewGroup {
 	id: string;
 	title: string;
@@ -7,186 +23,83 @@ export interface ReviewGroup {
 	order: number;
 }
 
-const LOCAL_DEV_PATHS = new Set([
-	"backend/server.js",
-	"backend/routes/routes.js",
-	"backend/notify/socket/socket.js",
-]);
-
-const LOCAL_DEV_PATTERNS = [
-	/https:\/\//i,
-	/http:\/\//i,
-	/certificate\.generate/i,
-	/createServer\s*\(\s*\{/i,
-];
-
-export function isLocalDevOnly(path: string, diff: string): boolean {
-	const norm = path.replace(/\\/g, "/");
-	if (!LOCAL_DEV_PATHS.has(norm)) return false;
-	if (!diff.trim()) return false;
-	const meaningful = diff
-		.split("\n")
-		.filter((line) => line.startsWith("+") || line.startsWith("-"))
-		.filter((line) => !line.startsWith("+++") && !line.startsWith("---"));
-	if (meaningful.length === 0) return false;
-	return meaningful.every((line) => LOCAL_DEV_PATTERNS.some((p) => p.test(line)));
-}
-
-interface PathMeta {
-	path: string;
-	kind: string;
-	domain: string;
-	layer: string;
-	order: number;
-}
-
-function metaForPath(path: string): PathMeta {
-	const p = path.replace(/\\/g, "/").toLowerCase();
-
-	if (p.includes("/database/schemas/") || p.endsWith("/database/database.js")) {
-		return { path, kind: "schema", domain: "db", layer: "schema", order: 10 };
-	}
-
-	const controller = p.match(/\/controllers\/([^/]+)\.js$/);
-	if (controller) {
-		const name = controller[1]!;
-		const domain = name === "index" ? "barrel" : name.replace(/\.js$/, "");
-		return { path, kind: "controller", domain, layer: "backend", order: 20 };
-	}
-
-	const route = p.match(/\/routes\/([^/]+)\.js$/);
-	if (route) {
-		const name = route[1]!;
-		const domain = name === "index" || name === "routes" ? "mount" : name.replace(/\.js$/, "");
-		return { path, kind: "routes", domain, layer: "backend", order: 30 };
-	}
-
-	if (p.includes("/services/backend/")) {
-		const svc = p.match(/\/services\/backend\/([^/]+)\.js$/);
-		const domain = svc?.[1]?.replace(/\.js$/, "") ?? "service";
-		return { path, kind: "service", domain, layer: "frontend", order: 40 };
-	}
-
-	if (p.includes("/hooks/") || p.includes("/context/")) {
-		const hook = p.match(/\/(hooks|context)\/([^/]+)/);
-		const domain = hook?.[2]?.replace(/\.js$/, "") ?? "hook";
-		return { path, kind: "hook", domain, layer: "frontend", order: 50 };
-	}
-
-	if (p.includes("/app/") || p.includes("/components/")) {
-		const ui = p.match(/\/(app|components)\/(.+)/);
-		const domain = ui?.[2]?.split("/")[0] ?? "ui";
-		return { path, kind: "ui", domain, layer: "frontend", order: 60 };
-	}
-
-	if (p.includes("/languages/") || (p.endsWith(".json") && p.includes("lang"))) {
-		return { path, kind: "i18n", domain: "i18n", layer: "i18n", order: 70 };
-	}
-
-	if (p.startsWith("plan/") || p.startsWith("plans/") || p.startsWith("docs/")) {
-		const doc = p.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "doc";
-		return { path, kind: "docs", domain: doc, layer: "docs", order: 90 };
-	}
-
-	const parts = p.split("/");
-	const domain = parts.length > 1 ? parts[parts.length - 2]! : "misc";
-	return { path, kind: "other", domain, layer: "other", order: 80 };
-}
-
-function groupKey(meta: PathMeta): string {
-	if (meta.kind === "schema") return "schema:db";
-	if (meta.kind === "i18n") return "i18n:all";
-	return `${meta.kind}:${meta.domain}`;
-}
-
-function titleFor(kind: string, domain: string, paths: string[]): string {
-	switch (kind) {
-		case "schema":
-			return "Schema + DB wiring";
-		case "controller":
-			return domain === "barrel" ? "Controller barrel" : `${capitalize(domain)} controller`;
-		case "routes":
-			return domain === "mount" ? "Route mounts" : `${capitalize(domain)} routes`;
-		case "service":
-			return `${capitalize(domain)} service facade`;
-		case "hook":
-			return `${capitalize(domain)} hook/context`;
-		case "ui":
-			return `${capitalize(domain)} UI`;
-		case "i18n":
-			return "i18n translations";
-		case "docs":
-			return `${capitalize(domain)} docs`;
-		default: {
-			const file = paths[0]?.split("/").pop() ?? "changes";
-			return file;
-		}
-	}
-}
-
-function commitMessageFor(kind: string, domain: string, paths: string[]): string {
-	switch (kind) {
-		case "schema":
-			return "add schema changes";
-		case "controller":
-			return domain === "barrel" ? "update controller exports" : `add ${domain} controller`;
-		case "routes":
-			return domain === "mount" ? "update route mounts" : `add ${domain} routes`;
-		case "service":
-			return `add ${domain} service facade`;
-		case "hook":
-			return `add ${domain} hook`;
-		case "ui":
-			return `update ${domain} ui`;
-		case "i18n":
-			return "update translations";
-		case "docs":
-			return `update ${domain} docs`;
-		default: {
-			const base = paths[0]?.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "changes";
-			return `update ${base}`;
-		}
-	}
-}
-
-function capitalize(s: string): string {
-	return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
 export function classifyPaths(
 	paths: string[],
-	excluded: string[] = [],
+	config: PlanCommitConfig,
 ): { groups: ReviewGroup[]; excluded: string[] } {
-	const excludedSet = new Set(excluded.map((p) => p.replace(/\\/g, "/")));
-	const buckets = new Map<string, { meta: PathMeta; paths: string[] }>();
+	const excluded: string[] = [];
+	const byRule = new Map<number, string[]>();
+	const fallback = new Map<string, string[]>();
 
-	for (const path of paths) {
-		const norm = path.replace(/\\/g, "/");
-		if (excludedSet.has(norm)) continue;
+	for (const raw of paths) {
+		const path = raw.replace(/\\/g, "/");
 
-		const meta = metaForPath(norm);
-		const key = groupKey(meta);
-		const existing = buckets.get(key);
-		if (existing) {
-			existing.paths.push(norm);
-		} else {
-			buckets.set(key, { meta, paths: [norm] });
+		if (matchesAnyGlob(path, config.exclude)) {
+			excluded.push(path);
+			continue;
 		}
+
+		const ruleIndex = config.groups.findIndex((rule) => matchesAnyGlob(path, rule.patterns));
+		if (ruleIndex >= 0) {
+			const bucket = byRule.get(ruleIndex);
+			if (bucket) bucket.push(path);
+			else byRule.set(ruleIndex, [path]);
+			continue;
+		}
+
+		const parts = path.split("/");
+		const dir = parts.length > 1 ? parts[parts.length - 2]! : "misc";
+		const bucket = fallback.get(dir);
+		if (bucket) bucket.push(path);
+		else fallback.set(dir, [path]);
 	}
 
-	const groups: ReviewGroup[] = [...buckets.values()]
-		.map(({ meta, paths: groupPaths }) => {
-			const sortedPaths = [...groupPaths].sort();
+	const groups: ReviewGroup[] = [];
+
+	for (const [ruleIndex, rulePaths] of [...byRule.entries()].sort((a, b) => a[0] - b[0])) {
+		const rule = config.groups[ruleIndex]!;
+		const sorted = [...rulePaths].sort();
+		groups.push({
+			id: `rule:${ruleIndex}:${rule.name}`,
+			title: rule.name,
+			layer: "config",
+			paths: sorted,
+			commitMessage: messageFor(config, rule.name, sorted, summaryFor(rule.name, sorted)),
+			order: ruleIndex,
+		});
+	}
+
+	const fallbackGroups: ReviewGroup[] = [...fallback.entries()]
+		.map(([dir, dirPaths]) => {
+			const sorted = [...dirPaths].sort();
+			const title = sorted[0]?.split("/").pop() ?? "changes";
 			return {
-				id: groupKey(meta),
-				title: titleFor(meta.kind, meta.domain, sortedPaths),
-				layer: meta.layer,
-				paths: sortedPaths,
-				commitMessage: commitMessageFor(meta.kind, meta.domain, sortedPaths),
-				order: meta.order,
+				id: `dir:${dir}`,
+				title,
+				layer: "other",
+				paths: sorted,
+				commitMessage: messageFor(config, title, sorted, summaryFor(title, sorted)),
+				order: config.groups.length,
 			};
 		})
-		.sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
+		.sort((a, b) => a.title.localeCompare(b.title));
 
-	return { groups, excluded: [...excludedSet] };
+	return { groups: [...groups, ...fallbackGroups], excluded };
+}
+
+/**
+ * Heuristic {summary} for a group: a single file names itself
+ * ("update <basename sans extension>"), several files fall back to the
+ * group name ("update <name lowercased>").
+ */
+function summaryFor(name: string, paths: string[]): string {
+	if (paths.length === 1) {
+		const base = paths[0]!.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "changes";
+		return `update ${base}`;
+	}
+	return `update ${name.toLowerCase()}`;
+}
+
+function messageFor(config: PlanCommitConfig, group: string, files: string[], summary: string): string {
+	return renderCommitMessage(config.commitTemplate, { group, files, summary });
 }

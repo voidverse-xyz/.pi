@@ -3,13 +3,21 @@
  *
  * /git-commit — review uncommitted changes group by group,
  * commit on accept, optional squash at the end.
+ * /git-commit --dry-run — same review flow, but accept only reports what
+ * WOULD be committed; no git state changes.
+ *
+ * Grouping, exclusions, --no-verify and the commit-message template come from
+ * .pi/plan-commit.json (project) or ~/.pi/agent/plan-commit.json (user) —
+ * see config.ts for the shape and defaults.
  *
  * User-level: ~/.pi/agent/extensions/plan-commit/
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { runGroupChat } from "./chat.ts";
-import { classifyPaths, isLocalDevOnly, type ReviewGroup } from "./classify.ts";
+import { classifyPaths, type ReviewGroup } from "./classify.ts";
+import { loadPlanCommitConfig } from "./config.ts";
 import { createGit } from "./git.ts";
 import { createReviewPanel, type ReviewAction } from "./review-panel.ts";
 
@@ -19,20 +27,34 @@ interface SessionCommit {
 	paths: string[];
 }
 
+/** A commit that dry-run mode would have made. */
+interface PlannedCommit {
+	group: string;
+	message: string;
+	paths: string[];
+}
+
 export default function planCommitExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("git-commit", {
-		description: "Layered review and commit with native TUI",
-		handler: async (_args, ctx) => runPlanCommit(pi, ctx),
+		description: "Layered review and commit with native TUI (--dry-run to preview)",
+		handler: async (args, ctx) => runPlanCommit(pi, ctx, args),
 	});
 }
 
-async function runPlanCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+async function runPlanCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: string): Promise<void> {
 	if (!ctx.hasUI) {
 		ctx.ui.notify("plan-commit requires interactive TUI mode", "error");
 		return;
 	}
 
-	const git = createGit(pi, ctx.cwd);
+	const dryRun = /(^|\s)--dry-run(\s|$)/.test(args);
+
+	const { config, source, warnings } = await loadPlanCommitConfig(ctx.cwd, getAgentDir());
+	for (const w of warnings) {
+		ctx.ui.notify(`plan-commit config (${source}): ${w}`, "warning");
+	}
+
+	const git = createGit(pi, ctx.cwd, { noVerify: config.noVerify });
 
 	if (!(await git.isRepo())) {
 		ctx.ui.notify("Not a git repository", "error");
@@ -45,27 +67,30 @@ async function runPlanCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext): Pr
 		return;
 	}
 
-	const excluded: string[] = [];
-	for (const path of paths) {
-		const diff = await git.diffForPaths([path]);
-		if (isLocalDevOnly(path, diff)) excluded.push(path);
-	}
-
-	let { groups } = classifyPaths(paths, excluded);
+	let { groups, excluded } = classifyPaths(paths, config);
 	if (groups.length === 0) {
-		ctx.ui.notify("No reviewable changes (local dev exclusions only?)", "info");
+		ctx.ui.notify("No reviewable changes (config exclusions only?)", "info");
 		return;
 	}
 
 	const sessionCommits: SessionCommit[] = [];
+	const plannedCommits: PlannedCommit[] = [];
 	let stopped = false;
 
 	for (let i = 0; i < groups.length; i++) {
 		const group = groups[i]!;
-		const action = await showGroup(ctx, git, group, i, groups.length);
+		const action = await showGroup(ctx, git, group, i, groups.length, dryRun);
 
 		switch (action) {
 			case "accept": {
+				if (dryRun) {
+					plannedCommits.push({ group: group.title, message: group.commitMessage, paths: group.paths });
+					ctx.ui.notify(
+						`[dry-run] Would commit "${group.commitMessage}" — ${group.paths.join(", ")}`,
+						"info",
+					);
+					break;
+				}
 				const sha = await git.stageAndCommit(group.paths, group.commitMessage);
 				if (!sha) {
 					ctx.ui.notify(`Commit failed for: ${group.title}`, "error");
@@ -101,7 +126,7 @@ async function runPlanCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext): Pr
 				await ctx.waitForIdle();
 
 				const freshPaths = await git.changedPaths();
-				groups = classifyPaths(freshPaths, excluded).groups;
+				({ groups, excluded } = classifyPaths(freshPaths, config));
 				const updatedIndex = groups.findIndex((g) => g.id === group.id);
 				if (updatedIndex >= 0) {
 					i = updatedIndex - 1;
@@ -124,9 +149,9 @@ async function runPlanCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext): Pr
 		if (stopped) break;
 	}
 
-	await showSummary(ctx, sessionCommits, excluded, stopped);
+	await showSummary(ctx, sessionCommits, plannedCommits, excluded, stopped, dryRun);
 
-	if (sessionCommits.length > 1) {
+	if (!dryRun && sessionCommits.length > 1) {
 		await offerSquash(ctx, git, sessionCommits);
 	}
 }
@@ -137,6 +162,7 @@ async function showGroup(
 	group: ReviewGroup,
 	index: number,
 	total: number,
+	dryRun: boolean,
 ): Promise<ReviewAction> {
 	const action = await ctx.ui.custom<ReviewAction>(
 		(tui, theme, kb, done) =>
@@ -144,6 +170,7 @@ async function showGroup(
 				group,
 				index,
 				total,
+				dryRun,
 				tui,
 				theme,
 				keybindings: kb,
@@ -168,31 +195,44 @@ async function showGroup(
 async function showSummary(
 	ctx: ExtensionCommandContext,
 	commits: SessionCommit[],
+	planned: PlannedCommit[],
 	excluded: string[],
 	stopped: boolean,
+	dryRun: boolean,
 ): Promise<void> {
 	const lines: string[] = [];
 
-	if (stopped) {
-		lines.push("Review stopped.");
-	} else {
-		lines.push("Review complete.");
-	}
-
-	if (commits.length > 0) {
-		lines.push("");
-		lines.push(`Session commits (${commits.length}):`);
-		for (const [i, c] of commits.entries()) {
-			lines.push(`  ${i + 1}. ${c.sha} ${c.message}`);
+	if (dryRun) {
+		lines.push(stopped ? "DRY RUN — review stopped." : "DRY RUN — review complete.");
+		lines.push("No git state was changed.");
+		if (planned.length > 0) {
+			lines.push("");
+			lines.push(`Would have committed (${planned.length}):`);
+			for (const [i, p] of planned.entries()) {
+				lines.push(`  ${i + 1}. [${p.group}] ${p.message}`);
+				lines.push(`     ${p.paths.join(", ")}`);
+			}
+		} else {
+			lines.push("");
+			lines.push("No groups accepted.");
 		}
 	} else {
-		lines.push("");
-		lines.push("No commits this session.");
+		lines.push(stopped ? "Review stopped." : "Review complete.");
+		if (commits.length > 0) {
+			lines.push("");
+			lines.push(`Session commits (${commits.length}):`);
+			for (const [i, c] of commits.entries()) {
+				lines.push(`  ${i + 1}. ${c.sha} ${c.message}`);
+			}
+		} else {
+			lines.push("");
+			lines.push("No commits this session.");
+		}
 	}
 
 	if (excluded.length > 0) {
 		lines.push("");
-		lines.push(`Left unstaged (local dev): ${excluded.join(", ")}`);
+		lines.push(`Left unstaged (excluded by config): ${excluded.join(", ")}`);
 	}
 
 	ctx.ui.notify(lines.join("\n"), "info");

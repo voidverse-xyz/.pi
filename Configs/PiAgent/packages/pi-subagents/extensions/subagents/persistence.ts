@@ -2,7 +2,7 @@
  * Session-scoped "subagent persistence" — a per-session toggle (set from /agents)
  * that changes how the delegation tool runs an agent:
  *
- *   - OFF (default): each `subagent {agent, task}` runs a fresh `--no-session` child,
+ *   - OFF (default): each `delegate {agent, task}` runs a fresh `--no-session` child,
  *     as it always has — the agent starts blank every call.
  *   - ON: single-mode delegation to a given agent runs in a PERSISTENT child session
  *     keyed by that agent's name, linked to this (hub) session via parentSession. The

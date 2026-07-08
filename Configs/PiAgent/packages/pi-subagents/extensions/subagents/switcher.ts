@@ -19,8 +19,9 @@
  *     file sets `mode: replace` in its frontmatter.
  *
  * (Spinning up an isolated child `pi` is a separate thing — the LLM-callable
- * `subagent` delegation tool in delegate.ts, whose result reports back to the main
- * agent.)
+ * `delegate` tool in delegate.ts, whose result reports back to the main agent.
+ * While delegations run, /agents also shows them live and lets the user cancel
+ * one — see the "Running tasks" section + registry.ts.)
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -39,6 +40,7 @@ import {
 	saveGlobalDefault,
 } from "./depth.ts";
 import { isPersistenceEnabled, PERSISTENCE_ENTRY, setPersistenceEnabled } from "./persistence.ts";
+import { listRunning, onRunningChange, runningCount } from "./registry.ts";
 
 type PromptMode = "augment" | "replace";
 
@@ -82,6 +84,13 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 	let agents: AgentConfig[] = [];
 	let active: ActiveAgent | null = null;
 	let original: OriginalState | undefined;
+
+	// The footer's live-delegation count updates as children start/finish: registry.ts
+	// pings this subscription and we re-render the status with the last-seen ctx.
+	let lastCtx: ExtensionContext | null = null;
+	onRunningChange(() => {
+		if (lastCtx) updateStatus(lastCtx);
+	});
 
 	// ---- model resolution --------------------------------------------------
 
@@ -195,7 +204,10 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		const askTag = theme.fg("dim", ` ${ICON_ASK} ${resolveAskLimit()}`);
 		// Session subagent-persistence, only when on (delegations reuse each agent's session).
 		const persistTag = isPersistenceEnabled() ? theme.fg("success", " persist") : "";
-		return chip + modeTag + depthTag + askTag + persistTag;
+		// Live delegations, only while any run (cancel them via /agents running).
+		const n = runningCount();
+		const runningTag = n > 0 ? theme.fg("warning", ` ▶${n}`) : "";
+		return chip + modeTag + depthTag + askTag + persistTag + runningTag;
 	}
 
 	function updateStatus(ctx: ExtensionContext) {
@@ -447,6 +459,7 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 			ctx.ui.notify(`Failed to save ask_parent limit: ${err}`, "error");
 			return;
 		}
+		updateStatus(ctx);
 		ctx.ui.notify(`Default ask_parent limit set to ${n}`, "info");
 	}
 
@@ -478,6 +491,41 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		);
 	}
 
+	// ---- live delegations (/agents running) --------------------------------
+
+	// While the delegate tool call runs, the parent LLM is frozen — cancelling a
+	// runaway child is the USER's move. This lists the in-flight delegations (from
+	// registry.ts) and kills the picked one: its task returns "cancelled by user"
+	// with partial output, while parallel siblings keep going.
+	async function handleRunning(ctx: ExtensionContext) {
+		const entries = listRunning();
+		if (entries.length === 0) {
+			ctx.ui.notify("No delegations running.", "info");
+			return;
+		}
+		const fmtElapsed = (ms: number) => {
+			const s = Math.max(0, Math.round(ms / 1000));
+			return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${s % 60}s`;
+		};
+		const items: SelectItem[] = entries.map((e) => ({
+			value: String(e.id),
+			label: `${e.agent} — ${fmtElapsed(Date.now() - e.startedAt)}, ${e.tokens()} tok`,
+			description: e.task,
+		}));
+		const choice = await selectFromList(ctx, `Running delegations (${entries.length}) — pick one to cancel`, items);
+		if (!choice) return;
+		// Re-look it up: it may have finished while the picker was open.
+		const entry = listRunning().find((e) => e.id === Number(choice));
+		if (!entry) {
+			ctx.ui.notify("That delegation already finished.", "info");
+			return;
+		}
+		const ok = await ctx.ui.confirm("Cancel this delegation?", `${entry.agent}: ${entry.task}`);
+		if (!ok) return;
+		entry.cancel();
+		ctx.ui.notify(`Cancelled "${entry.agent}" — its partial output returns to the model.`, "info");
+	}
+
 	// ---- parent menu -------------------------------------------------------
 
 	// `/agents` opens this menu; each item routes to a sub-picker.
@@ -499,12 +547,19 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 				label: "Ask-parent limit",
 				description: `Times an agent may ask its parent, unless its file overrides (current: ${resolveAskLimit()})`,
 			},
+			{
+				value: "running",
+				label: `Running tasks (${runningCount()})`,
+				description:
+					runningCount() > 0 ? "Live delegations — pick one to cancel it" : "Nothing running right now",
+			},
 		];
 		const choice = await selectFromList(ctx, "Subagent", items);
 		if (choice === "switch") await showPicker(ctx);
 		else if (choice === "persistent") await handlePersistence("", ctx);
 		else if (choice === "depth") await handleDepth("", ctx);
 		else if (choice === "asklimit") await handleAskLimit("", ctx);
+		else if (choice === "running") await handleRunning(ctx);
 	}
 
 	// ---- command + shortcut ------------------------------------------------
@@ -517,7 +572,8 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("agents", {
-		description: "Subagent menu — switch agent, set the nesting-depth cap or the default ask-parent limit",
+		description:
+			"Subagent menu — switch agent, cancel running delegations, set the nesting-depth cap or the default ask-parent limit",
 		handler: async (args, ctx) => {
 			const arg = args.trim();
 			const lower = arg.toLowerCase();
@@ -556,6 +612,11 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 				await handlePersistence(tail.join(" "), ctx);
 				return;
 			}
+			// `/agents running` → live delegations; pick one to cancel.
+			if (head.toLowerCase() === "running" || head.toLowerCase() === "cancel") {
+				await handleRunning(ctx);
+				return;
+			}
 			// `/agents <name>` → switch to that agent directly.
 			await switchToAgentByName(arg, ctx);
 		},
@@ -567,6 +628,7 @@ export function registerSwitcher(pi: ExtensionAPI): void {
 		agents = discoverAgents(ctx.cwd, SCOPE).agents;
 		active = null;
 		original = undefined;
+		lastCtx = ctx;
 
 		// Restore whatever the session was last wearing — a persona, OR main. A persisted
 		// "main" (name === MAIN, written by restoreMain) means the user deliberately went

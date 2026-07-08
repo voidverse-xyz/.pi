@@ -25,18 +25,21 @@ import {
 } from "@earendil-works/pi-tui";
 import { createRoot, flatten, loadChildren, type TreeNode } from "./picker-tree.ts";
 
-export type InputType = "text" | "radio" | "multi" | "number" | "boolean" | "datetime" | "file";
-export type DateTimeGranularity = "date" | "time" | "datetime";
+export type InputType = "text" | "radio" | "multi" | "file";
 export type FileKind = "file" | "directory" | "any";
 
 export interface Option {
 	title: string;
 	description?: string;
+	/** Stable value returned when this option is selected, instead of its display title. */
+	value?: string;
 }
 
 export interface Input {
 	type: InputType;
 	title: string;
+	/** Optional stable identifier echoed back in this input's answer. */
+	id?: string;
 	description?: string;
 	options: Option[];
 	optional?: boolean;
@@ -44,34 +47,24 @@ export interface Input {
 	defaults?: string[];
 	pattern?: string;
 	patternHint?: string;
-	minSelections?: number;
-	maxSelections?: number;
-	min?: number;
-	max?: number;
-	confirmValue?: string;
-	granularity: DateTimeGranularity;
 	fileKind: FileKind;
 	defaultText?: string;
 	defaultSelections?: Set<number>;
-	noCustom?: boolean;
 	defaultError?: string;
 	defaultProvided?: boolean;
 	defaultsProvided?: boolean;
-	granularityProvided?: boolean;
 	fileKindProvided?: boolean;
 }
 
 export interface InputAnswer {
 	type: InputType;
 	title: string;
-	/** Present for text-like inputs and human-readable list/boolean/file answers. */
+	/** Stable id echoed from the input, when one was provided. */
+	id?: string;
+	/** Present for text-like inputs and human-readable list/file answers. */
 	text?: string;
-	/** Present for "radio"/"multi" inputs. `custom` flags the "Something else" answer. */
-	selections?: { title: string; custom: boolean }[];
-	/** Optional free-text note attached to list-like inputs. */
-	note?: string;
-	/** Typed value for number/boolean inputs. */
-	value?: number | boolean;
+	/** Present for "radio"/"multi" inputs. `value` is options[].value ?? title; `custom` flags "Something else". */
+	selections?: { title: string; value: string; custom: boolean }[];
 	/** Absolute path for file inputs. */
 	path?: string;
 	/** True when an optional input was intentionally left unanswered. */
@@ -81,25 +74,24 @@ export interface InputAnswer {
 export interface UserInputsResult {
 	answers: InputAnswer[];
 	cancelled: boolean;
+	/** Optional free-text notes the user added in the review page's Notes section. */
+	note?: string;
+	/** Set when the tool could not be presented at all (validation failure, no reachable user). Distinct from a user cancellation. */
+	error?: string;
 }
 
 /** Raw input as it arrives from the tool schema (options optional/looser). */
 export interface RawInput {
 	type: InputType;
 	title: string;
+	id?: string;
 	description?: string;
-	options?: { title: string; description?: string }[];
+	options?: { title: string; description?: string; value?: string }[];
 	optional?: boolean;
 	default?: string;
 	defaults?: string[];
 	pattern?: string;
 	patternHint?: string;
-	minSelections?: number;
-	maxSelections?: number;
-	min?: number;
-	max?: number;
-	confirmValue?: string;
-	granularity?: DateTimeGranularity;
 	fileKind?: FileKind;
 }
 
@@ -115,7 +107,6 @@ interface InputState {
 	selected: Set<number>; // chosen option indices
 	customValue: string; // "Something else" text ("" = none)
 	customSelected: boolean;
-	note: string;
 	textValue: string;
 	cursor: number; // highlighted row within this input
 	textEdited: boolean;
@@ -131,111 +122,28 @@ interface InputState {
 }
 
 // What the shared editor/tree picker is currently capturing.
-type EditTarget = { kind: "text" | "custom" | "note" | "picker"; inputIdx: number } | null;
+type EditTarget =
+	| { kind: "text" | "custom" | "picker"; inputIdx: number }
+	| { kind: "notes" }
+	| null;
 
 const PICKER_ROW_CAP = 10;
 
 function isInputType(value: unknown): value is InputType {
-	return (
-		value === "text" ||
-		value === "radio" ||
-		value === "multi" ||
-		value === "number" ||
-		value === "boolean" ||
-		value === "datetime" ||
-		value === "file"
-	);
-}
-
-function isGranularity(value: unknown): value is DateTimeGranularity {
-	return value === "date" || value === "time" || value === "datetime";
+	return value === "text" || value === "radio" || value === "multi" || value === "file";
 }
 
 function isFileKind(value: unknown): value is FileKind {
 	return value === "file" || value === "directory" || value === "any";
 }
 
-function pad2(n: number): string {
-	return String(n).padStart(2, "0");
-}
-
-function formatNow(granularity: DateTimeGranularity): string {
-	const d = new Date();
-	const date = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-	const time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-	if (granularity === "date") return date;
-	if (granularity === "time") return time;
-	return `${date} ${time}`;
-}
-
-function daysInMonth(year: number, month: number): number {
-	return new Date(year, month, 0).getDate();
-}
-
-function validDateParts(year: number, month: number, day: number): boolean {
-	return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month);
-}
-
-function normalizeDateTimeText(value: string, granularity: DateTimeGranularity): string | null {
-	const trimmed = value.trim();
-	if (!trimmed) return null;
-	if (trimmed.toLowerCase() === "now") return formatNow(granularity);
-
-	if (granularity === "date") {
-		const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
-		if (!m) return null;
-		const year = Number(m[1]);
-		const month = Number(m[2]);
-		const day = Number(m[3]);
-		if (!validDateParts(year, month, day)) return null;
-		return `${m[1]}-${m[2]}-${m[3]}`;
-	}
-
-	if (granularity === "time") {
-		const m = /^(\d{2}):(\d{2})$/.exec(trimmed);
-		if (!m) return null;
-		const hour = Number(m[1]);
-		const minute = Number(m[2]);
-		if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-		return `${m[1]}:${m[2]}`;
-	}
-
-	const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/.exec(
-		trimmed,
-	);
-	if (!m) return null;
-	const year = Number(m[1]);
-	const month = Number(m[2]);
-	const day = Number(m[3]);
-	const hour = Number(m[4]);
-	const minute = Number(m[5]);
-	if (!validDateParts(year, month, day) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
-	if (Number.isNaN(Date.parse(trimmed.replace(" ", "T")))) return null;
-	return `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}`;
-}
-
-function datetimeHint(granularity: DateTimeGranularity): string {
-	if (granularity === "date") return "Use format YYYY-MM-DD";
-	if (granularity === "time") return "Use format HH:MM";
-	return "Use format YYYY-MM-DD HH:MM";
-}
-
-function parseBooleanDefault(value: string): boolean | null {
-	const normalized = value.trim().toLowerCase();
-	if (normalized === "true") return true;
-	if (normalized === "false") return false;
-	return null;
-}
-
 function optionTitles(options: Option[]): string {
 	return options.map((o) => `"${o.title}"`).join(", ");
 }
 
-function rangeLabel(min: number | undefined, max: number | undefined): string {
-	if (min !== undefined && max !== undefined) return `${min}–${max}`;
-	if (min !== undefined) return `≥ ${min}`;
-	if (max !== undefined) return `≤ ${max}`;
-	return "";
+/** Indices of options whose title or value equals `key` (used to resolve — and disambiguate — defaults). */
+function matchOptionIndices(options: Option[], key: string): number[] {
+	return options.flatMap((o, k) => (o.title === key || o.value === key ? [k] : []));
 }
 
 function typedPath(root: string, raw: string): { raw: string; abs: string; rel: string; display: string } {
@@ -256,97 +164,106 @@ function defaultSet(set: Set<number> | undefined): Set<number> {
 	return new Set(set ?? []);
 }
 
+// Allowlists for strict validation — any other key on an input/option is rejected rather
+// than silently ignored, so stale fields (e.g. a removed `confirmValue`/`granularity`) surface
+// as an error instead of being dropped by normalizeInputs.
+const ALLOWED_INPUT_KEYS = new Set([
+	"type",
+	"title",
+	"id",
+	"description",
+	"options",
+	"optional",
+	"default",
+	"defaults",
+	"pattern",
+	"patternHint",
+	"fileKind",
+]);
+const ALLOWED_OPTION_KEYS = new Set(["title", "description", "value"]);
+
+/** Reject unknown/stale fields on the raw tool payload before it is normalized. */
+export function validateRawInputs(raw: unknown): string | null {
+	if (!Array.isArray(raw)) return "Error: inputs must be an array.";
+	for (const item of raw) {
+		if (typeof item !== "object" || item === null) return "Error: each input must be an object.";
+		const rec = item as Record<string, unknown>;
+		const title = typeof rec.title === "string" && rec.title ? rec.title : "(untitled)";
+		for (const key of Object.keys(rec)) {
+			if (!ALLOWED_INPUT_KEYS.has(key)) {
+				return `Error: input "${title}" has unknown field "${key}". Allowed fields: ${[...ALLOWED_INPUT_KEYS].join(", ")}.`;
+			}
+		}
+		if (rec.options !== undefined) {
+			if (!Array.isArray(rec.options)) return `Error: input "${title}" has non-array options.`;
+			for (const opt of rec.options) {
+				if (typeof opt !== "object" || opt === null) return `Error: input "${title}" has a non-object option.`;
+				for (const key of Object.keys(opt as Record<string, unknown>)) {
+					if (!ALLOWED_OPTION_KEYS.has(key)) {
+						return `Error: input "${title}" has an option with unknown field "${key}". Allowed: ${[...ALLOWED_OPTION_KEYS].join(", ")}.`;
+					}
+				}
+			}
+		}
+	}
+	return null;
+}
+
 /** Normalize schema input into the internal shape (options always an array). */
 export function normalizeInputs(raw: RawInput[]): Input[] {
 	return raw.map((i) => {
-		const type = (isInputType(i.type) ? i.type : i.type) as InputType;
-		const granularityProvided = i.granularity !== undefined;
+		const type = i.type as InputType;
 		const fileKindProvided = i.fileKind !== undefined;
-		const granularity = isGranularity(i.granularity) ? i.granularity : "datetime";
 		const fileKind = isFileKind(i.fileKind) ? i.fileKind : "any";
 		const defaultsProvided = i.defaults !== undefined;
 		const defaultProvided = i.default !== undefined;
 		const input: Input = {
 			type,
 			title: i.title,
+			id: i.id,
 			description: i.description,
-			options: (i.options ?? []).map((o) => ({ title: o.title, description: o.description })),
+			options: (i.options ?? []).map((o) => ({ title: o.title, description: o.description, value: o.value })),
 			optional: i.optional === true,
 			default: i.default,
 			defaults: i.defaults,
 			pattern: i.pattern,
 			patternHint: i.patternHint,
-			minSelections: i.minSelections,
-			maxSelections: i.maxSelections,
-			min: i.min,
-			max: i.max,
-			confirmValue: i.confirmValue,
-			granularity,
 			fileKind,
 			defaultSelections: new Set<number>(),
-			granularityProvided,
 			fileKindProvided,
 			defaultsProvided,
 			defaultProvided,
 		};
 
-		if (type === "boolean") {
-			input.options = [{ title: "Yes" }, { title: "No" }];
-			input.noCustom = true;
-		}
-
 		if (type === "text") {
-			// Confirmation fields intentionally ignore defaults: zero-keystroke confirmation
-			// should not be possible.
-			if (i.default !== undefined && input.confirmValue === undefined) input.defaultText = i.default;
+			if (i.default !== undefined) input.defaultText = i.default;
 		} else if (type === "radio") {
 			if (i.default !== undefined) {
-				const idx = input.options.findIndex((o) => o.title === i.default);
-				if (idx === -1) {
-					input.defaultError = `Error: input "${input.title}" has default "${i.default}", but radio defaults must match one of: ${optionTitles(input.options)}.`;
+				const idxs = matchOptionIndices(input.options, i.default);
+				if (idxs.length === 0) {
+					input.defaultError = `Error: input "${input.title}" has default "${i.default}", but radio defaults must match an option title or value: ${optionTitles(input.options)}.`;
+				} else if (idxs.length > 1) {
+					input.defaultError = `Error: input "${input.title}" default "${i.default}" is ambiguous — it matches more than one option by title or value.`;
 				} else {
-					input.defaultSelections = new Set([idx]);
+					input.defaultSelections = new Set([idxs[0]]);
 				}
 			}
 		} else if (type === "multi") {
 			if (i.defaults !== undefined) {
 				const selected = new Set<number>();
-				for (const title of i.defaults) {
-					const idx = input.options.findIndex((o) => o.title === title);
-					if (idx === -1) {
-						input.defaultError = `Error: input "${input.title}" has default selection "${title}", but multi defaults must match option titles: ${optionTitles(input.options)}.`;
+				for (const key of i.defaults) {
+					const idxs = matchOptionIndices(input.options, key);
+					if (idxs.length === 0) {
+						input.defaultError = `Error: input "${input.title}" has default selection "${key}", but multi defaults must match an option title or value: ${optionTitles(input.options)}.`;
 						break;
 					}
-					selected.add(idx);
+					if (idxs.length > 1) {
+						input.defaultError = `Error: input "${input.title}" default selection "${key}" is ambiguous — it matches more than one option by title or value.`;
+						break;
+					}
+					selected.add(idxs[0]);
 				}
 				input.defaultSelections = selected;
-			}
-		} else if (type === "number") {
-			if (i.default !== undefined) {
-				const n = Number(i.default.trim());
-				if (!Number.isFinite(n)) {
-					input.defaultError = `Error: input "${input.title}" has default "${i.default}", but number defaults must be numeric.`;
-				} else {
-					input.defaultText = i.default.trim();
-				}
-			}
-		} else if (type === "boolean") {
-			if (i.default !== undefined) {
-				const b = parseBooleanDefault(i.default);
-				if (b === null) {
-					input.defaultError = `Error: input "${input.title}" has default "${i.default}", but boolean defaults must be "true" or "false".`;
-				} else {
-					input.defaultSelections = new Set([b ? 0 : 1]);
-				}
-			}
-		} else if (type === "datetime") {
-			if (i.default !== undefined) {
-				const normalized = normalizeDateTimeText(i.default, granularity);
-				if (!normalized) {
-					input.defaultError = `Error: input "${input.title}" has default "${i.default}", but datetime defaults must use ${datetimeHint(granularity).replace("Use format ", "")} or "now".`;
-				} else {
-					input.defaultText = normalized;
-				}
 			}
 		} else if (type === "file") {
 			if (i.default !== undefined) input.defaultText = i.default.trim();
@@ -372,18 +289,6 @@ export function validateInputs(inputs: Input[]): string | null {
 		if (input.patternHint !== undefined && input.type !== "text") {
 			return `Error: input "${input.title}" has patternHint, but patternHint is only valid for text inputs.`;
 		}
-		if (input.confirmValue !== undefined && input.type !== "text") {
-			return `Error: input "${input.title}" has confirmValue, but confirmValue is only valid for text inputs.`;
-		}
-		if ((input.min !== undefined || input.max !== undefined) && input.type !== "number") {
-			return `Error: input "${input.title}" has min/max, but min/max are only valid for number inputs.`;
-		}
-		if ((input.minSelections !== undefined || input.maxSelections !== undefined) && input.type !== "multi") {
-			return `Error: input "${input.title}" has minSelections/maxSelections, but those are only valid for multi inputs.`;
-		}
-		if (input.granularityProvided && input.type !== "datetime") {
-			return `Error: input "${input.title}" has granularity, but granularity is only valid for datetime inputs.`;
-		}
 		if (input.fileKindProvided && input.type !== "file") {
 			return `Error: input "${input.title}" has fileKind, but fileKind is only valid for file inputs.`;
 		}
@@ -401,31 +306,31 @@ export function validateInputs(inputs: Input[]): string | null {
 				return `Error: input "${input.title}" has invalid pattern: ${message}.`;
 			}
 		}
-		if (input.min !== undefined && input.max !== undefined && input.min > input.max) {
-			return `Error: input "${input.title}" has min greater than max.`;
+		if (input.type === "radio" || input.type === "multi") {
+			const seenTitles = new Set<string>();
+			const seenEffective = new Set<string>();
+			for (const opt of input.options) {
+				if (seenTitles.has(opt.title)) {
+					return `Error: input "${input.title}" has duplicate option title "${opt.title}"; option titles must be unique.`;
+				}
+				seenTitles.add(opt.title);
+				// The returned/selected value is `value ?? title`, so those must be distinct across
+				// options — otherwise a selection or a default can't be attributed to one option.
+				const effective = opt.value ?? opt.title;
+				if (seenEffective.has(effective)) {
+					return `Error: input "${input.title}" has options whose effective value (value ?? title) collide on "${effective}"; each option must resolve to a distinct value.`;
+				}
+				seenEffective.add(effective);
+			}
 		}
-		if (
-			input.minSelections !== undefined &&
-			input.maxSelections !== undefined &&
-			input.minSelections > input.maxSelections
-		) {
-			return `Error: input "${input.title}" has minSelections greater than maxSelections.`;
+	}
+	const seenIds = new Set<string>();
+	for (const input of inputs) {
+		if (input.id === undefined) continue;
+		if (seenIds.has(input.id)) {
+			return `Error: duplicate input id "${input.id}"; ids must be unique so answers can be correlated.`;
 		}
-		if (input.minSelections !== undefined && input.minSelections > input.options.length + 1) {
-			return `Error: input "${input.title}" requires at least ${input.minSelections} selections, but only ${input.options.length + 1} choices are available.`;
-		}
-		if (input.minSelections !== undefined && input.minSelections < 0) {
-			return `Error: input "${input.title}" has negative minSelections.`;
-		}
-		if (input.maxSelections !== undefined && input.maxSelections < 0) {
-			return `Error: input "${input.title}" has negative maxSelections.`;
-		}
-		if (input.optional && input.confirmValue !== undefined) {
-			return `Error: input "${input.title}" cannot be optional and use confirmValue; confirmation fields must be required.`;
-		}
-		if (input.optional && input.minSelections !== undefined) {
-			return `Error: input "${input.title}" cannot be optional and use minSelections; make it required or remove minSelections.`;
-		}
+		seenIds.add(input.id);
 	}
 	return null;
 }
@@ -434,25 +339,21 @@ export function validateInputs(inputs: Input[]): string | null {
 export function summarizeAnswers(result: UserInputsResult): string {
 	if (result.cancelled) return "User cancelled the inputs.";
 	const lines = result.answers.map((a) => {
-		if (a.skipped) return `- ${a.title}: (skipped — optional input, no answer)`;
-		if (a.type === "number") return `- ${a.title}: ${a.text}${typeof a.value === "number" ? ` (value: ${a.value})` : ""}`;
-		if (a.type === "boolean") {
-			const note = a.note ? ` [note: ${a.note}]` : "";
-			return `- ${a.title}: ${a.text}${typeof a.value === "boolean" ? ` (value: ${a.value})` : ""}${note}`;
-		}
-		if (a.type === "datetime") return `- ${a.title}: ${a.text}`;
+		const label = a.id ? `${a.title} [id: ${a.id}]` : a.title;
+		if (a.skipped) return `- ${label}: (skipped — optional input, no answer)`;
 		if (a.type === "file") {
 			const path = a.path && a.path !== a.text ? ` (absolute path: ${a.path})` : "";
-			const note = a.note ? ` [note: ${a.note}]` : "";
-			return `- ${a.title}: ${a.text}${path}${note}`;
+			return `- ${label}: ${a.text}${path}`;
 		}
-		if (a.type === "text") return `- ${a.title}: ${a.text}`;
-		const picks = (a.selections ?? []).map((s) => (s.custom ? `${s.title} (something else)` : s.title));
+		if (a.type === "text") return `- ${label}: ${a.text}`;
+		const picks = (a.selections ?? []).map((s) =>
+			s.custom ? `${s.title} (something else)` : s.value !== s.title ? `${s.title} (value: ${s.value})` : s.title,
+		);
 		const chosen = picks.length ? picks.join(", ") : "(none)";
-		const note = a.note ? ` [note: ${a.note}]` : "";
-		return `- ${a.title}: ${chosen}${note}`;
+		return `- ${label}: ${chosen}`;
 	});
-	return `User answered:\n${lines.join("\n")}`;
+	const body = `User answered:\n${lines.join("\n")}`;
+	return result.note ? `${body}\n\nNotes: ${result.note}` : body;
 }
 
 /**
@@ -472,12 +373,15 @@ export function showUserInputs(
 		let currentTab = 0;
 		let cachedLines: string[] | undefined;
 		let editing: EditTarget = null;
+		// Review page: an optional Notes section plus a focusable cursor (0 = notes, 1 = Submit).
+		// Defaults to the Submit button so Enter on the review page still submits immediately.
+		let notes = "";
+		let submitCursor = 1;
 
 		const states: InputState[] = inputs.map((input) => ({
 			selected: defaultSet(input.defaultSelections),
 			customValue: "",
 			customSelected: false,
-			note: "",
 			textValue: input.defaultText ?? "",
 			cursor: 0,
 			textEdited: false,
@@ -510,18 +414,22 @@ export function showUserInputs(
 			return inputs[idx].options.length;
 		}
 		function somethingElseRow(idx: number): number {
-			return inputs[idx].noCustom ? -1 : optionRows(idx);
+			return optionRows(idx);
 		}
-		function noteRow(idx: number): number {
+		// Rows the input's own content occupies (before the trailing "Next" button).
+		// text: 1 (edit). file: 2 (browse, type). radio/multi: options + "Something else".
+		function contentRows(idx: number): number {
 			const inp = inputs[idx];
+			if (inp.type === "text") return 1;
 			if (inp.type === "file") return 2;
-			return inp.noCustom ? optionRows(idx) : optionRows(idx) + 1;
+			return optionRows(idx) + 1;
+		}
+		// Every input ends with a focusable "Next →" (or "Review →") button row.
+		function nextButtonRow(idx: number): number {
+			return contentRows(idx);
 		}
 		function rowCount(idx: number): number {
-			const inp = inputs[idx];
-			if (inp.type === "text" || inp.type === "number" || inp.type === "datetime") return 1;
-			if (inp.type === "file") return 3;
-			return optionRows(idx) + (inp.noCustom ? 1 : 2);
+			return contentRows(idx) + 1;
 		}
 
 		function selectionCount(idx: number): number {
@@ -532,7 +440,7 @@ export function showUserInputs(
 		function hasResponse(idx: number): boolean {
 			const inp = inputs[idx];
 			const s = states[idx];
-			if (inp.type === "text" || inp.type === "number" || inp.type === "datetime" || inp.type === "file") {
+			if (inp.type === "text" || inp.type === "file") {
 				return s.textValue.trim().length > 0;
 			}
 			return selectionCount(idx) > 0;
@@ -558,13 +466,18 @@ export function showUserInputs(
 
 		function openEditor(target: Exclude<EditTarget, null>) {
 			editing = target;
+			if (target.kind === "notes") {
+				editor.setText(notes);
+				refresh();
+				return;
+			}
 			const s = states[target.inputIdx];
 			if (target.kind === "picker") {
 				ensurePickerLoaded(target.inputIdx);
 				refresh();
 				return;
 			}
-			editor.setText(target.kind === "text" ? s.textValue : target.kind === "custom" ? s.customValue : s.note);
+			editor.setText(target.kind === "text" ? s.textValue : s.customValue);
 			refresh();
 		}
 
@@ -577,17 +490,16 @@ export function showUserInputs(
 		editor.onSubmit = (value) => {
 			if (!editing || editing.kind === "picker") return;
 			const trimmed = value.trim();
+			if (editing.kind === "notes") {
+				notes = trimmed;
+				closeEditor();
+				return;
+			}
 			const s = states[editing.inputIdx];
 			if (editing.kind === "text") {
 				s.textValue = trimmed;
 				s.textEdited = true;
 				s.fileStat = undefined;
-				if (inputs[editing.inputIdx].type === "datetime") {
-					const normalized = normalizeDateTimeText(trimmed, inputs[editing.inputIdx].granularity);
-					if (normalized) s.textValue = normalized;
-				}
-			} else if (editing.kind === "note") {
-				s.note = trimmed;
 			} else {
 				// custom "Something else"
 				if (trimmed) {
@@ -761,29 +673,9 @@ export function showUserInputs(
 
 			if (inp.type === "text") {
 				const text = s.textValue.trim();
-				if (inp.confirmValue !== undefined && text !== inp.confirmValue) return `Type exactly: ${inp.confirmValue}`;
 				const pattern = compiledPatterns[idx];
 				if (pattern && !pattern.test(text)) return inp.patternHint ?? `Must match: ${inp.pattern}`;
 				return null;
-			}
-
-			if (inp.type === "multi") {
-				const picks = selectionCount(idx);
-				if (inp.minSelections !== undefined && picks < inp.minSelections) return `Pick at least ${inp.minSelections}`;
-				if (inp.maxSelections !== undefined && picks > inp.maxSelections) return `Pick at most ${inp.maxSelections}`;
-				return null;
-			}
-
-			if (inp.type === "number") {
-				const n = Number(s.textValue.trim());
-				if (!Number.isFinite(n)) return "Enter a number";
-				if (inp.min !== undefined && n < inp.min) return `Must be ≥ ${inp.min}`;
-				if (inp.max !== undefined && n > inp.max) return `Must be ≤ ${inp.max}`;
-				return null;
-			}
-
-			if (inp.type === "datetime") {
-				return normalizeDateTimeText(s.textValue, inp.granularity) ? null : datetimeHint(inp.granularity);
 			}
 
 			if (inp.type === "file") {
@@ -799,10 +691,20 @@ export function showUserInputs(
 
 		// ----- activation of a highlighted row -----
 
+		function goNext() {
+			currentTab = Math.min(submitTab, currentTab + 1);
+			refresh();
+		}
+
 		function activateRow(idx: number) {
 			const inp = inputs[idx];
 			const s = states[idx];
-			if (inp.type === "text" || inp.type === "number" || inp.type === "datetime") {
+			// The trailing button row advances to the next tab (or the Submit review).
+			if (s.cursor === nextButtonRow(idx)) {
+				goNext();
+				return;
+			}
+			if (inp.type === "text") {
 				openEditor({ kind: "text", inputIdx: idx });
 				return;
 			}
@@ -813,15 +715,13 @@ export function showUserInputs(
 				}
 				if (s.cursor === 1) {
 					openEditor({ kind: "text", inputIdx: idx });
-					return;
 				}
-				if (s.cursor === noteRow(idx)) openEditor({ kind: "note", inputIdx: idx });
 				return;
 			}
 
 			const row = s.cursor;
 			if (row < optionRows(idx)) {
-				if (inp.type === "radio" || inp.type === "boolean") {
+				if (inp.type === "radio") {
 					s.selected.clear();
 					s.selected.add(row);
 					s.customSelected = false;
@@ -843,10 +743,6 @@ export function showUserInputs(
 				} else {
 					openEditor({ kind: "custom", inputIdx: idx });
 				}
-				return;
-			}
-			if (row === noteRow(idx)) {
-				openEditor({ kind: "note", inputIdx: idx });
 			}
 		}
 
@@ -879,11 +775,27 @@ export function showUserInputs(
 				return;
 			}
 
-			// Submit tab.
+			// Submit tab: navigate between the optional Notes section (0) and the Submit button (1).
 			if (currentTab === submitTab) {
-				if (matchesKey(data, Key.enter) && canSubmit()) {
-					done({ answers: collectAnswers(), cancelled: false });
-				} else if (matchesKey(data, Key.escape)) {
+				if (matchesKey(data, Key.up)) {
+					submitCursor = Math.max(0, submitCursor - 1);
+					refresh();
+					return;
+				}
+				if (matchesKey(data, Key.down)) {
+					submitCursor = Math.min(1, submitCursor + 1);
+					refresh();
+					return;
+				}
+				if (matchesKey(data, Key.enter) || matchesKey(data, Key.space)) {
+					if (submitCursor === 0) {
+						openEditor({ kind: "notes" });
+					} else if (canSubmit()) {
+						done({ answers: collectAnswers(), cancelled: false, note: notes || undefined });
+					}
+					return;
+				}
+				if (matchesKey(data, Key.escape)) {
 					done({ answers: [], cancelled: true });
 				}
 				return;
@@ -912,52 +824,30 @@ export function showUserInputs(
 		}
 
 		function collectAnswers(): InputAnswer[] {
-			return inputs.map((inp, idx) => {
+			return inputs.map((inp, idx): InputAnswer => {
 				const s = states[idx];
+				let answer: InputAnswer;
 				if (inp.optional && !hasResponse(idx)) {
-					return { type: inp.type, title: inp.title, skipped: true };
-				}
-				if (inp.type === "text") {
-					return { type: inp.type, title: inp.title, text: s.textValue || "(no response)" };
-				}
-				if (inp.type === "number") {
-					const n = Number(s.textValue.trim());
-					return { type: inp.type, title: inp.title, text: s.textValue, value: n };
-				}
-				if (inp.type === "datetime") {
-					const normalized = normalizeDateTimeText(s.textValue, inp.granularity) ?? s.textValue;
-					return { type: inp.type, title: inp.title, text: normalized };
-				}
-				if (inp.type === "file") {
+					answer = { type: inp.type, title: inp.title, skipped: true };
+				} else if (inp.type === "text") {
+					answer = { type: inp.type, title: inp.title, text: s.textValue || "(no response)" };
+				} else if (inp.type === "file") {
 					const pathInfo = typedPath(rootDir, s.textValue);
-					const answer: InputAnswer = {
-						type: inp.type,
-						title: inp.title,
-						text: pathInfo.display,
-						path: pathInfo.abs,
-					};
-					if (s.note) answer.note = s.note;
-					return answer;
+					answer = { type: inp.type, title: inp.title, text: pathInfo.display, path: pathInfo.abs };
+				} else {
+					const selections: { title: string; value: string; custom: boolean }[] = [];
+					for (let i = 0; i < inp.options.length; i++) {
+						if (s.selected.has(i)) {
+							const opt = inp.options[i];
+							selections.push({ title: opt.title, value: opt.value ?? opt.title, custom: false });
+						}
+					}
+					if (s.customSelected && s.customValue) {
+						selections.push({ title: s.customValue, value: s.customValue, custom: true });
+					}
+					answer = { type: inp.type, title: inp.title, selections };
 				}
-				if (inp.type === "boolean") {
-					const picked = s.selected.has(0);
-					const answer: InputAnswer = {
-						type: inp.type,
-						title: inp.title,
-						text: picked ? "Yes" : "No",
-						value: picked,
-					};
-					if (s.note) answer.note = s.note;
-					return answer;
-				}
-
-				const selections: { title: string; custom: boolean }[] = [];
-				for (let i = 0; i < inp.options.length; i++) {
-					if (s.selected.has(i)) selections.push({ title: inp.options[i].title, custom: false });
-				}
-				if (s.customSelected && s.customValue) selections.push({ title: s.customValue, custom: true });
-				const answer: InputAnswer = { type: inp.type, title: inp.title, selections };
-				if (s.note) answer.note = s.note;
+				if (inp.id) answer.id = inp.id;
 				return answer;
 			});
 		}
@@ -1028,7 +918,7 @@ export function showUserInputs(
 					? "↑↓ move · →/← expand/collapse · Enter pick · Esc close"
 					: "Enter to save • Esc to go back"
 				: currentTab === submitTab
-					? "Tab/←→ switch • Enter submit • Esc cancel"
+					? "↑↓ move • Enter choose • Tab/←→ switch • Esc cancel"
 					: "↑↓ move • Space/Enter choose • Tab/←→ switch • Esc cancel";
 			addWrappedWithPrefix(" ", theme.fg("dim", help));
 			lines.push(theme.fg("accent", "─".repeat(renderWidth)));
@@ -1041,18 +931,7 @@ export function showUserInputs(
 			function typeTag(inp: Input): string {
 				if (inp.type === "text") return "text";
 				if (inp.type === "radio") return "pick one";
-				if (inp.type === "multi") {
-					const parts: string[] = ["pick any"];
-					if (inp.minSelections !== undefined) parts.push(`min ${inp.minSelections}`);
-					if (inp.maxSelections !== undefined) parts.push(`max ${inp.maxSelections}`);
-					return parts.join(", ");
-				}
-				if (inp.type === "number") {
-					const r = rangeLabel(inp.min, inp.max);
-					return r ? `number, ${r}` : "number";
-				}
-				if (inp.type === "boolean") return "yes/no";
-				if (inp.type === "datetime") return `${inp.granularity}, ${datetimeHint(inp.granularity).replace("Use format ", "")}`;
+				if (inp.type === "multi") return "pick any";
 				if (inp.type === "file") return inp.fileKind === "any" ? "path" : inp.fileKind;
 				return inp.type;
 			}
@@ -1073,27 +952,41 @@ export function showUserInputs(
 				if (inp.description) add(" ", theme.fg("muted", inp.description));
 				lines.push("");
 
-				if (inp.type === "text" || inp.type === "number" || inp.type === "datetime") {
+				if (inp.type === "text") {
 					if (editing && editing.kind === "text" && editing.inputIdx === idx) {
-						add(" ", theme.fg("muted", inp.type === "text" ? "Your answer:" : "Value:"));
+						add(" ", theme.fg("muted", "Your answer:"));
 						for (const line of editor.render(Math.max(1, rw - 2))) lines.push(` ${line}`);
 					} else {
-						const prefix = theme.fg("accent", "> ");
-						const action = s.textValue ? "✎ Edit value" : "✎ Type your answer";
-						add(prefix, theme.fg("accent", action));
-						if (s.textValue) add("     ", theme.fg("text", s.textValue) + defaultSuffix(!s.textEdited && !!inp.defaultText));
+						// The edit action shares a tab with the trailing Next/Review button, so it
+						// must only highlight when the cursor is actually on it (row 0).
+						const editCursor = s.cursor === 0;
+						const editPrefix = editCursor ? theme.fg("accent", "> ") : "  ";
+						const editColor = editCursor ? "accent" : "dim";
+						if (s.textValue) {
+							// Show the current value first, then the edit action beneath it, so the
+							// default (or previously entered) value reads as the answer and "Edit"
+							// is the action that changes it.
+							add("     ", theme.fg("text", s.textValue) + defaultSuffix(!s.textEdited && !!inp.defaultText));
+							lines.push("");
+							add(editPrefix, theme.fg(editColor, "Edit ✎"));
+						} else {
+							add(editPrefix, theme.fg(editColor, "Type your answer ✎"));
+						}
 					}
 					renderInlineError(idx, add);
+					// Keep Edit and Next/Review adjacent (no gap) so they read as a switchable pair.
+					renderNextButton(idx, add, false);
 					return;
 				}
 
 				if (inp.type === "file") {
 					renderFileInput(idx, rw, add);
 					renderInlineError(idx, add);
+					renderNextButton(idx, add);
 					return;
 				}
 
-				// List/boolean options.
+				// List options (radio / multi).
 				for (let i = 0; i < inp.options.length; i++) {
 					const opt = inp.options[i];
 					const cursor = s.cursor === i;
@@ -1107,7 +1000,7 @@ export function showUserInputs(
 				}
 
 				// "Something else" row.
-				if (!inp.noCustom) {
+				{
 					const rowIdx = somethingElseRow(idx);
 					const cursor = s.cursor === rowIdx;
 					const chosen = s.customSelected;
@@ -1121,10 +1014,8 @@ export function showUserInputs(
 					}
 				}
 
-				// "Add a note" row — padded from the choices above it.
-				lines.push("");
-				renderNoteRow(idx, rw, add);
 				renderInlineError(idx, add);
+				renderNextButton(idx, add);
 			}
 
 			function renderFileInput(idx: number, rw: number, add: (prefix: string, text: string) => void) {
@@ -1143,9 +1034,6 @@ export function showUserInputs(
 				} else if (s.textValue) {
 					add("     ", theme.fg("text", s.textValue) + defaultSuffix(!s.textEdited && !!inputs[idx].defaultText));
 				}
-
-				lines.push("");
-				renderNoteRow(idx, rw, add);
 			}
 
 			function renderPicker(idx: number, rw: number, add: (prefix: string, text: string) => void) {
@@ -1176,22 +1064,6 @@ export function showUserInputs(
 				if (s.pickerScroll + PICKER_ROW_CAP < s.pickerRows.length) add("   ", theme.fg("dim", "↓ more"));
 			}
 
-			function renderNoteRow(idx: number, rw: number, add: (prefix: string, text: string) => void) {
-				const s = states[idx];
-				const rowIdx = noteRow(idx);
-				const cursor = s.cursor === rowIdx;
-				const prefix = cursor ? theme.fg("accent", "> ") : "  ";
-				const label = s.note ? "✎ Note" : "✎ Add a note…";
-				add(prefix, theme.fg(cursor ? "accent" : "dim", label));
-				if (s.note && !(editing && editing.kind === "note" && editing.inputIdx === idx)) {
-					add("     ", theme.fg("muted", s.note));
-				}
-				if (editing && editing.kind === "note" && editing.inputIdx === idx) {
-					add("   ", theme.fg("muted", "Your note:"));
-					for (const line of editor.render(Math.max(1, rw - 4))) lines.push(`   ${line}`);
-				}
-			}
-
 			function renderInlineError(idx: number, add: (prefix: string, text: string) => void) {
 				const err = validationError(idx);
 				if (err) {
@@ -1200,26 +1072,28 @@ export function showUserInputs(
 				}
 			}
 
+			function renderNextButton(idx: number, add: (prefix: string, text: string) => void, spaced = true) {
+				const cursor = states[idx].cursor === nextButtonRow(idx);
+				// The last input advances to the Submit review; earlier ones to the next input.
+				const label = idx === inputs.length - 1 ? "Review →" : "Next →";
+				const prefix = cursor ? theme.fg("accent", "> ") : "  ";
+				if (spaced) lines.push("");
+				add(prefix, theme.fg(cursor ? "accent" : "muted", label));
+			}
+
 			function answerPreview(idx: number): string {
 				const inp = inputs[idx];
 				const s = states[idx];
 				if (inp.optional && !hasResponse(idx)) return theme.fg("dim", "(skipped — optional)");
-				if (inp.type === "text" || inp.type === "number" || inp.type === "datetime" || inp.type === "file") {
+				if (inp.type === "text" || inp.type === "file") {
 					return s.textValue || theme.fg("warning", "(unanswered)");
-				}
-				if (inp.type === "boolean") {
-					if (s.selected.has(0)) return "Yes";
-					if (s.selected.has(1)) return "No";
-					return theme.fg("warning", "(unanswered)");
 				}
 				const picks: string[] = [];
 				for (let j = 0; j < inp.options.length; j++) {
 					if (s.selected.has(j)) picks.push(inp.options[j].title);
 				}
 				if (s.customSelected && s.customValue) picks.push(`${s.customValue} (else)`);
-				let value = picks.length ? picks.join(", ") : theme.fg("warning", "(unanswered)");
-				if (s.note) value += theme.fg("dim", `  — note: ${s.note}`);
-				return value;
+				return picks.length ? picks.join(", ") : theme.fg("warning", "(unanswered)");
 			}
 
 			function renderSubmit(add: (prefix: string, text: string) => void) {
@@ -1230,9 +1104,29 @@ export function showUserInputs(
 					add(" ", `${theme.fg("muted", `${inp.title}: `)}${theme.fg("text", answerPreview(i))}`);
 				}
 				lines.push("");
-				if (canSubmit()) {
-					add(" ", theme.fg("success", "Press Enter to submit"));
-				} else {
+
+				// Optional Notes section (submitCursor row 0).
+				const noteCursor = submitCursor === 0;
+				const notePrefix = noteCursor ? theme.fg("accent", "> ") : "  ";
+				const noteLabel = notes ? "Notes ✎" : "Add notes… ✎";
+				add(notePrefix, theme.fg(noteCursor ? "accent" : "dim", noteLabel));
+				if (notes && !(editing && editing.kind === "notes")) {
+					add("     ", theme.fg("muted", notes));
+				}
+				if (editing && editing.kind === "notes") {
+					add("   ", theme.fg("muted", "Your notes:"));
+					for (const line of editor.render(Math.max(1, renderWidth - 4))) lines.push(`   ${line}`);
+				}
+				lines.push("");
+
+				// Submit button (submitCursor row 1).
+				const submitFocused = submitCursor === 1;
+				const canGo = canSubmit();
+				const submitPrefix = submitFocused ? theme.fg("accent", "> ") : "  ";
+				const submitColor = submitFocused ? "accent" : canGo ? "success" : "dim";
+				add(submitPrefix, theme.fg(submitColor, "Submit ✓"));
+
+				if (!canGo) {
 					const missing = inputs
 						.filter((inp, i) => !(inp.optional && !hasResponse(i)) && !hasResponse(i))
 						.map((inp) => inp.title);

@@ -3,8 +3,8 @@
  *
  * Views: list (default) → diff / file (per file) → ask-target (main vs subagent)
  * → answer (subagent streaming). Actions that need the overlay closed (a question
- * prompt, spawning a subagent, undo confirms) resolve back to the command loop via
- * onDone(PanelResult); everything else stays inside the panel.
+ * prompt, spawning a subagent, undo/undo-all confirms, patch export) resolve back
+ * to the command loop via onDone(PanelResult); everything else stays inside the panel.
  *
  * Adapted from the plan-commit review-panel: closure-scoped state, pull-based
  * render with tui.requestRender(), exact-height layout, render caching.
@@ -32,6 +32,8 @@ export type PanelResult =
 	| { type: "askMain"; abs: string }
 	| { type: "askSub"; abs: string }
 	| { type: "undo"; abs: string }
+	| { type: "undoAll" }
+	| { type: "exportPatch"; abs: string; all: boolean }
 	| { type: "answerClose"; abs: string };
 
 type PanelView = "list" | "diff" | "file" | "ask-target" | "answer";
@@ -234,16 +236,29 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 		}
 
 		// list / diff / file: shared action keys
-		if (matchesKey(data, "a") || matchesKey(data, "A")) {
+		if (matchesKey(data, "a") || matchesKey(data, "shift+a")) {
 			openAskTarget();
 			return;
 		}
-		if (matchesKey(data, "u") || matchesKey(data, "U")) {
+		if (matchesKey(data, "u")) {
 			const fc = selected();
 			if (fc) onDone({ type: "undo", abs: fc.abs });
 			return;
 		}
-		if (matchesKey(data, "o") || matchesKey(data, "O")) {
+		if (matchesKey(data, "shift+u")) {
+			onDone({ type: "undoAll" });
+			return;
+		}
+		if (matchesKey(data, "e")) {
+			const fc = selected();
+			if (fc) onDone({ type: "exportPatch", abs: fc.abs, all: false });
+			return;
+		}
+		if (matchesKey(data, "shift+e")) {
+			onDone({ type: "exportPatch", abs: selected()?.abs ?? "", all: true });
+			return;
+		}
+		if (matchesKey(data, "o") || matchesKey(data, "shift+o")) {
 			if (selected()) setView("file");
 			return;
 		}
@@ -254,14 +269,14 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 		}
 
 		if (view === "diff") {
-			if (matchesKey(data, "v") || matchesKey(data, "V")) {
+			if (matchesKey(data, "v") || matchesKey(data, "shift+v")) {
 				diffViewMode = toggleViewMode(diffViewMode);
 				contentScroll = 0;
 				invalidate();
 				tui.requestRender();
 				return;
 			}
-			if (matchesKey(data, "f") || matchesKey(data, "F") || keys.cancel(data)) {
+			if (matchesKey(data, "f") || matchesKey(data, "shift+f") || keys.cancel(data)) {
 				setView("list");
 				return;
 			}
@@ -275,7 +290,7 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 		}
 
 		// file view
-		if (matchesKey(data, "f") || matchesKey(data, "F")) {
+		if (matchesKey(data, "f") || matchesKey(data, "shift+f")) {
 			setView("diff");
 			return;
 		}
@@ -407,11 +422,11 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 	function footerHint(): string {
 		switch (view) {
 			case "list":
-				return "↑↓ move · Enter diff · o file · a ask · u undo · q close";
+				return "↑↓ move · Enter diff · o file · a ask · u undo · U undo all · e/E patch · q close";
 			case "diff":
-				return "↑↓ scroll · v split · o file · a ask · u undo · f/Esc back";
+				return "↑↓ scroll · v split · o file · a ask · u undo · e/E patch · f/Esc back";
 			case "file":
-				return "↑↓ scroll · f diff · a ask · u undo · Esc back";
+				return "↑↓ scroll · f diff · a ask · u undo · e/E patch · Esc back";
 			case "ask-target":
 				return "↑↓ · Enter choose · Esc cancel";
 			case "answer":

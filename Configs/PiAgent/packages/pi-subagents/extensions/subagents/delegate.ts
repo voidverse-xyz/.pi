@@ -1,5 +1,5 @@
 /**
- * Delegation tool — the LLM-callable `subagent` tool.
+ * Delegation tool — the LLM-callable `delegate` tool.
  *
  * Spawns a separate `pi` process for each subagent invocation, giving it an
  * isolated context window. The *parent* agent passes everything the child needs
@@ -27,9 +27,12 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, type ExtensionAPI, getAgentDir, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { type AgentConfig, type AgentScope, discoverAgents, discoverContextFiles, discoverSkillPaths } from "./agents.ts";
 import { ASK_PARENT_ENV, canCallSpec, childEnv, currentDepth, resolveAskLimit, resolveMaxDepth, targetAllowedByCall } from "./depth.ts";
+import { ALLOWED_PATHS_ENV, READONLY_ENV, type Sandbox, currentSandbox, describeSandbox, isSandboxed, mergeSandbox } from "./guard.ts";
 import { type HubSession, hubFromCtx, isPersistenceEnabled, resolvePersistentSessionFile, withAgentLock } from "./persistence.ts";
+import { registerRunning, unregisterRunning } from "./registry.ts";
 import { getPiInvocation, writePromptToTempFile } from "./runner.ts";
 
 // The fd the child reaches its parent on for headless confirm / ask_user. The actual
@@ -45,8 +48,9 @@ function hasParentChannel(): boolean {
 // ask_parent budget: how many times each agent (by name) has paused to ask its parent
 // this user request. delegate.ts grants ask_parent to a spawned child only while its
 // count is below the agent's frontmatter `askLimit`; a re-run past the cap spawns
-// without the tool. Reset each turn (see registerSubagentTool). Module scope so it spans
-// every subagent call within the process; a headless parent's map dies with its one run.
+// without the tool. Reset each user request (see registerSubagentTool). Module scope so
+// it spans every subagent call within the process; a headless parent's map dies with its
+// one run.
 const askCounts = new Map<string, number>();
 
 const MAX_PARALLEL_TASKS = 8;
@@ -185,6 +189,19 @@ interface SingleResult {
 	 */
 	paused?: { summary: string; question: string };
 	/**
+	 * Set when the run was stopped for exceeding a cap (maxRuntime seconds or maxTokens
+	 * cumulative input+output). Partial output is preserved; not a crash.
+	 */
+	limit?: { kind: "runtime" | "tokens"; cap: number };
+	/** True when the USER cancelled this child from /agents while it ran. */
+	cancelled?: boolean;
+	/**
+	 * outputSchema handling: on success, the canonical JSON text of the validated final
+	 * output (fences stripped, reserialized); on failure, the validation/parse errors.
+	 */
+	structuredJson?: string;
+	schemaError?: string;
+	/**
 	 * Absolute paths of the context files (AGENTS.md / CLAUDE.md) the child actually loaded,
 	 * discovered from its effective cwd. Recorded so a per-task `cwd` that pulls in different
 	 * project instructions than the parent is visible rather than silent.
@@ -218,9 +235,23 @@ function getFinalOutput(messages: Message[]): string {
 
 function isFailedResult(result: SingleResult): boolean {
 	// A paused agent stopped on purpose (it called ask_parent) — not a failure, even
-	// though stopping it mid-turn leaves a non-zero exit / aborted stop reason.
-	if (result.paused) return false;
+	// though stopping it mid-turn leaves a non-zero exit / aborted stop reason. The same
+	// goes for a user cancel or a cap stop: deliberate, surfaced with their own notes.
+	if (result.paused || result.cancelled || result.limit) return false;
 	return result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
+}
+
+/**
+ * The one-line explanation for a run that was deliberately stopped early (user cancel
+ * or a runtime/token cap) — prefixed to the partial output wherever it's surfaced.
+ */
+function stoppageNote(r: SingleResult): string | undefined {
+	if (r.cancelled) return `⛔ Subagent "${r.agent}" was cancelled by the user — partial output below.`;
+	if (r.limit?.kind === "runtime")
+		return `⏱ Subagent "${r.agent}" was stopped after exceeding its ${r.limit.cap}s runtime cap — partial output below.`;
+	if (r.limit?.kind === "tokens")
+		return `⏱ Subagent "${r.agent}" was stopped after exceeding its ${r.limit.cap}-token budget — partial output below.`;
+	return undefined;
 }
 
 /** Formats a paused agent's question + progress for the parent LLM to read and act on. */
@@ -252,7 +283,60 @@ function getResultOutput(result: SingleResult): string {
 	if (isFailedResult(result)) {
 		return result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
 	}
-	return getFinalOutput(result.messages) || "(no output)";
+	return finalOutputFor(result) || "(no output)";
+}
+
+/** The text later steps / the parent read: the validated JSON when a schema was in play. */
+function finalOutputFor(r: SingleResult): string {
+	return r.structuredJson ?? getFinalOutput(r.messages);
+}
+
+/**
+ * The JSON candidate in an agent's final message: the whole message if it parses,
+ * else the first fenced code block (models love ```json fences despite instructions).
+ */
+function extractJsonCandidate(text: string): string {
+	const trimmed = text.trim();
+	const fence = trimmed.match(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/);
+	if (fence) {
+		try {
+			JSON.parse(trimmed);
+			return trimmed; // whole message already parses — fence was inside a string
+		} catch {
+			return fence[1].trim();
+		}
+	}
+	return trimmed;
+}
+
+/**
+ * Validate a finished run's final output against the caller's outputSchema (plain JSON
+ * Schema, checked with typebox's Value). Sets `structuredJson` (canonical, fence-free)
+ * on success or `schemaError` on parse/validation failure — the caller surfaces that as
+ * an error result so the parent LLM can retry with a corrected task.
+ */
+function validateStructuredOutput(result: SingleResult, schema: unknown): void {
+	const raw = getFinalOutput(result.messages);
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(extractJsonCandidate(raw));
+	} catch (err) {
+		result.schemaError = `final output is not valid JSON (${err instanceof Error ? err.message : String(err)})`;
+		return;
+	}
+	try {
+		if (!Value.Check(schema as object, parsed)) {
+			const errors = [...Value.Errors(schema as object, parsed)]
+				.slice(0, 5)
+				.map((e: { instancePath?: string; message?: string }) => `${e.instancePath || "/"}: ${e.message ?? "invalid"}`);
+			result.schemaError = `output does not conform to outputSchema: ${errors.join("; ")}`;
+			return;
+		}
+	} catch (err) {
+		result.schemaError = `outputSchema is not a usable JSON Schema (${err instanceof Error ? err.message : String(err)})`;
+		return;
+	}
+	result.structuredJson = JSON.stringify(parsed);
 }
 
 // Clamp a string to at most maxBytes UTF-8 bytes, taken from the start or the end.
@@ -333,6 +417,21 @@ function describeContextDivergence(agent: string, childFiles: string[], parentFi
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
+/** Per-call sandbox / cap / schema options from the delegate params (single or per-item). */
+interface RunOpts {
+	readOnly?: boolean;
+	allowedPaths?: string[];
+	maxRuntime?: number;
+	maxTokens?: number;
+	outputSchema?: unknown;
+}
+
+/** Smallest of the defined values — how frontmatter and per-call caps combine. */
+function minDefined(...vals: Array<number | undefined>): number | undefined {
+	const xs = vals.filter((v): v is number => typeof v === "number" && Number.isFinite(v) && v > 0);
+	return xs.length ? Math.min(...xs) : undefined;
+}
+
 async function runSingleAgent(
 	defaultCwd: string,
 	agents: AgentConfig[],
@@ -350,6 +449,9 @@ async function runSingleAgent(
 	// Non-null ⇒ run this agent in its persistent, reusable session (single mode only).
 	// Null ⇒ ephemeral `--no-session` (the default, and always for parallel/chain).
 	hub: HubSession | null,
+	// Per-call sandbox/cap/schema overrides, merged with the agent's frontmatter and this
+	// process's own inherited sandbox — a call can only ever tighten.
+	callOpts: RunOpts = {},
 ): Promise<SingleResult> {
 	const agent = agents.find((a) => a.name === agentName);
 
@@ -385,8 +487,19 @@ async function runSingleAgent(
 		}
 	}
 
+	// Effective sandbox and caps: what this process inherited (env — a nested sandboxed
+	// parent passes its own restrictions down), tightened by the agent's frontmatter,
+	// tightened again by the per-call params. Enforced in the child by guard.ts.
+	const childCwd = cwd ?? defaultCwd;
+	const sandbox = mergeSandbox(currentSandbox(), childCwd, agent, callOpts);
+	const maxRuntime = minDefined(agent.maxRuntime, callOpts.maxRuntime);
+	const maxTokens = minDefined(agent.maxTokens, callOpts.maxTokens);
+
 	const args: string[] = ["--mode", "json", "-p", ...(persistentSessionFile ? ["--session", persistentSessionFile] : ["--no-session"])];
 	if (agent.model) args.push("--model", agent.model);
+	// Belt-and-braces for read-only runs: guard.ts is the real gate, but excluding the
+	// mutating built-ins outright also keeps them out of the child's advertised tool set.
+	if (sandbox.readOnly) args.push("--exclude-tools", "edit,write");
 	if (agent.tools && agent.tools.length > 0) {
 		// A restrictive `tools:` allowlist would hide ask_parent; add it back only when the
 		// agent may ask this run. Full-tools agents (no list) rely on the env gate below to
@@ -443,8 +556,26 @@ async function runSingleAgent(
 	};
 
 	try {
-		if (agent.systemPrompt.trim()) {
-			const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
+		// The appended system prompt: the agent's own instructions, plus a heads-up about
+		// an enforced sandbox (so the child works within it instead of fighting blocked
+		// calls), plus the required output format when the caller set an outputSchema.
+		const promptParts = [agent.systemPrompt.trim()];
+		if (isSandboxed(sandbox)) {
+			promptParts.push(
+				`# Sandbox (enforced)\nThis run is sandboxed: ${describeSandbox(sandbox)}. ` +
+					"Out-of-policy tool calls (mutations when read-only, paths outside the allowed roots, non-read-only bash) " +
+					"are blocked by the runtime. Work within the sandbox rather than retrying blocked calls.",
+			);
+		}
+		if (callOpts.outputSchema !== undefined) {
+			promptParts.push(
+				"# Output format (required)\nYour FINAL message must be nothing but a single JSON value conforming to this JSON Schema — " +
+					`no prose before or after, no markdown fences:\n${JSON.stringify(callOpts.outputSchema)}`,
+			);
+		}
+		const fullPrompt = promptParts.filter(Boolean).join("\n\n");
+		if (fullPrompt) {
+			const tmp = await writePromptToTempFile(agent.name, fullPrompt);
 			tmpPromptDir = tmp.dir;
 			tmpPromptPath = tmp.filePath;
 			args.push("--append-system-prompt", tmpPromptPath);
@@ -452,9 +583,27 @@ async function runSingleAgent(
 
 		args.push(`Task: ${task}`);
 		let wasAborted = false;
+		// Deliberate stops, distinct from a parent-turn abort: the user cancelled this
+		// child from /agents, or it exceeded a runtime/token cap. Partial output is kept.
+		let cancelledByUser = false;
+		let limitHit: { kind: "runtime" | "tokens"; cap: number } | undefined;
 
 		const exitCode = await new Promise<number>((resolve) => {
 			const invocation = getPiInvocation(args);
+			// Carry the nesting depth (+1), the cap, and this child's call-list down so it
+			// can enforce the same limits. Start from childEnv(), then explicitly remove
+			// one-shot capabilities that the child must not inherit from a nested parent.
+			const env = childEnv(maxDepth, canCallSpec(agent), defaultAskLimit);
+			env[PI_IPC_FD_ENV] = "3";
+			if (askAllowed) env[ASK_PARENT_ENV] = "1";
+			else delete env[ASK_PARENT_ENV];
+			// Sandbox policy for guard.ts in the child. Already merged with this process's
+			// own inherited sandbox, so it can only be tighter than ours.
+			if (sandbox.readOnly) env[READONLY_ENV] = "1";
+			else delete env[READONLY_ENV];
+			if (sandbox.allowedPaths) env[ALLOWED_PATHS_ENV] = JSON.stringify(sandbox.allowedPaths);
+			else delete env[ALLOWED_PATHS_ENV];
+
 			const proc = spawn(invocation.command, invocation.args, {
 				cwd: cwd ?? defaultCwd,
 				shell: false,
@@ -462,16 +611,9 @@ async function runSingleAgent(
 				// (served by the `ipc` extension) — kept off stdout so control traffic never
 				// mixes with pi's JSON.
 				stdio: ["ignore", "pipe", "pipe", "pipe"],
-				// Carry the nesting depth (+1), the cap, and this child's call-list down
-				// so it can enforce the same limits — it runs --no-session and can't
-				// read entries. PI_IPC_FD tells the child which fd to reach the parent on when
-				// a headless capability (safety confirm, ask_user) needs the TUI.
-				env: {
-					...childEnv(maxDepth, canCallSpec(agent), defaultAskLimit),
-					[PI_IPC_FD_ENV]: "3",
-					// Register ask_parent in the child only when the agent opted in and has budget.
-					...(askAllowed ? { [ASK_PARENT_ENV]: "1" } : {}),
-				},
+				// PI_IPC_FD tells the child which fd to reach the parent on when a headless
+				// capability (safety confirm, ask_user) needs the TUI.
+				env,
 			});
 
 			// Hand the child's control pipe to the `ipc` extension (if installed) over
@@ -480,6 +622,34 @@ async function runSingleAgent(
 			// No listener (ipc not installed) ⇒ the child simply can't reach us.
 			const control = proc.stdio[3] as Duplex | null | undefined;
 			if (control) pi.events.emit("ipc:attach", { stream: control, childName: agentName });
+
+			// Deliberate-stop teardown, shared by the user cancel and the caps: record the
+			// cause (first one wins), then SIGTERM→SIGKILL. Distinct from the abort path
+			// below so a cap/cancel keeps the partial output instead of throwing.
+			const stopDeliberately = (recordCause: () => void) => {
+				if (wasAborted || cancelledByUser || limitHit) return;
+				recordCause();
+				proc.kill("SIGTERM");
+				setTimeout(() => {
+					if (!proc.killed) proc.kill("SIGKILL");
+				}, 3000);
+			};
+			const runtimeTimer = maxRuntime
+				? setTimeout(
+						() => stopDeliberately(() => (limitHit = { kind: "runtime", cap: maxRuntime })),
+						maxRuntime * 1000,
+					)
+				: undefined;
+			// Expose this child on the live roster so the user can see and cancel it
+			// from /agents while the parent LLM is frozen inside this tool call.
+			const regId = registerRunning({
+				agent: agentName,
+				task: task.split("\n")[0].slice(0, 100),
+				startedAt: Date.now(),
+				tokens: () => currentResult.usage.input + currentResult.usage.output,
+				cancel: () => stopDeliberately(() => (cancelledByUser = true)),
+			});
+
 			let buffer = "";
 
 			const processLine = (line: string) => {
@@ -508,6 +678,12 @@ async function runSingleAgent(
 						if (!currentResult.model && msg.model) currentResult.model = msg.model;
 						if (msg.stopReason) currentResult.stopReason = msg.stopReason;
 						if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
+
+						// Token budget: cumulative input+output across turns (cache traffic
+						// excluded — a cache-heavy run isn't what the cap is protecting against).
+						if (maxTokens && currentResult.usage.input + currentResult.usage.output > maxTokens) {
+							stopDeliberately(() => (limitHit = { kind: "tokens", cap: maxTokens }));
+						}
 
 						// Detect a pause: the agent called ask_parent to ask its parent a question
 						// (see ask-parent.ts). Capture {summary, question} from the tool-call
@@ -554,11 +730,15 @@ async function runSingleAgent(
 			});
 
 			proc.on("close", (code) => {
+				if (runtimeTimer) clearTimeout(runtimeTimer);
+				unregisterRunning(regId);
 				if (buffer.trim()) processLine(buffer);
 				resolve(code ?? 0);
 			});
 
 			proc.on("error", () => {
+				if (runtimeTimer) clearTimeout(runtimeTimer);
+				unregisterRunning(regId);
 				resolve(1);
 			});
 
@@ -577,6 +757,19 @@ async function runSingleAgent(
 
 		currentResult.exitCode = exitCode;
 		if (wasAborted) throw new Error("Subagent was aborted");
+		if (cancelledByUser) currentResult.cancelled = true;
+		if (limitHit) currentResult.limit = limitHit;
+		// Structured output: validate the final message once the run genuinely finished
+		// (a paused/cancelled/capped/failed run has no final answer to hold to the schema).
+		if (
+			callOpts.outputSchema !== undefined &&
+			!currentResult.paused &&
+			!currentResult.cancelled &&
+			!currentResult.limit &&
+			!isFailedResult(currentResult)
+		) {
+			validateStructuredOutput(currentResult, callOpts.outputSchema);
+		}
 		return currentResult;
 	} finally {
 		if (tmpPromptPath)
@@ -594,16 +787,65 @@ async function runSingleAgent(
 	}
 }
 
+// Sandbox / cap / schema knobs, accepted at the top level (single mode) and per item
+// (parallel/chain). Each combines with the agent's frontmatter so a call only TIGHTENS:
+// readOnly is sticky, allowedPaths intersect, caps take the minimum.
+const runOptProps = {
+	readOnly: Type.Optional(
+		Type.Boolean({
+			description:
+				"Hard read-only sandbox for this run: edit/write are blocked and bash is limited to provably read-only commands (enforced, not just prompted). Cannot un-set an agent whose file already sets readOnly.",
+		}),
+	),
+	allowedPaths: Type.Optional(
+		Type.Array(Type.String(), {
+			description:
+				"Path sandbox: file tools may only touch paths inside these roots (relative paths resolve against the run's cwd). Intersects with the agent's own allowedPaths.",
+		}),
+	),
+	maxRuntime: Type.Optional(
+		Type.Number({ description: "Wall-clock cap in seconds; the run is stopped (keeping partial output) when exceeded." }),
+	),
+	maxTokens: Type.Optional(
+		Type.Number({ description: "Cumulative input+output token cap; the run is stopped (keeping partial output) when exceeded." }),
+	),
+	outputSchema: Type.Optional(
+		Type.Any({
+			description:
+				"JSON Schema the agent's final message must conform to. The child is told to answer in raw JSON; the answer is validated and returned as canonical JSON (an error listing violations if it doesn't conform — fix the task and retry).",
+		}),
+	),
+};
+
+/** The RunOpts carried by a params object (top-level or per-item). */
+function optsFrom(o: {
+	readOnly?: boolean;
+	allowedPaths?: string[];
+	maxRuntime?: number;
+	maxTokens?: number;
+	outputSchema?: unknown;
+}): RunOpts {
+	return {
+		readOnly: o.readOnly,
+		allowedPaths: o.allowedPaths,
+		maxRuntime: o.maxRuntime,
+		maxTokens: o.maxTokens,
+		outputSchema: o.outputSchema,
+	};
+}
+
 const TaskItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task to delegate to the agent (include all context it needs)" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+	...runOptProps,
 });
 
 const ChainItem = Type.Object({
 	agent: Type.String({ description: "Name of the agent to invoke" }),
 	task: Type.String({ description: "Task with optional {previous} placeholder for prior step output" }),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process" })),
+	...runOptProps,
 });
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -621,11 +863,14 @@ const SubagentParams = Type.Object({
 		Type.Boolean({ description: "Prompt before running project-local agents. Default: true.", default: true }),
 	),
 	cwd: Type.Optional(Type.String({ description: "Working directory for the agent process (single mode)" })),
+	...runOptProps,
 });
 
 export function registerSubagentTool(pi: ExtensionAPI): void {
 	// ask_parent budgets refill each user request: a fresh request lets subagents ask again.
-	pi.on("turn_start", () => askCounts.clear());
+	// Use agent_start (once per user prompt), not turn_start (once per LLM/tool loop), so
+	// an ask → answer → re-delegate continuation in the same request stays capped.
+	pi.on("agent_start", () => askCounts.clear());
 
 	pi.registerTool({
 		name: "delegate",
@@ -643,6 +888,8 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 			"The child cannot see this conversation — put every file path, requirement, and constraint it needs into `task`.",
 			"Use `chain` when a later step needs an earlier step's output ({previous}); use `tasks` for independent work to run in parallel.",
 			"When session subagent-persistence is enabled (the user sets it via /agents), delegating to the SAME agent again resumes its earlier session — it remembers its prior work, so give follow-ups to that same agent instead of re-explaining. Persistence applies to single-agent delegation; parallel/chain always start fresh.",
+			"For recon/review/analysis delegations, sandbox the child: `readOnly: true` hard-blocks mutations, `allowedPaths` confines file access to listed roots, and `maxRuntime`/`maxTokens` cap runaway runs (partial output is returned). All are enforced by the runtime, per call or per task item, and only ever tighten the agent's own config.",
+			"Set `outputSchema` (a JSON Schema) when you need a machine-readable answer: the child must reply in conforming JSON, which is validated before it reaches you — on violation you get the errors and can retry with a corrected task.",
 		],
 		parameters: SubagentParams,
 
@@ -785,6 +1032,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 						pi,
 						parentContextFiles,
 						null, // chain steps run ephemeral (fan-through pipeline, not a durable collaborator)
+						optsFrom(step),
 					);
 					results.push(result);
 
@@ -798,6 +1046,31 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 							details: makeDetails("chain")(results),
 						};
 					}
+					if (result.cancelled || result.limit) {
+						// A later step can't run on a partial {previous} — stop the chain and
+						// hand what exists to the parent, labeled with why it stopped.
+						const partial = truncateParallelOutput(getFinalOutput(result.messages) || "(no output)");
+						return {
+							content: [
+								{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}).\n\n${stoppageNote(result)}\n\n${partial}` },
+							],
+							details: makeDetails("chain")(results),
+							isError: true,
+						};
+					}
+					if (result.schemaError) {
+						const raw = truncateParallelOutput(getFinalOutput(result.messages) || "(no output)");
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Chain stopped at step ${i + 1} (${step.agent}): ${result.schemaError}\n\nRaw output:\n${raw}`,
+								},
+							],
+							details: makeDetails("chain")(results),
+							isError: true,
+						};
+					}
 					if (isFailedResult(result)) {
 						const errorMsg = getResultOutput(result);
 						return {
@@ -806,13 +1079,13 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 							isError: true,
 						};
 					}
-					previousOutput = getFinalOutput(result.messages);
+					previousOutput = finalOutputFor(result);
 				}
 				// Any step that ran under a diverging per-task cwd gets its ⚠ note surfaced up front.
 				const chainNotes = results.map((r) => contextNote(r)).join("");
 				return {
 					content: [
-						{ type: "text", text: chainNotes + (getFinalOutput(results[results.length - 1].messages) || "(no output)") },
+						{ type: "text", text: chainNotes + (finalOutputFor(results[results.length - 1]) || "(no output)") },
 					],
 					details: makeDetails("chain")(results),
 				};
@@ -872,6 +1145,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 						pi,
 						parentContextFiles,
 						null, // parallel tasks run ephemeral (independent fan-out, and avoids same-agent write races)
+						optsFrom(t),
 					);
 					allResults[index] = result;
 					emitParallelUpdate();
@@ -879,9 +1153,19 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 				});
 
 				const pausedCount = results.filter((r) => r.paused).length;
-				const successCount = results.filter((r) => !r.paused && !isFailedResult(r)).length;
+				const stoppedCount = results.filter((r) => r.cancelled || r.limit).length;
+				const successCount = results.filter((r) => !r.paused && !r.cancelled && !r.limit && !r.schemaError && !isFailedResult(r)).length;
 				const summaries = results.map((r) => {
 					if (r.paused) return `### [${r.agent}] paused (asking a question)\n\n${formatPausedResult(r)}`;
+					if (r.cancelled || r.limit) {
+						const partial = truncateParallelOutput(getFinalOutput(r.messages) || "(no output)");
+						const status = r.cancelled ? "cancelled by user" : `stopped (${r.limit!.kind} cap)`;
+						return `### [${r.agent}] ${status}\n\n${stoppageNote(r)}\n\n${partial}`;
+					}
+					if (r.schemaError) {
+						const raw = truncateParallelOutput(getFinalOutput(r.messages) || "(no output)");
+						return `### [${r.agent}] invalid structured output\n\n${r.schemaError}\n\nRaw output:\n${raw}`;
+					}
 					const output = truncateParallelOutput(getResultOutput(r));
 					const status = isFailedResult(r)
 						? `failed${r.stopReason && r.stopReason !== "end" ? ` (${r.stopReason})` : ""}`
@@ -892,6 +1176,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 				const header =
 					`Parallel: ${successCount}/${results.length} succeeded` +
 					(pausedCount ? `, ${pausedCount} paused (awaiting your answer)` : "") +
+					(stoppedCount ? `, ${stoppedCount} stopped early (user cancel / cap)` : "") +
 					(divergedCount ? `, ${divergedCount} under a different project context (⚠)` : "");
 				return {
 					content: [{ type: "text", text: `${header}\n\n${summaries.join("\n\n---\n\n")}` }],
@@ -920,12 +1205,33 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 						pi,
 						parentContextFiles,
 						h,
+						optsFrom(params),
 					);
 				const result = hub ? await withAgentLock(hub, params.agent!, () => runSingle(hub)) : await runSingle(null);
 				if (result.paused) {
 					return {
 						content: [{ type: "text", text: formatPausedResult(result) }],
 						details: makeDetails("single")([result]),
+					};
+				}
+				if (result.cancelled || result.limit) {
+					const partial = getFinalOutput(result.messages) || "(no output)";
+					return {
+						content: [{ type: "text", text: `${stoppageNote(result)}\n\n${partial}` }],
+						details: makeDetails("single")([result]),
+						// A user cancel is deliberate — don't present it as a failure the model
+						// should immediately retry; a blown cap is a genuine incompletion.
+						isError: Boolean(result.limit),
+					};
+				}
+				if (result.schemaError) {
+					const raw = getFinalOutput(result.messages) || "(no output)";
+					return {
+						content: [
+							{ type: "text", text: `Structured output invalid — ${result.schemaError}\n\nRaw output:\n${raw}` },
+						],
+						details: makeDetails("single")([result]),
+						isError: true,
 					};
 				}
 				if (isFailedResult(result)) {
@@ -937,7 +1243,7 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 					};
 				}
 				return {
-					content: [{ type: "text", text: contextNote(result) + (getFinalOutput(result.messages) || "(no output)") }],
+					content: [{ type: "text", text: contextNote(result) + (finalOutputFor(result) || "(no output)") }],
 					details: makeDetails("single")([result]),
 				};
 			}
@@ -983,6 +1289,14 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 				theme.fg("toolTitle", theme.bold("delegate ")) +
 				theme.fg("accent", agentName) +
 				theme.fg("muted", ` [${scope}]`);
+			// Compact per-call sandbox/cap tags so a sandboxed run is visible at the call site.
+			const tags: string[] = [];
+			if (args.readOnly) tags.push("ro");
+			if (args.allowedPaths?.length) tags.push("paths");
+			if (args.maxRuntime) tags.push(`${args.maxRuntime}s`);
+			if (args.maxTokens) tags.push(`${args.maxTokens}tok`);
+			if (args.outputSchema !== undefined) tags.push("json");
+			if (tags.length) text += theme.fg("warning", ` [${tags.join(" ")}]`);
 			text += `\n  ${theme.fg("dim", preview)}`;
 			return new Text(text, 0, 0);
 		},
@@ -1017,9 +1331,11 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 				const isError = isFailedResult(r);
 				const icon = r.paused
 					? theme.fg("warning", "⏸")
-					: isError
-						? theme.fg("error", "✗")
-						: theme.fg("success", "✓");
+					: r.cancelled || r.limit
+						? theme.fg("warning", "⛔")
+						: isError
+							? theme.fg("error", "✗")
+							: theme.fg("success", "✓");
 				const displayItems = getDisplayItems(r.messages);
 				const finalOutput = getFinalOutput(r.messages);
 
@@ -1027,6 +1343,8 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 					const container = new Container();
 					let header = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
 					if (r.contextDiverged) header += ` ${theme.fg("warning", "⚠ different project context")}`;
+					if (r.cancelled) header += ` ${theme.fg("warning", "[cancelled by user]")}`;
+					else if (r.limit) header += ` ${theme.fg("warning", `[${r.limit.kind} cap]`)}`;
 					if (isError && r.stopReason) header += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
 					container.addChild(new Text(header, 0, 0));
 					if (isError && r.errorMessage) container.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
@@ -1064,6 +1382,8 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 
 				let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
 				if (r.contextDiverged) text += ` ${theme.fg("warning", "⚠ different project context")}`;
+				if (r.cancelled) text += ` ${theme.fg("warning", "[cancelled by user]")}`;
+				else if (r.limit) text += ` ${theme.fg("warning", `[${r.limit.kind} cap]`)}`;
 				if (isError && r.stopReason) text += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
 				if (isError && r.errorMessage) text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
 				else if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
@@ -1098,9 +1418,11 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 				for (const r of details.results) {
 					const rIcon = r.paused
 						? theme.fg("warning", "⏸")
-						: r.exitCode === 0
-							? theme.fg("success", "✓")
-							: theme.fg("error", "✗");
+						: r.cancelled || r.limit
+							? theme.fg("warning", "⛔")
+							: r.exitCode === 0
+								? theme.fg("success", "✓")
+								: theme.fg("error", "✗");
 					const displayItems = getDisplayItems(r.messages);
 					text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}${r.contextDiverged ? ` ${theme.fg("warning", "⚠")}` : ""}`;
 					if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
@@ -1133,9 +1455,11 @@ export function registerSubagentTool(pi: ExtensionAPI): void {
 							? theme.fg("warning", "⏳")
 							: r.paused
 								? theme.fg("warning", "⏸")
-								: isFailedResult(r)
-									? theme.fg("error", "✗")
-									: theme.fg("success", "✓");
+								: r.cancelled || r.limit
+									? theme.fg("warning", "⛔")
+									: isFailedResult(r)
+										? theme.fg("error", "✗")
+										: theme.fg("success", "✓");
 					const displayItems = getDisplayItems(r.messages);
 					text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}${r.contextDiverged ? ` ${theme.fg("warning", "⚠")}` : ""}`;
 					if (displayItems.length === 0) text += `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`;

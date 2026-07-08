@@ -1,7 +1,7 @@
 {
   "name": "pi-ask-user",
   "version": "1.0.0",
-  "description": "LLM-callable ask_user tool — ask the user optional/defaulted/validated text, list, number, boolean, datetime, and file questions in a TUI panel; headless subagents forward to the parent via the optional ipc extension.",
+  "description": "LLM-callable ask_user tool — ask the user optional/defaulted/validated text, radio, multi, and file questions in a TUI panel; headless subagents forward to the parent via the optional ipc extension.",
   "keywords": ["pi-package"],
   "pi": {
     "extensions": ["./extensions"]

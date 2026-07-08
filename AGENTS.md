@@ -139,13 +139,17 @@ shared repository using the `Reusable Artifact Capture` rules above.
 ## PiAgent Layout
 
 - `Configs/PiAgent/packages/`: source of truth for Pi extension packages
-  (`ask-user`, `changes`, `codex-usage`, `command-safety`, `confirm-stop-agent`,
-  `dir-git`, `ipc`, `plan-commit`, `session-merge`, `status-line`,
-  `steer-queue`, `subagents`, `tool-monitor`, `user-summary` — `cursor` was
-  removed 2026-07-03). These packages are listed in `~/.pi/agent/settings.json`
-  under `packages`.
+  (`ask-user`, `bookmark`, `browse`, `changes`, `clear-alias`, `codex-usage`,
+  `command-safety`, `confirm-stop-agent`, `dir-git`, `ipc`, `notify-user`,
+  `plan-commit`, `session-merge`, `session-name`, `show-files`, `status-line`,
+  `steer-queue`, `subagents`, `tool-monitor` — `cursor` was removed
+  2026-07-03). These packages are listed in `~/.pi/agent/settings.json` under
+  `packages`.
 - `Configs/PiAgent/.pi/agent/skills/`: source of truth for the `plan-commit`
   skill.
+  `clear-alias` (added 2026-07-07) registers `/clear` as a muscle-memory alias
+  for `/new` using `ctx.newSession()`, so existing session-switch hooks still
+  apply.
   `command-safety` gates agent `bash` commands by category (destructive /
   network / exec / other) with countdown confirmations and a `/safety off|on|max`
   mode; `max` (default) confirms everything except a read-only safe-list (ls,
@@ -172,11 +176,13 @@ shared repository using the `Reusable Artifact Capture` rules above.
   selected session branches: it summarizes the shared base plus branch deltas
   into a visible custom message in a new session, optionally drafts or runs a
   kickoff prompt, and leaves source branches intact.
-  `user-summary` (added 2026-07-05) provides the LLM-callable `notify_user`
-  tool: an end-of-turn transcript summary rendered as a custom message with
-  optional `summary`, `info`, `warnings`, and `errors` bands. The bands have
-  top/bottom padding and muted backgrounds. It also has a `/user-summary` demo
-  command.
+  `notify-user` (added 2026-07-05 as `user-summary`; renamed 2026-07-06)
+  provides the LLM-callable `notify_user` tool: an end-of-turn notice rendered
+  as a custom message with optional `title`, `successes`, `info`, `warnings`,
+  and `errors` bands, color-banded by `severity` (`success|info|warning|error`,
+  inferred when omitted), plus an optional `urgent` immediate toast. There is no
+  `summary` field (removed 2026-07-07, no back-compat) and no demo command. The
+  bands have top/bottom padding and muted backgrounds.
   `changes` (added 2026-07-05) tracks the *main agent's own* `edit`/`write`
   file changes this session via `tool_call`/`tool_execution_end`, persisting
   first-touch pre-image baselines as `changes.baseline`/`changes.touch` session

@@ -1,13 +1,13 @@
 # Notify User
 
 `notify-user` registers the LLM-callable `notify_user` tool — the agent's way to
-make sure the user actually *sees* something: a status summary, completed work,
+make sure the user actually *sees* something: a status notice, completed work,
 warnings about risks/caveats, or errors for things that failed.
 
 The full notice renders as a padded, banded block appended after the agent
 finishes (after the assistant's final message):
 
-- the `title`/`summary` band is colored by **severity** — muted green for
+- the `title` band is colored by **severity** — muted green for
   `success`, yellow for `warning`, red for `error`, and the normal
   custom-message background for `info` — with a right-aligned `[severity]` tag
   (omitted for plain info)
@@ -34,7 +34,6 @@ All fields are optional:
 ```json
 {
   "title": "Run summary",
-  "summary": "Finished the main task.",
   "severity": "success",
   "successes": ["Migrations applied cleanly."],
   "info": ["Updated the extension manifest."],

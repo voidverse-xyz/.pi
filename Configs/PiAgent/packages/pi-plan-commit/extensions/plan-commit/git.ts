@@ -8,9 +8,20 @@ export interface ExecResult {
 	code: number;
 }
 
-export function createGit(pi: ExtensionAPI, cwd: string) {
+export interface GitOptions {
+	/** Pass --no-verify to git commit (skips hooks). Defaults to true. */
+	noVerify?: boolean;
+}
+
+export function createGit(pi: ExtensionAPI, cwd: string, opts?: GitOptions) {
+	const noVerify = opts?.noVerify ?? true;
+
 	async function exec(args: string[]): Promise<ExecResult> {
 		return pi.exec("git", args, { cwd, timeout: 60_000 });
+	}
+
+	function commitArgs(message: string): string[] {
+		return ["commit", ...(noVerify ? ["--no-verify"] : []), "-m", message];
 	}
 
 	async function isRepo(): Promise<boolean> {
@@ -92,7 +103,7 @@ export function createGit(pi: ExtensionAPI, cwd: string) {
 		const add = await exec(["add", "--", ...paths]);
 		if (add.code !== 0) return null;
 
-		const commit = await exec(["commit", "--no-verify", "-m", message, "--", ...paths]);
+		const commit = await exec([...commitArgs(message), "--", ...paths]);
 		if (commit.code !== 0) return null;
 
 		const sha = await exec(["rev-parse", "--short", "HEAD"]);
@@ -116,7 +127,7 @@ export function createGit(pi: ExtensionAPI, cwd: string) {
 	// the session's own commits — scoping to `paths` avoids sweeping in any files the
 	// user had staged before /git-commit ran (a plain `git commit` would grab those).
 	async function commitAll(message: string, paths: string[]): Promise<string | null> {
-		const args = ["commit", "--no-verify", "-m", message];
+		const args = commitArgs(message);
 		if (paths.length > 0) args.push("--", ...paths);
 		const commit = await exec(args);
 		if (commit.code !== 0) return null;

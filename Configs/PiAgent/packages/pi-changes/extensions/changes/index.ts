@@ -1,25 +1,26 @@
 /**
- * /changes (alias: /browse-edits) — a native TUI to browse, diff, question, and
- * undo the agent's own file changes this session (git-free).
+ * /changes (alias: /browse-edits) — a native TUI to browse, diff, question, undo,
+ * and export the agent's own file changes this session (git-free).
  *
  * The extension has two halves: a background tracker (registerTracker) that records
  * pre-image baselines as the agent edits, and the /changes command — a command loop
  * that collects the changeset, shows the full-screen panel, and services the actions
- * the panel resolves (ask main agent / ask subagent / undo), reopening the panel
- * after each.
+ * the panel resolves (ask main agent / ask subagent / undo / undo all / export patch),
+ * reopening the panel after each.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { type AnswerState, buildMainAgentMessage, spawnSubagentAnswer } from "./ask.ts";
+import { exportPatch } from "./export.ts";
 import { type ChangesPanelOptions, createChangesPanel, type PanelResult } from "./panel.ts";
 import { collectChangeset, type FileChange, registerTracker } from "./tracker.ts";
-import { undoFile } from "./undo.ts";
+import { undoAllFiles, undoFile } from "./undo.ts";
 
 export default function changesExtension(pi: ExtensionAPI): void {
 	registerTracker(pi);
 
 	const command = {
-		description: "Browse, diff, question, and undo the agent's file changes this session",
+		description: "Browse, diff, question, undo, and export the agent's file changes this session",
 		handler: async (_args: string, ctx: ExtensionCommandContext) => runChanges(pi, ctx),
 	};
 
@@ -103,6 +104,24 @@ async function runChanges(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
 					ctx.ui.notify("No agent file changes remain", "info");
 					break;
 				}
+				continue;
+			}
+
+			if (result.type === "undoAll") {
+				const outcome = await undoAllFiles(pi, ctx, changes);
+				ctx.ui.notify(outcome.message, outcome.level);
+				refresh();
+				if (changes.length === 0) {
+					ctx.ui.notify("No agent file changes remain", "info");
+					break;
+				}
+				continue;
+			}
+
+			if (result.type === "exportPatch") {
+				const fc = changes.find((c) => c.abs === result.abs);
+				const outcome = await exportPatch(ctx.cwd, changes, fc, result.all);
+				ctx.ui.notify(outcome.message, outcome.level);
 				continue;
 			}
 
