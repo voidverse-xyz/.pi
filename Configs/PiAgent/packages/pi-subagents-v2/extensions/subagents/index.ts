@@ -296,7 +296,10 @@ export default function (pi: ExtensionAPI) {
 							theme,
 							onDone: done,
 						}),
-					{ overlay: true, overlayOptions: { anchor: "center", width: "75%" } },
+					{
+						overlay: true,
+						overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 },
+					},
 				);
 			} finally {
 				overlayOpen = false;
@@ -324,7 +327,10 @@ export default function (pi: ExtensionAPI) {
 		try {
 			result = await ctx.ui.custom<PickerResult>(
 				(tui, theme, _keybindings, done) => createPicker({ core: current, tui, theme, onDone: done }),
-				{ overlay: true, overlayOptions: { anchor: "center", width: "80%", maxHeight: "80%" } },
+				{
+					overlay: true,
+					overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 },
+				},
 			);
 		} finally {
 			overlayOpen = false;

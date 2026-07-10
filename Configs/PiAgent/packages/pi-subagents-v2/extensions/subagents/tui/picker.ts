@@ -301,7 +301,9 @@ export function createPicker(options: PickerOptions): PickerComponent {
 			}
 		},
 		render(width: number): string[] {
-			const lines: string[] = [];
+			// Full-screen overlay (top-left, 100%×100%, like the viewer/siblings):
+			// a leading blank line gives the roster breathing room from the top edge.
+			const lines: string[] = [""];
 			lines.push(theme.fg("accent", truncateToWidth(" Subagents", width)));
 			if (rows.length === 0) {
 				lines.push(theme.fg("dim", "  (no agents — subagent_spawn creates one)"));

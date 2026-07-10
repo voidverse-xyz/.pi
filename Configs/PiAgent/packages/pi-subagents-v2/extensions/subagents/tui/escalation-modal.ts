@@ -112,7 +112,9 @@ export function createEscalationModal(options: EscalationModalOptions): ModalCom
 		},
 		render(width: number): string[] {
 			const body = escalationLines(record);
-			const lines: string[] = [];
+			// Full-screen overlay (top-left, 100%×100%, like the viewer/siblings):
+			// a leading blank line lifts the approval prompt off the top edge.
+			const lines: string[] = [""];
 			lines.push(theme.fg("warning", truncateToWidth(body[0]!, width)));
 			lines.push(theme.fg("text", truncateToWidth(body[1]!, width)));
 			lines.push(theme.fg("muted", truncateToWidth(body[2]!, width)));
