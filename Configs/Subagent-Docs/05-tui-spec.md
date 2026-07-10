@@ -34,7 +34,7 @@ transcript components where sessions are shown (D7).
 - Input line: superuser messaging (D17; FYI report to main agent on every send).
   Enter = normal mail (turn-boundary delivery) · alt+Enter = steer (immediate
   injection) — the keyboard mirrors the send/steer tool split (D11/D16).
-- Keys: Esc back · ctrl+j next agent (global quick-switch too: main → agents →
+- Keys: Esc back · alt+j next agent (global quick-switch too: main → agents →
   main) · x interrupt.
 - Impl note: pi-tui Editor onSubmit-after-onChange("") quirk applies to the input
   line (re-apply submitted text).

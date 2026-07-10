@@ -138,7 +138,7 @@ State on disk (D3/D5), beside Pi's own sessions:
 - `/subagents <type>/<id>` — jump straight into the session viewer.
 - `/subagents resume` — refill the autonomy pool and drain queued mail
   without sending a message.
-- `ctrl+j` — cycle main → agent 1 → … → main through the full-screen viewer
+- `alt+j` — cycle main → agent 1 → … → main through the full-screen viewer
   (Pi-native transcript replay + live tail; envelope traffic as compact 📨
   entries). The input line is the agent's *user*: `Enter` mails at the turn
   boundary, `alt+Enter` steers mid-turn, `x` (empty editor) interrupts.

@@ -37,6 +37,6 @@ assert.deepEqual(
 	"the seven-tool surface",
 );
 assert.deepEqual(keysOf(ext.commands), ["subagents"], "/subagents command");
-assert.deepEqual(keysOf(ext.shortcuts).sort(), ["alt+e", "ctrl+j"], "shortcuts");
+assert.deepEqual(keysOf(ext.shortcuts).sort(), ["alt+e", "alt+j"], "shortcuts");
 
 console.log("loadcheck ok — tools:", keysOf(ext.tools).length, "· commands:", keysOf(ext.commands), "· shortcuts:", keysOf(ext.shortcuts));

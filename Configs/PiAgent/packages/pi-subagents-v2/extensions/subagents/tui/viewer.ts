@@ -19,7 +19,7 @@
  *                (immediate injection) — the keyboard mirrors send/steer
  *                (D11/D16). pi-tui Editor quirk respected: onSubmit uses the
  *                SUBMITTED argument, never a getText() readback.
- * Keys:          Esc back · ctrl+j next agent · x interrupt (only while the
+ * Keys:          Esc back · alt+j next agent · x interrupt (only while the
  *                input line is empty, so `x` stays typeable) · PgUp/PgDn +
  *                ctrl+u/ctrl+d scroll.
  * Archived:      transcript view only — no input line, no actions.
@@ -509,7 +509,7 @@ export function createViewer(options: ViewerOptions): ViewerComponent {
 				finish({ action: "back" });
 				return;
 			}
-			if (matchesKey(data, Key.ctrl("j"))) {
+			if (matchesKey(data, Key.alt("j"))) {
 				finish({ action: "next" });
 				return;
 			}
@@ -561,8 +561,8 @@ export function createViewer(options: ViewerOptions): ViewerComponent {
 
 			const editorLines = editor ? editor.render(width) : [];
 			const hintText = archived
-				? " archived · read-only · esc back · ctrl+j next"
-				: " enter mail · alt+enter steer · x interrupt · esc back · ctrl+j next";
+				? " archived · read-only · esc back · alt+j next"
+				: " enter mail · alt+enter steer · x interrupt · esc back · alt+j next";
 			const hint = notice
 				? theme.fg("warning", truncateToWidth(` ${notice}`, width))
 				: theme.fg("dim", truncateToWidth(hintText, width));

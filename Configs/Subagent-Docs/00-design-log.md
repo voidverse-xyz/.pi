@@ -232,7 +232,8 @@ waits for the turn boundary (D11).
 ### D17 — User switching UX; direct user→subagent messages notify the main agent (2026-07-09)
 Entry points (all land in the same viewer): /subagents → picker overlay (roster
 grouped by team; state, vitals, unread per row; x interrupt, X retire-with-confirm);
-/subagents <type>/<id> → jump direct; keybinding (e.g. ctrl+j) → cycle main → agent
+/subagents <type>/<id> → jump direct; keybinding (alt+j; ctrl+j is the SDK's
+built-in newline) → cycle main → agent
 1 → ... → main. Viewer = full-screen session rendered with Pi's own transcript
 components (replay JSONL + live tail), header strip with identity + vitals. NOT
 read-only: input line sends as that agent's *user* (superuser row of the power

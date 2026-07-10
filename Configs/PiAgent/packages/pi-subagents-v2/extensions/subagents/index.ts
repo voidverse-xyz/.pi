@@ -48,7 +48,7 @@
  *    on the next user turn drains it via the before_agent_start digest).
  *
  * Phase 6 (05-tui-spec): the ambient belowEditor widget, /subagents picker,
- * full-screen session viewer (ctrl+j quick-switch), and the escalation modal
+ * full-screen session viewer (alt+j quick-switch), and the escalation modal
  * are wired here; all of them talk to the core facade only.
  *
  * Everything session-scoped (layout, store, runtime, core) is instantiated
@@ -225,7 +225,7 @@ export default function (pi: ExtensionAPI) {
 		);
 	};
 
-	/** Full-screen viewer (spec §3), looping on ctrl+j: main → a1 → … → main. */
+	/** Full-screen viewer (spec §3), looping on alt+j: main → a1 → … → main. */
 	const openViewer = async (
 		ctx: ExtensionContext,
 		target: Pick<ViewerOptions, "address" | "archived">,
@@ -250,7 +250,7 @@ export default function (pi: ExtensionAPI) {
 				overlayOpen = false;
 			}
 			if (result.action === "back") break;
-			// ctrl+j: next agent in address order; past the last → back to main.
+			// alt+j: next agent in address order; past the last → back to main.
 			const fromAddress: string | undefined = cursor.address;
 			const roster = (await current.status()).sort((a, b) => a.address.localeCompare(b.address));
 			const at: number = fromAddress !== undefined ? roster.findIndex((r) => r.address === fromAddress) : -1;
@@ -419,9 +419,13 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	// Global quick-switch (D17): main → agent 1 → … → main. Inside the viewer
-	// the component's own ctrl+j handles the hop; this shortcut covers "main →
+	// the component's own alt+j handles the hop; this shortcut covers "main →
 	// first agent" (it is a no-op while any of our overlays is open).
-	pi.registerShortcut("ctrl+j", {
+	// // DEVIATION: an earlier note assumed ctrl+j was free — it is NOT: ctrl+j
+	// is the SDK's built-in tui.input.newLine (keybindings.js `newLine:
+	// "tui.input.newLine"`), so a global ctrl+j shadows newline-in-input. alt+j
+	// is verified unbound in the installed SDK dist and mirrors alt+e below.
+	pi.registerShortcut("alt+j", {
 		description: "Subagents: cycle into the session viewer",
 		handler: async (ctx) => {
 			uiCtx = ctx;

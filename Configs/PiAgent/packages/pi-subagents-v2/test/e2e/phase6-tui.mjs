@@ -11,7 +11,7 @@
  *  (v) viewer: header-strip format, wake-digest → compact 📨 entries
  *      (round-trip through the REAL composeWakeDigest), mail-tool calls →
  *      outbound 📨 entries, incremental tail reader, Enter=sendAsUser
- *      (Editor onSubmit quirk), alt+Enter=steer, x=interrupt, Esc/ctrl+j.
+ *      (Editor onSubmit quirk), alt+Enter=steer, x=interrupt, Esc/alt+j.
  *  (m) escalation modal: spec lines, a/d/D-with-note/v/Esc key handling.
  *
  * The digest-embedded wake trigger (carried-forward fix) is asserted
@@ -534,7 +534,7 @@ await test("viewer input: Enter mails via sendAsUser (Editor onSubmit quirk resp
 	assert.deepEqual(log[0], ["sendAsUser", "worker/main", "do the thing"]);
 	component.dispose();
 });
-await test("viewer input: alt+Enter steers; x (empty editor) interrupts; Esc/ctrl+j exit", async () => {
+await test("viewer input: alt+Enter steers; x (empty editor) interrupts; Esc/alt+j exit", async () => {
 	const file = makeSessionFixture();
 	const log = [];
 	let result;
@@ -553,7 +553,7 @@ await test("viewer input: alt+Enter steers; x (empty editor) interrupts; Esc/ctr
 	component.handleInput("x"); // editor now empty → interrupt
 	await tick();
 	assert.deepEqual(log[1], ["interrupt", "worker/main"]);
-	component.handleInput("\n"); // ctrl+j
+	component.handleInput("\x1bj"); // alt+j
 	assert.deepEqual(result, { action: "next" });
 	// fresh viewer: Esc → back
 	let result2;
