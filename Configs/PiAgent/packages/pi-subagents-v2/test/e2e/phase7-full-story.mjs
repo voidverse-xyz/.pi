@@ -310,12 +310,24 @@ const tools = new Map();
 const commands = new Map();
 const sentMessages = [];
 const notifications = [];
+// Models AgentSession's streaming flag and records the delivery MODE the real
+// SDK would pick (agent-session.js sendCustomMessage): while isStreaming a
+// sendMessage STEERS into the running turn; only isStreaming=false +
+// triggerTurn starts a genuinely new turn.
 const stubPi = {
+	isStreaming: false,
 	on: (event, handler) => (handlers[event] ??= []).push(handler),
 	registerTool: (tool) => tools.set(tool.name, tool),
 	registerCommand: (name, def) => commands.set(name, def),
 	registerShortcut: () => {},
-	sendMessage: (message, options) => sentMessages.push({ message, options }),
+	sendMessage: (message, options) => {
+		const mode =
+			options?.deliverAs === "nextTurn" ? "nextTurn"
+			: stubPi.isStreaming ? (options?.deliverAs === "followUp" ? "followUp" : "steer")
+			: options?.triggerTurn ? "newTurn"
+			: "append";
+		sentMessages.push({ message, options, mode });
+	},
 };
 extensionFactory(stubPi);
 
@@ -328,6 +340,16 @@ const ctx = {
 };
 const fire = async (event) => {
 	for (const h of handlers[event] ?? []) await h({}, ctx);
+};
+/** One host agent run with the REAL SDK's event ordering: agent_end fires
+ * while isStreaming is still true (_isAgentRunActive is cleared only in
+ * _emitAgentSettled, AFTER agent_end); agent_settled fires once settled. */
+const fireHostTurn = async (messages = []) => {
+	stubPi.isStreaming = true;
+	for (const h of handlers.agent_start ?? []) await h({ type: "agent_start" }, ctx);
+	for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages }, ctx);
+	stubPi.isStreaming = false;
+	for (const h of handlers.agent_settled ?? []) await h({ type: "agent_settled" }, ctx);
 };
 /** Drain the main mailbox the way a real user turn does; returns digest or null. */
 const drainMainViaUserTurn = async () => {
@@ -442,7 +464,12 @@ await test("5. collect with schema → report validated on drain (digest note)",
 		to: "builder/main",
 		schema: { type: "object", required: ["status", "files"], properties: { status: { type: "string" }, files: { type: "integer" } } },
 	});
-	assert.deepEqual(res, { requested: true });
+	// M5: the tool surfaces the full CollectResult (requestId for correlating
+	// multiple outstanding collects; recipientState for dormant-vs-running).
+	assert.deepEqual(Object.keys(res).sort(), ["recipientState", "requestId", "requested"], "spec-exact collect result");
+	assert.equal(res.requested, true);
+	assert.match(res.requestId, /^msg_/);
+	assert.ok(["dormant", "queued", "running", "waiting"].includes(res.recipientState));
 	await waitUntil(
 		() => mailbox.readPending(layout.mainMailboxDir).some((p) => p.envelope.type === "report" && p.envelope.correlationId !== null),
 		"collect report in main mailbox",
@@ -544,6 +571,75 @@ await test("7. settings live-reload → budget pause (queue, no turns) → /suba
 	notifications.length = 0;
 	await commands.get("subagents").handler("resume", ctx);
 	assert.ok(notifications.some((n) => n.text.includes("not paused")));
+});
+
+await test("7b. auto-wake starts a REAL turn (agent_settled semantics) and its agent_end usage charges the pool", async () => {
+	// Flip autoWake on (project overrides the global false) and set a token cap
+	// the auto-woken turn's REAL usage payload will hit exactly.
+	writeFileSync(
+		projectSettingsFile,
+		`${JSON.stringify({ autonomousTurns: 30, autoWake: true, autonomousTokens: 1_000_000 })}\n`,
+	);
+	await drainMainViaUserTurn(); // live reload + pool reset
+
+	// builder asks main → main is idle → D16 auto-wake.
+	scripts.push({
+		match: (c) => c.agent === "builder/main" && c.lastUserText.includes("ASK_MAIN_BUDGET"),
+		reply: () => ({ tools: [{ name: "ask", args: { text: "Main, may I spend more? WAKE_CHARGE_MARKER" } }] }),
+	});
+	scripts.push({
+		match: (c) => c.agent === "builder/main" && c.lastRole === "toolResult",
+		reply: () => ({ text: "waiting on main for budget." }),
+	});
+	const beforeWake = sentMessages.length;
+	await callTool("subagent_send", { to: "builder/main", text: "ASK_MAIN_BUDGET: ask the human-side agent" });
+	await waitUntil(() => sentMessages.length > beforeWake, "auto-wake for the builder question");
+	const wake = sentMessages[sentMessages.length - 1];
+	assert.equal(wake.options.triggerTurn, true, "wake requests a turn");
+	assert.equal(wake.mode, "newTurn", "issued while NOT streaming — a real new turn, never a steer");
+	assert.match(wake.message.content, /WAKE_CHARGE_MARKER/, "digest embedded in the trigger message");
+	assert.equal(mailbox.pendingCount(layout.mainMailboxDir), 0, "main mail drained at trigger time");
+	// Let the builder's asking turn finish before counting LLM calls below.
+	await waitUntil(() => stateOf("builder/main") === "dormant", "builder dormant after asking");
+
+	// The auto-woken main turn ends with a REALISTIC pi-ai usage payload
+	// (input/output/cacheRead/cacheWrite) summing to exactly the 1M cap → the
+	// D21 charge must trip the pause. Decoy usage on a non-assistant message
+	// pins the role check (counting it would just pause too — but dropping any
+	// of the four fields lands under the cap and the paused assertions fail).
+	const usage = {
+		input: 550_000, output: 150_000, cacheRead: 200_000, cacheWrite: 100_000,
+		totalTokens: 1_000_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.42 },
+	};
+	await fireHostTurn([
+		{ role: "user", content: [{ type: "text", text: "decoy" }], usage: { ...usage, input: 9_999_999 }, timestamp: Date.now() },
+		{
+			role: "assistant", api: "mock-api", provider: "mock", model: "mock-1",
+			content: [{ type: "text", text: "answered the builder" }],
+			usage, stopReason: "stop", timestamp: Date.now(),
+		},
+	]);
+
+	// Paused (tokens tripped): new subagent work queues on disk, no turn starts.
+	scripts.push({
+		match: (c) => c.agent === "helper/main" && c.lastUserText.includes("PAUSED_PING2"),
+		reply: () => ({ text: "processed after the charge-pause resumed." }),
+	});
+	const callsBefore = llmCalls.length;
+	await callTool("subagent_send", { to: "helper/main", text: "PAUSED_PING2: are we paused?" });
+	await sleep(400);
+	assert.equal(llmCalls.length, callsBefore, "agent_end charge tripped the pool — no turn while paused");
+	assert.equal(mailbox.pendingCount(layout.mailboxDir("helper", "main")), 1, "mail parked on disk");
+
+	// Restore the story's settings; the user-turn reset resumes and drains.
+	writeFileSync(projectSettingsFile, `${JSON.stringify({ autonomousTurns: 30 })}\n`);
+	await drainMainViaUserTurn();
+	await waitUntil(
+		() => llmCalls.some((c) => c.agent === "helper/main" && c.lastUserText.includes("PAUSED_PING2")),
+		"queued mail drained after the reset",
+	);
+	await waitUntil(() => stateOf("helper/main") === "dormant", "helper dormant again");
+	assert.equal(mailbox.pendingCount(layout.mailboxDir("helper", "main")), 0, "helper mailbox drained");
 });
 
 await test("8. cumulative vitals: grow across wakes AND survive restart + session-file rotation", async () => {

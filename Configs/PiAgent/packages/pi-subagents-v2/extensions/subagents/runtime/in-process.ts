@@ -98,7 +98,14 @@ import { Deliverer, type DeliveryOutcome, makeTeamGuard } from "../mail/deliver.
 import type { AutonomyBudget } from "../rails/autonomy.ts";
 import { DEFAULT_MAX_HOPS, makeHopsGuard } from "../rails/hops.ts";
 import { composeWakeDigest } from "../mail/digest.ts";
-import { beginDelivery, lookupSentQuestion, markDone, pendingCount, readPending } from "../mail/mailbox.ts";
+import {
+	beginDelivery,
+	deleteSentQuestions,
+	lookupSentQuestion,
+	markDone,
+	pendingCount,
+	readPending,
+} from "../mail/mailbox.ts";
 import type { Layout } from "../store/layout.ts";
 import { archiveAgentDir } from "../store/archive.ts";
 import {
@@ -124,7 +131,7 @@ import {
 	updateTeams,
 	writeRosterSnapshot,
 } from "../store/teams.ts";
-import { rosterSnapshotFileOf } from "../store/layout.ts";
+import { mailboxDoneDirOf, rosterSnapshotFileOf, sentQuestionsFileOf } from "../store/layout.ts";
 import { type DiscoveredTypeDef, resolveTypeDef } from "../typedefs/discover.ts";
 import { parseTypeFile, type ThinkingLevel, type TypeConfig, type TypeDefinition } from "../typedefs/parse.ts";
 import { createSubagentTools, type SubagentMailPort } from "../tools/sub-agent.ts";
@@ -140,6 +147,7 @@ import type {
 	CollectResult,
 	InheritedDefaults,
 	InterruptResult,
+	OutstandingQuestion,
 	RetireResult,
 	RosterEntry,
 	RuntimeEvent,
@@ -419,7 +427,7 @@ export class InProcessRuntime implements SubagentRuntime {
 		if (lifetime === "oneshot" && options.id !== undefined) {
 			throw new Error(
 				`Oneshots never take an explicit id (got "${options.id}") — ` +
-					"named = persistent, anonymous = disposable (D20). Omit id for a oneshot, " +
+					"named = persistent, anonymous = disposable. Omit id for a oneshot, " +
 					"or spawn persistent to name the agent.",
 			);
 		}
@@ -622,6 +630,7 @@ export class InProcessRuntime implements SubagentRuntime {
 			typeFileHash: record.typeFileHash,
 			createdAt: record.createdAt,
 			sessionFile: sessionFile ?? null,
+			outstandingQuestions: readOutstandingQuestions(this._layout.mailboxDir(record.type, record.id)),
 			tail: sessionFile ? readTranscriptTail(sessionFile, tail) : [],
 		};
 	}
@@ -658,22 +667,33 @@ export class InProcessRuntime implements SubagentRuntime {
 		}
 		this._handles.clear();
 		this._chains.clear();
+		// Any still-unsettled creation locks belong to builds that are now
+		// doomed (disposed sessions / dead agents) — nothing will ever chain
+		// behind them again; drop them with the handles/chains.
+		this._handleLocks.clear();
 	}
 
 	// -----------------------------------------------------------------------
 	// Mail turns (Phase 3 core)
 	// -----------------------------------------------------------------------
 
-	/** Map a delivery outcome onto the tool-facing SendResult shape. */
+	/**
+	 * Map a delivery outcome onto the tool-facing SendResult shape. The
+	 * Deliverer's disposition is surfaced verbatim so callers can tell
+	 * "queued because the recipient is mid-turn" (held) from "queued because a
+	 * turn is already scheduled" (queued); delivery:"delivered" pairs with
+	 * recipientState:"queued" by design — the wake just SCHEDULED the turn.
+	 */
 	private _toSendResult(outcome: DeliveryOutcome, stateBefore: AgentState): SendResult {
-		if (outcome.disposition === "bounced") {
+		if (outcome.disposition === "bounced" || outcome.disposition === "main") {
 			// Unreachable for main/user sends in v1 (unknown addresses throw
-			// earlier; guards are allow-all until Phase 4) — defensive.
+			// earlier; "main" never routes through this path) — defensive.
 			throw new Error(outcome.bounceReason ?? "message bounced");
 		}
 		const delivered = outcome.disposition === "woken";
 		return {
 			delivery: delivered ? "delivered" : "queued",
+			disposition: outcome.disposition,
 			recipientState: delivered ? "queued" : (outcome.recipientState ?? stateBefore),
 			envelopeId: outcome.envelope.id,
 		};
@@ -726,6 +746,7 @@ export class InProcessRuntime implements SubagentRuntime {
 		try {
 			if (!existsSync(this._layout.registryFile)) return;
 			const skipForeign = new Set<string>();
+			const resetAddresses = new Set<string>();
 			updateRegistry(this._layout.registryFile, (registry) => {
 				for (const record of listAgents(registry)) {
 					const address = formatAgentAddress(record.type, record.id);
@@ -738,9 +759,20 @@ export class InProcessRuntime implements SubagentRuntime {
 					if (record.state !== "dormant") {
 						record.state = "dormant";
 						record.updatedAt = new Date().toISOString();
+						resetAddresses.add(address);
 					}
 				}
 			});
+			// A crash while `waiting` orphans the agent's pending escalation
+			// record: the reset above already put the agent back to dormant,
+			// its blocked tool call died with the old process, and no code
+			// path ever resolves the record — gcEscalationRecords skips
+			// `pending` forever, so it would linger for the project's life.
+			// Mark those records cancelled (GC-eligible after N days). Only
+			// records for agents WE just reset — a pending record owned by a
+			// live foreign process (skipForeign) stays untouched, and this
+			// fresh runtime has no in-memory pending of its own yet.
+			this._cancelOrphanedEscalationRecords(resetAddresses);
 			for (const record of listAgents(readRegistry(this._layout.registryFile))) {
 				const address = formatAgentAddress(record.type, record.id);
 				if (skipForeign.has(address)) continue;
@@ -751,6 +783,34 @@ export class InProcessRuntime implements SubagentRuntime {
 		} catch {
 			// Never break construction; stranded state gets another chance at
 			// the next runtime construction / autonomy resume.
+		}
+	}
+
+	/**
+	 * Startup-reconcile helper (see caller): flip on-disk `pending` escalation
+	 * records to `cancelled` for agents whose stranded non-dormant state we
+	 * just reset. Best-effort per record — one unreadable file never blocks
+	 * the rest, and truly-live records (foreign owners, this runtime's own
+	 * waits) are never in `addresses`.
+	 */
+	private _cancelOrphanedEscalationRecords(addresses: Set<string>): void {
+		if (addresses.size === 0) return;
+		const dir = this._layout.escalationsDir;
+		if (!existsSync(dir)) return;
+		for (const name of readdirSync(dir)) {
+			if (!name.endsWith(".json")) continue;
+			const file = join(dir, name);
+			try {
+				const record = JSON.parse(readFileSync(file, "utf8")) as EscalationRecord;
+				if (record.status !== "pending" || !addresses.has(record.agent)) continue;
+				record.status = "cancelled";
+				record.note = "Cancelled at startup: the owning Pi process died while this escalation was pending.";
+				record.resolvedAt = new Date().toISOString();
+				writeFileSync(file, `${JSON.stringify(record, null, "\t")}\n`, "utf8");
+			} catch {
+				// Unreadable/unwritable record — leave it; the mtime-based GC
+				// fallback in gcEscalationRecords handles corrupt files.
+			}
 		}
 	}
 
@@ -914,6 +974,19 @@ export class InProcessRuntime implements SubagentRuntime {
 			// The receiving turn is now durably in the session JSONL.
 			markDone(mailboxDir, ids);
 
+			// A consumed answer (or error) settles the question it correlates
+			// to — drop it from the sent-questions index NOW, after the digest
+			// above already quoted it (D14), so the index shrinks instead of
+			// growing one entry per question forever. A crash before markDone
+			// re-delivers the answer and the question is still there to quote.
+			deleteSentQuestions(
+				mailboxDir,
+				pending
+					.map((p) => p.envelope)
+					.filter((env) => (env.type === "answer" || env.type === "error") && typeof env.correlationId === "string")
+					.map((env) => env.correlationId as string),
+			);
+
 			// Post-turn D13/D15 bookkeeping. Order: a ceiling abort beats the
 			// generic "aborted" it caused; a fatal error beats cumulative
 			// ceilings (its envelope carries the actual failure).
@@ -1066,13 +1139,22 @@ export class InProcessRuntime implements SubagentRuntime {
 		const next = prev
 			.catch(() => {}) // a failed earlier build never blocks the next
 			.then(() => this._buildHandle(address, record, discovered, def, inherit));
-		this._handleLocks.set(
-			address,
-			next.then(
-				() => {},
-				() => {},
-			),
+		const lock = next.then(
+			() => {},
+			() => {},
 		);
+		this._handleLocks.set(address, lock);
+		// Self-cleaning on settle: the map only ever holds IN-FLIGHT builds.
+		// Once OUR lock settles and no newer build chained behind it (the map
+		// still points at us), the entry is dead weight — a oneshot's fresh
+		// tmp-<short> address would otherwise leak one settled promise per
+		// spawn for the process lifetime. Deleting only on the settle path
+		// (never mid-flight, e.g. from retire) keeps the mutex sound: a racer
+		// that arrives before settle chains via the map; one that arrives
+		// after starts fresh — there is nothing left to serialize against.
+		void lock.then(() => {
+			if (this._handleLocks.get(address) === lock) this._handleLocks.delete(address);
+		});
 		return next;
 	}
 
@@ -1401,7 +1483,10 @@ export class InProcessRuntime implements SubagentRuntime {
 		}
 		const record = getAgent(readRegistry(this._layout.registryFile), address);
 		if (!record) {
-			throw new Error(`No subagent at "${address}" — it was retired or never spawned (address bounces).`);
+			throw new Error(
+				`No subagent at "${address}" — it was retired or never spawned. ` +
+					"Use subagent_status to list the live agents, or subagent_spawn to create it.",
+			);
 		}
 		return record;
 	}
@@ -1409,6 +1494,20 @@ export class InProcessRuntime implements SubagentRuntime {
 	private _toRosterEntry(record: AgentRecord, teams: Record<string, string[]>): RosterEntry {
 		const address = formatAgentAddress(record.type, record.id);
 		const handle = this._handles.get(address);
+		// Read-side joins (no new powers): mailbox unread count, and — for a
+		// `waiting` agent — WHY it waits (its pending escalation, summarized).
+		const waitingOn =
+			record.state === "waiting"
+				? this._escalations
+						.pending()
+						.filter((esc) => esc.agent === address)
+						.map((esc) => ({
+							id: esc.id,
+							envelopeId: esc.envelopeId,
+							tool: esc.tool,
+							reason: esc.reason,
+						}))
+				: [];
 		return {
 			address,
 			type: record.type,
@@ -1420,6 +1519,8 @@ export class InProcessRuntime implements SubagentRuntime {
 			// Live sessions report fresh whole-life vitals; dormant ones the
 			// last persisted (already whole-life, Phase 7).
 			vitals: handle ? this._vitalsOf(handle) : record.vitals,
+			unread: pendingCount(this._layout.mailboxDir(record.type, record.id)),
+			...(waitingOn.length > 0 ? { waitingOn } : {}),
 			updatedAt: record.updatedAt,
 		};
 	}
@@ -1557,8 +1658,62 @@ export function vitalsFrom(session: AgentSession): AgentVitals {
 	};
 }
 
-/** Read the last `tail` message entries of a Pi session file (peek; read-only). */
+/**
+ * The questions an agent sent that are still unanswered (M-fix read-side
+ * join, no new powers): its `.sent-questions.json` index minus every question
+ * a delivered `answer`/`error` envelope (pending or .done) already correlates
+ * to. Best-effort and read-only — .done GC can eventually resurrect an old
+ * answered question, which is harmless for a recovery affordance.
+ */
+export function readOutstandingQuestions(mailboxDir: string): OutstandingQuestion[] {
+	let index: Record<string, unknown>;
+	try {
+		const parsed = JSON.parse(readFileSync(sentQuestionsFileOf(mailboxDir), "utf8")) as unknown;
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
+		index = parsed as Record<string, unknown>;
+	} catch {
+		return [];
+	}
+	const resolved = new Set<string>();
+	for (const dir of [mailboxDir, mailboxDoneDirOf(mailboxDir)]) {
+		let names: string[];
+		try {
+			names = readdirSync(dir).filter((name) => name.endsWith(".json"));
+		} catch {
+			continue;
+		}
+		for (const name of names) {
+			try {
+				const envelope = JSON.parse(readFileSync(join(dir, name), "utf8")) as {
+					type?: unknown;
+					correlationId?: unknown;
+				};
+				if (
+					(envelope.type === "answer" || envelope.type === "error") &&
+					typeof envelope.correlationId === "string"
+				) {
+					resolved.add(envelope.correlationId);
+				}
+			} catch {
+				// Unreadable envelope — never breaks a peek.
+			}
+		}
+	}
+	return Object.entries(index)
+		.filter(([id, text]) => typeof text === "string" && !resolved.has(id))
+		.map(([id, text]) => ({ id, text: text as string }))
+		.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+/**
+ * Read the last `tail` message entries of a Pi session file (peek; read-only).
+ * tail <= 0 means "no tail, vitals only" and returns [] WITHOUT touching the
+ * file — `slice(-0)` is `slice(0)` (the whole transcript), which both dumped
+ * the entire session into the caller's context (subagent_status tail:0) and
+ * made the viewer's 1s vitals poll re-read+parse the full JSONL every tick.
+ */
 export function readTranscriptTail(sessionFile: string, tail: number): TranscriptEntry[] {
+	if (tail <= 0) return [];
 	let content: string;
 	try {
 		content = readFileSync(sessionFile, "utf8");

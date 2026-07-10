@@ -20,12 +20,18 @@ validation); one-tool-per-power (context bloat).
 ### subagent_send
 ```
 (to, text, when?: "now"|"after-turn", correlationId?)
-→ { delivery: "delivered"|"queued", recipientState }
+→ { delivery: "delivered"|"queued", disposition: "woken"|"held"|"queued", recipientState }
 ```
 - Covers three matrix powers: send (when:"now", default), queue (when:"after-turn"),
-  answer (correlationId set → answer envelope).
+  answer (correlationId set → answer envelope). correlationId doubles as the
+  escalation-deny channel: correlating to a pending escalation envelope's id DENIES
+  that blocked call (text = deny note); main can never approve (D10).
 - Never interrupts a running turn regardless of `when` (D11); "now" vs "after-turn"
-  only matters for orderings around the recipient's queued mail.
+  only matters for orderings around the recipient's queued mail. Both wake a dormant
+  recipient — there is no way to hold mail without waking it.
+- disposition disambiguates delivery:"queued": "held" = recipient mid-turn (boundary
+  drain), "queued" = a turn was already scheduled. "woken" pairs with
+  delivery:"delivered" and recipientState:"queued" (the wake scheduled the turn).
 
 ### subagent_steer
 ```
@@ -39,16 +45,23 @@ validation); one-tool-per-power (context bloat).
 (address?, tail?) → roster | detail
 ```
 - No address: full roster — per agent: address, type, state
-  (queued|running|dormant), teams, purview, vitals {ctx%, tokens, cost, turns} (D15).
-- With address: detail + last `tail` transcript entries (peek; never perturbs).
+  (queued|running|dormant|waiting), teams, purview, vitals {ctx%, tokens, cost,
+  turns} (D15), `unread` (mailbox pending count), and — when state is `waiting` —
+  `waitingOn`: the pending escalation summary {id, envelopeId, tool, reason}.
+- With address: detail + `outstandingQuestions` (questions the agent sent, from its
+  .sent-questions.json index, with no answer/bounce on record — recoverable after
+  main's context compacts) + last `tail` transcript entries (peek; never perturbs).
 
 ### subagent_collect
 ```
-(to, schema) → { requested: true }
+(to, schema) → { requested: true, requestId, recipientState }
 ```
 - Non-blocking like everything else (D14): asks the agent to deliver a final
   result conforming to `schema`; result arrives later as a report envelope with
-  payload.data validated against the schema.
+  payload.data validated against the schema (restricted subset: type/properties/
+  required/items/enum/const/additionalProperties:false; other keywords ignored).
+- requestId = the collect-request envelope's id; the fulfilling report carries it
+  as correlationId, so multiple outstanding collects stay distinguishable.
 
 ### subagent_interrupt
 ```

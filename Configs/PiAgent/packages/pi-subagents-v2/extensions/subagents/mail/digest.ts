@@ -64,6 +64,16 @@ function formatItem(item: DigestItem, index: number): string {
 			`   To answer, send a message back to \`${envelope.from}\` with correlationId "${envelope.id}".`,
 		);
 	}
+	// Collect requests carry their schema in payload.data.collectSchema — spell
+	// out the fulfillment recipe so the recipient never has to connect "THIS
+	// message" to the (msg_...) header on its own.
+	const data = envelope.payload.data;
+	if (typeof data === "object" && data !== null && "collectSchema" in data) {
+		lines.push(
+			"   To fulfill this collect request, call the `report` tool with `data` conforming " +
+				`to the schema above and correlationId "${envelope.id}".`,
+		);
+	}
 	if (item.note !== undefined) lines.push(`   ${item.note}`);
 	if (item.redelivered) lines.push(`   ${REDELIVERY_LABEL}`);
 	return lines.join("\n");

@@ -5,10 +5,10 @@
  * Imports ONLY core.ts (D23 structural rule 1). Tool results are
  * LLM-friendly JSON matching the documented return shapes exactly:
  *   subagent_spawn     → { address, created, state, vitals }
- *   subagent_send      → { delivery, recipientState }
+ *   subagent_send      → { delivery, disposition, recipientState }
  *   subagent_steer     → { steered }
  *   subagent_status    → roster | detail(+tail)
- *   subagent_collect   → { requested: true }
+ *   subagent_collect   → { requested: true, requestId, recipientState }
  *   subagent_interrupt → { interrupted }
  *   subagent_retire    → { retired: true }
  */
@@ -78,7 +78,7 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 		name: "subagent_spawn",
 		label: "Spawn subagent",
 		description:
-			"Spawn (or wake) a persistent subagent instance at address <type>/<id>. " +
+			"Spawn or wake a subagent instance at address <type>/<id>. " +
 			"Get-or-create: if the address already exists, it wakes with its memory intact " +
 			"and the result reports created:false. The task, if given, runs asynchronously — " +
 			"use subagent_status to observe progress.",
@@ -98,6 +98,11 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 				});
 				return jsonResult(result);
 			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				// The type catalog helps ONLY when the type itself wasn't found —
+				// appending it to unrelated failures (oneshot-id rule, invalid
+				// frontmatter) buries the actual error.
+				if (!message.startsWith("Unknown subagent type")) return errorResult(error);
 				const types = core.availableTypes();
 				const available =
 					types.length > 0
@@ -105,7 +110,7 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 								.map((t) => `- ${t.name} (${t.source}): ${t.invalid ?? t.description}`)
 								.join("\n")}`
 						: "\nNo subagent types found — author one as <project>/.pi/subagents/<type>.md or ~/.pi/agent/subagents/<type>.md.";
-				return errorResult(new Error(`${error instanceof Error ? error.message : String(error)}${available}`));
+				return errorResult(new Error(`${message}${available}`));
 			}
 		},
 	};
@@ -123,15 +128,19 @@ const SendParams = Type.Object({
 	when: Type.Optional(
 		Type.Union([Type.Literal("now"), Type.Literal("after-turn")], {
 			description:
-				'Default "now" (starts a turn on an idle/dormant agent). "after-turn" queues behind ' +
-				"the current turn. Neither EVER interrupts a running turn — mail waits for the turn boundary",
+				'Ordering hint only; default "now". Both values deliver at the recipient\'s next turn ' +
+				"boundary, or wake it immediately if dormant — mail never interrupts a running turn, " +
+				"and there is no way to hold mail back from a dormant agent without waking it",
 		}),
 	),
 	correlationId: Type.Optional(
 		Type.String({
 			description:
 				"Set when ANSWERING a subagent's question: the question's envelope id (msg_...) from " +
-				"your mail digest. The asker wakes with its original question quoted next to your answer",
+				"your mail digest. The asker wakes with its original question quoted next to your answer. " +
+				"ALSO the escalation-deny channel: correlating to an escalation envelope's id DENIES that " +
+				"blocked tool call, with your text as the deny note — never correlate to an escalation " +
+				"unless you intend to deny it (you can never approve; only the human can)",
 		}),
 	),
 });
@@ -141,9 +150,9 @@ export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendPara
 		name: "subagent_send",
 		label: "Message subagent",
 		description:
-			"Send a message to a subagent's mailbox. Covers send (when:\"now\", default), " +
-			"queue (when:\"after-turn\"), and answer (correlationId set). Mail never interrupts " +
-			"a running turn; a dormant agent wakes with the message in its wake digest. " +
+			"Send a message to a subagent's mailbox — plain instruction, or answer/escalation-deny " +
+			"(correlationId set). Mail never interrupts a running turn: it is delivered at the " +
+			"recipient's next turn boundary, or wakes it immediately if dormant. " +
 			"Replies/questions from the agent arrive later as mail in your own digest.",
 		parameters: SendParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -155,7 +164,11 @@ export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendPara
 					...(params.when !== undefined ? { when: params.when } : {}),
 					...(params.correlationId !== undefined ? { correlationId: params.correlationId } : {}),
 				});
-				return jsonResult({ delivery: result.delivery, recipientState: result.recipientState });
+				return jsonResult({
+					delivery: result.delivery,
+					disposition: result.disposition,
+					recipientState: result.recipientState,
+				});
 			} catch (error) {
 				return errorResult(error);
 			}
@@ -178,8 +191,10 @@ export function createSteerTool(getCore: GetCore): ToolDefinition<typeof SteerPa
 		label: "Steer subagent",
 		description:
 			"Inject a steering message into a subagent's RUNNING turn to redirect its current " +
-			"work. Steering is not mail: it interrupts deliberately, mid-turn. Returns " +
-			"steered:false if the agent is not running (use subagent_send instead).",
+			"work. Steering is not mail: the text is injected into the running turn without " +
+			"aborting it — the agent absorbs the redirection and continues (subagent_interrupt " +
+			"is the tool that aborts). Returns steered:false if the agent is not running " +
+			"(use subagent_send instead).",
 		parameters: SteerParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const core = getCore(ctx);
@@ -216,8 +231,10 @@ export function createStatusTool(getCore: GetCore): ToolDefinition<typeof Status
 		description:
 			"Observe subagents without messaging them (read-only, never perturbs). " +
 			"No address: full roster — per agent: address, type, state (queued|running|dormant|waiting), " +
-			"lifetime, teams, purview, and vitals (ctx %, tokens, cost, turns). " +
-			"With address: detail plus the last `tail` transcript entries.",
+			"lifetime, teams, purview, vitals (ctx %, tokens, cost, turns), unread (mail it has not " +
+			"seen yet), and — for waiting agents — waitingOn (the pending escalation blocking it). " +
+			"With address: detail plus outstandingQuestions (questions it asked that are still " +
+			"unanswered) and the last `tail` transcript entries.",
 		parameters: StatusParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const core = getCore(ctx);
@@ -248,8 +265,10 @@ const CollectParams = Type.Object({
 	to: Type.String({ description: "Agent address <type>/<id>" }),
 	schema: Type.Any({
 		description:
-			"JSON schema the final result must conform to (object with type/properties/required/" +
-			"items/enum). The agent is asked to report structured data matching it",
+			"JSON schema the result must conform to. Validation supports ONLY this subset: type, " +
+			"properties, required, items, enum, const, additionalProperties:false — every other " +
+			"keyword (oneOf, format, pattern, minimum, ...) is SILENTLY IGNORED, so a 'conforms' " +
+			"verdict never reflects them. Express constraints within the subset",
 	}),
 });
 
@@ -261,13 +280,14 @@ export function createCollectTool(getCore: GetCore): ToolDefinition<typeof Colle
 			"Request a schema-conforming final result from a subagent. NON-BLOCKING: this only " +
 			"sends the collect request; the result arrives later in your mail digest as a report " +
 			"envelope whose data was validated against the schema (verdict attached). Nothing to " +
-			"poll — keep working.",
+			"poll — keep working. Returns requestId (the request envelope's id — the fulfilling " +
+			"report carries it as correlationId, so multiple outstanding collects stay " +
+			"distinguishable) and recipientState (dormant vs running at request time).",
 		parameters: CollectParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const core = getCore(ctx);
 			try {
-				await core.collect(params.to, params.schema);
-				return jsonResult({ requested: true });
+				return jsonResult(await core.collect(params.to, params.schema));
 			} catch (error) {
 				return errorResult(error);
 			}

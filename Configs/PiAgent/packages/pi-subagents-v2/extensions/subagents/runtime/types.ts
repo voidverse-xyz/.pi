@@ -73,9 +73,11 @@ export interface SendOptions {
 	to: string;
 	text: string;
 	/**
-	 * "now" (default) starts a turn on an idle/dormant agent; "after-turn"
-	 * queues behind the current turn. Neither ever interrupts a running turn
-	 * (D11) — on a running agent both wait for the turn boundary.
+	 * Ordering hint only — accepted and recorded, but both values behave the
+	 * same at delivery: the envelope lands at the recipient's next turn
+	 * boundary, or wakes it immediately if dormant. Mail never interrupts a
+	 * running turn (D11), and there is no way to queue mail on a dormant
+	 * agent without waking it.
 	 */
 	when?: "now" | "after-turn";
 	/** Set when this send answers a question envelope (03-tool-surface). */
@@ -83,7 +85,15 @@ export interface SendOptions {
 }
 
 export interface SendResult {
+	/** "delivered" = the send woke a dormant agent into a turn; "queued" = it landed in the mailbox for an already-scheduled/running turn. */
 	delivery: "delivered" | "queued";
+	/**
+	 * How the Deliverer routed it: "woken" = dormant recipient, wake fired
+	 * (its state is then "queued" — the turn is scheduled, pairing with
+	 * delivery:"delivered"); "held" = recipient mid-turn/waiting, consumed at
+	 * the boundary; "queued" = recipient already had a turn queued.
+	 */
+	disposition: "woken" | "held" | "queued";
 	recipientState: AgentState;
 	/** The delivered envelope's id (correlation anchor for later answers). */
 	envelopeId: string;
@@ -116,6 +126,21 @@ export interface RetireResult {
 // Status / peek (read-only, never perturbs)
 // ---------------------------------------------------------------------------
 
+/**
+ * Why a `waiting` agent is waiting: the pending escalation, summarized for
+ * the roster (full record via pendingEscalations()).
+ */
+export interface PendingEscalationSummary {
+	/** `esc_<ulid>` (the human-gate record id). */
+	id: string;
+	/** The escalation envelope delivered to main; null if delivery failed. */
+	envelopeId: string | null;
+	/** Tool that was blocked (bash | edit | write). */
+	tool: string;
+	/** Why the sandbox blocked it. */
+	reason: string;
+}
+
 /** One roster row: registry record joined with teams.json + live vitals (D15). */
 export interface RosterEntry {
 	address: string;
@@ -126,6 +151,10 @@ export interface RosterEntry {
 	purview: string;
 	teams: string[];
 	vitals: AgentVitals;
+	/** Unprocessed envelopes in this agent's mailbox (mail it has not seen yet). */
+	unread: number;
+	/** Present iff state is "waiting": the escalation(s) blocking it. */
+	waitingOn?: PendingEscalationSummary[];
 	updatedAt: string;
 }
 
@@ -138,11 +167,23 @@ export interface TranscriptEntry {
 	timestamp: string;
 }
 
+/** One question this agent sent that has not been answered (or bounced) yet. */
+export interface OutstandingQuestion {
+	/** The question envelope's id — an answer must carry it as correlationId. */
+	id: string;
+	text: string;
+}
+
 export interface AgentDetail extends RosterEntry {
 	typeFileHash: string;
 	createdAt: string;
 	/** Current Pi-native session file, if one exists yet. */
 	sessionFile: string | null;
+	/**
+	 * Questions the agent sent (to main or peers) with no answer/bounce on
+	 * record — recoverable even after the asker's counterpart lost its digest.
+	 */
+	outstandingQuestions: OutstandingQuestion[];
 	/** Last `tail` transcript entries (peek). */
 	tail: TranscriptEntry[];
 }

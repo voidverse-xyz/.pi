@@ -670,6 +670,20 @@ await test("out-of-scope write → waiting + record + envelope; slot released; a
 	await waitUntil(() => stateOf(layoutA, "scoped/main") === "waiting", "waiting state");
 	assert.ok(eventsA.some((e) => e.type === "escalation-created" && e.escalation.id === record.id));
 
+	// M4 read join: the roster tells WHY the agent is waiting (pending
+	// escalation summary) without messaging it.
+	const roster = await runtimeA.status();
+	const waitingRow = roster.find((r) => r.address === "scoped/main");
+	assert.equal(waitingRow.state, "waiting");
+	assert.equal(typeof waitingRow.unread, "number", "roster rows carry unread");
+	assert.ok(Array.isArray(waitingRow.waitingOn) && waitingRow.waitingOn.length === 1, "waitingOn attached");
+	assert.equal(waitingRow.waitingOn[0].id, record.id);
+	assert.equal(waitingRow.waitingOn[0].envelopeId, record.envelopeId);
+	assert.equal(waitingRow.waitingOn[0].tool, "write");
+	assert.match(waitingRow.waitingOn[0].reason, /writePaths/);
+	const dormantRow = roster.find((r) => r.address !== "scoped/main");
+	if (dormantRow) assert.equal(dormantRow.waitingOn, undefined, "non-waiting rows omit waitingOn");
+
 	// escalation envelope in main's mailbox, with the deny-by-mail hint
 	const mail = mainMailA.find((e) => e.type === "escalation" && e.id === record.envelopeId);
 	assert.ok(mail, "escalation envelope reached main");

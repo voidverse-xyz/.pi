@@ -76,7 +76,7 @@ export function makeTeamGuard(getTeams: () => Teams): TeamGuard {
 			allowed: false,
 			reason:
 				`Out of team: \`${envelope.from}\` and \`${envelope.to}\` share no team, and peer mail ` +
-				"requires a shared team (D12). Report to the main agent instead — it organizes teams.",
+				"requires a shared team. Report to the main agent instead — it organizes teams.",
 		};
 	};
 }
@@ -178,8 +178,10 @@ export class Deliverer {
 	send(options: DeliverySendOptions): DeliveryOutcome {
 		const to = parseAddress(options.to);
 		if (to === null || to.kind === "user") {
-			// DEVIATION: envelopes addressed to `user` have no delivery surface
-			// until the Phase 6 viewer; escalations reach the human via main.
+			// Permanent design: no envelope is ever addressed TO `user` — the
+			// user has no mailbox. The viewer's user channel is sendAsUser,
+			// which sends FROM the user into a session, never to them; anything
+			// meant for the human (escalations, reports) reaches them via main.
 			throw new Error(
 				`Cannot deliver to "${options.to}" — recipient must be "<type>/<id>" or "main".`,
 			);

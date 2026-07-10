@@ -14,7 +14,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Layout } from "./layout.ts";
-import { listAgents, readRegistry } from "./registry.ts";
+import { atomicWriteJson, listAgents, readRegistry } from "./registry.ts";
 
 /** Marker file inside an archived agent dir recording when it was retired. */
 const RETIRED_AT_FILE = ".retired-at";
@@ -148,6 +148,60 @@ export function gcEscalationRecords(escalationsDir: string, options: GcOptions =
 	return deleted;
 }
 
+/**
+ * Age-prune a mailbox's `.collect-requests.json` index. Entries are keyed by
+ * the collect request's envelope id (`msg_<ulid>`) whose ULID timestamp IS
+ * the request time — takeCollectRequest deletes an entry when the matching
+ * report arrives, but a target that dies/retires without ever reporting
+ * leaves its entry behind forever. Entries older than the cutoff (plus any
+ * key that isn't a decodable envelope id — garbage no report can ever match)
+ * are dropped; the file is rewritten only when something was pruned.
+ * Returns the pruned envelope ids.
+ */
+export function gcCollectRequests(mailboxDir: string, options: GcOptions = {}): string[] {
+	const cutoff = (options.now ?? new Date()).getTime() - (options.days ?? DEFAULT_GC_DAYS) * DAY_MS;
+	const file = join(mailboxDir, ".collect-requests.json");
+	let index: Record<string, unknown>;
+	try {
+		const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown;
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return [];
+		index = parsed as Record<string, unknown>;
+	} catch {
+		return []; // missing/corrupt index — nothing to prune
+	}
+	const pruned: string[] = [];
+	for (const id of Object.keys(index)) {
+		const bornMs = ulidTimestampMs(id);
+		if (bornMs === null || bornMs < cutoff) {
+			delete index[id];
+			pruned.push(id);
+		}
+	}
+	if (pruned.length > 0) {
+		try {
+			atomicWriteJson(file, index); // same writer mailbox.ts uses for this index
+		} catch {
+			return []; // could not rewrite — report nothing pruned
+		}
+	}
+	return pruned;
+}
+
+/** Crockford-base32 digit values, as used by mail/envelope.ts's ulid(). */
+const B32_VALUES = new Map([..."0123456789ABCDEFGHJKMNPQRSTVWXYZ"].map((c, i) => [c, i] as const));
+
+/** The ms timestamp encoded in a `msg_<ulid>` envelope id, or null. */
+function ulidTimestampMs(envelopeId: string): number | null {
+	if (!/^msg_[0-9A-HJKMNP-TV-Z]{26}$/.test(envelopeId)) return null;
+	let ms = 0;
+	for (const char of envelopeId.slice(4, 14)) {
+		const digit = B32_VALUES.get(char);
+		if (digit === undefined) return null;
+		ms = ms * 32 + digit;
+	}
+	return ms;
+}
+
 /** What one gcSweep pass removed (Phase 7 session_start GC). */
 export interface GcSweepResult {
 	/** Deleted archived-agent dirs. */
@@ -156,16 +210,26 @@ export interface GcSweepResult {
 	doneFiles: string[];
 	/** Deleted resolved escalation records. */
 	escalations: string[];
+	/** Deleted quarantined envelopes across the main + every agent .corrupt/ dir. */
+	corruptFiles: string[];
+	/** Aged-out `.collect-requests.json` entries (envelope ids) across all mailboxes. */
+	collectRequests: string[];
 }
 
 /**
  * The whole Phase 7 GC pass for one project layout, with one N-day policy:
  * .archive/ funerals, processed mail in the main mailbox's and every
- * registered agent's .done/ dir, and resolved escalation records. Cheap:
- * directory scans only; safe to run on every session start.
+ * registered agent's .done/ dir (and their .corrupt/ quarantine siblings —
+ * kept for debugging, not forever), aged-out collect-request index entries,
+ * and resolved escalation records. Cheap: directory scans only; safe to run
+ * on every session start.
  */
 export function gcSweep(layout: Layout, options: GcOptions = {}): GcSweepResult {
 	const doneFiles = [...gcDoneDir(layout.mainMailboxDoneDir, options)];
+	// .corrupt/ is a mailbox-internal sibling of .done/ (mail/mailbox.ts
+	// quarantine), deliberately not in store/layout.ts — same age policy.
+	const corruptFiles = [...gcDoneDir(join(layout.mainMailboxDir, ".corrupt"), options)];
+	const collectRequests = [...gcCollectRequests(layout.mainMailboxDir, options)];
 	let agents: ReturnType<typeof listAgents> = [];
 	try {
 		agents = listAgents(readRegistry(layout.registryFile));
@@ -173,11 +237,16 @@ export function gcSweep(layout: Layout, options: GcOptions = {}): GcSweepResult 
 		// Unreadable registry must not block the other sweeps.
 	}
 	for (const record of agents) {
+		const mailboxDir = layout.mailboxDir(record.type, record.id);
 		doneFiles.push(...gcDoneDir(layout.mailboxDoneDir(record.type, record.id), options));
+		corruptFiles.push(...gcDoneDir(join(mailboxDir, ".corrupt"), options));
+		collectRequests.push(...gcCollectRequests(mailboxDir, options));
 	}
 	return {
 		archives: gcArchive(layout, options),
 		doneFiles,
 		escalations: gcEscalationRecords(layout.escalationsDir, options),
+		corruptFiles,
+		collectRequests,
 	};
 }

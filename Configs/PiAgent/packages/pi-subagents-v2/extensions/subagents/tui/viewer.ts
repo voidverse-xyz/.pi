@@ -409,6 +409,10 @@ export function createViewer(options: ViewerOptions): ViewerComponent {
 			refreshTranscript();
 			return;
 		}
+		// tail:0 = vitals/header + sessionFile ONLY (readTranscriptTail contract:
+		// tail <= 0 never reads the transcript). The viewer renders the
+		// transcript through its own incremental TailReader, so asking peek for
+		// any tail here would be pure wasted I/O on every 1s poll/event.
 		void core
 			.peek(address, 0)
 			.then((next) => {

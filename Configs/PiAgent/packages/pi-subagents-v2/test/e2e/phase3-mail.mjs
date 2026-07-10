@@ -35,7 +35,7 @@ const piAi = await jiti.import(join(PI_PKG, "node_modules/@earendil-works/pi-ai/
 const { createLayout } = await jiti.import(join(EXT, "store/layout.ts"));
 const { readRegistry } = await jiti.import(join(EXT, "store/registry.ts"));
 const { readTeams } = await jiti.import(join(EXT, "store/teams.ts"));
-const { InProcessRuntime } = await jiti.import(join(EXT, "runtime/in-process.ts"));
+const { InProcessRuntime, readOutstandingQuestions } = await jiti.import(join(EXT, "runtime/in-process.ts"));
 const { makeEnvelope } = await jiti.import(join(EXT, "mail/envelope.ts"));
 const { composeWakeDigest } = await jiti.import(join(EXT, "mail/digest.ts"));
 const { validateAgainstSchema, collectResultNote } = await jiti.import(join(EXT, "mail/collect.ts"));
@@ -276,6 +276,20 @@ await test("sent-question + collect-request indexes", async () => {
 	assert.deepEqual(mailbox.takeCollectRequest(dir, "msg_C"), { type: "object" });
 	assert.equal(mailbox.takeCollectRequest(dir, "msg_C"), undefined, "take pops");
 });
+await test("outstanding sent-questions: answered/bounced ones pruned, unanswered kept", async () => {
+	const dir = join(scratch, "unit-outstanding");
+	mailbox.recordSentQuestion(dir, "msg_Q1", "first?");
+	mailbox.recordSentQuestion(dir, "msg_Q2", "second?");
+	mailbox.recordSentQuestion(dir, "msg_Q3", "third?");
+	// An answer for Q1 sits pending in the asker's mailbox; an error bounce for
+	// Q2 was already processed (.done). Only Q3 stays outstanding.
+	const a = env({ type: "answer", text: "yes", correlationId: "msg_Q1" });
+	mailbox.writeEnvelope(dir, a);
+	const b = env({ type: "error", text: "bounced", correlationId: "msg_Q2" });
+	mailbox.writeEnvelope(dir, b);
+	mailbox.markDone(dir, [b.id]);
+	assert.deepEqual(readOutstandingQuestions(dir), [{ id: "msg_Q3", text: "third?" }]);
+});
 await test("collect validator: subset checks + note text", async () => {
 	const schema = {
 		type: "object",
@@ -364,6 +378,14 @@ await test("answer wakes A with its original question quoted next to the answer 
 	const bBox = layout.mailboxDir("worker", "beta");
 	assert.equal(mailbox.pendingCount(bBox), 0);
 	assert.ok(readdirSync(join(bBox, ".done")).length >= 1, "processed mail in .done");
+	// M4 read joins: the answered question no longer counts as outstanding,
+	// and roster rows expose the mailbox unread count.
+	const detail = await runtime.peek("worker/alpha");
+	assert.deepEqual(detail.outstandingQuestions, [], "answered question pruned from outstanding");
+	assert.equal(typeof detail.unread, "number");
+	const roster = await runtime.status();
+	const alphaRow = roster.find((r) => r.address === "worker/alpha");
+	assert.equal(alphaRow.unread, mailbox.pendingCount(layout.mailboxDir("worker", "alpha")), "roster unread = mailbox pending");
 });
 
 // ---------------------------------------------------------------------------
@@ -443,12 +465,18 @@ await test("collect request → report(correlationId, data) → validated digest
 	});
 	assert.equal(res.requested, true);
 	assert.match(res.requestId, /^msg_/);
+	assert.ok(["dormant", "queued", "running", "waiting"].includes(res.recipientState), "recipientState surfaced");
 	// wait for the report to land in main's mailbox
 	const start = Date.now();
 	while (!mainMail.some((e) => e.type === "report" && e.correlationId === res.requestId)) {
 		if (Date.now() - start > 20000) throw new Error("timeout waiting for collect report");
 		await sleep(15);
 	}
+	// the agent's digest spelled out the fulfillment recipe (collectSchema helper)
+	const collectCall = llmCalls.find((c) => c.agent === "worker/alpha" && c.lastUserText.includes("Collect request"));
+	assert.ok(collectCall, "agent saw the collect request");
+	assert.match(collectCall.lastUserText, /To fulfill this collect request/);
+	assert.ok(collectCall.lastUserText.includes(`correlationId "${res.requestId}"`), "helper line names the request envelope id");
 	const report = mainMail.find((e) => e.type === "report" && e.correlationId === res.requestId);
 	assert.deepEqual(report.payload.data, { answer: 42 });
 	// drain main mail the way the host extension does → validation note attached
@@ -541,21 +569,50 @@ await test("question auto-wakes idle main; report queues quietly; digest injecte
 	const project2 = join(scratch, "project2");
 	mkdirSync(join(project2, ".pi", "subagents"), { recursive: true });
 	writeFileSync(join(project2, ".pi", "subagents", "worker.md"), readFileSync(join(project, ".pi", "subagents", "worker.md")));
+	// D21 token cap for the charging bracket below: the first auto-woken main
+	// turn charges 990k (must NOT pause — margin 10k dwarfs the ~15-token mock
+	// subagent turns the runtime also meters into the shared pool), the second
+	// charges 50k more (MUST pause).
+	writeFileSync(join(project2, ".pi", "subagents.json"), `${JSON.stringify({ autonomousTokens: 1_000_000 })}\n`);
 	const prevHome = process.env.HOME;
 	process.env.HOME = home;
 
 	const handlers = {};
 	const registeredTools = new Map();
 	const sentMessages = [];
+	// Faithful-enough host stub: it models AgentSession's streaming flag and
+	// records the delivery MODE the real SDK would pick for each sendMessage
+	// (agent-session.js sendCustomMessage): "nextTurn" queues for the next
+	// prompt; while isStreaming it STEERS (or followUp) into the running turn;
+	// only isStreaming=false + triggerTurn starts a genuinely new turn.
 	const stubPi = {
+		isStreaming: false,
 		on: (event, handler) => (handlers[event] ??= []).push(handler),
 		registerTool: (tool) => registeredTools.set(tool.name, tool),
-		sendMessage: (message, options) => sentMessages.push({ message, options }),
+		sendMessage: (message, options) => {
+			const mode =
+				options?.deliverAs === "nextTurn" ? "nextTurn"
+				: stubPi.isStreaming ? (options?.deliverAs === "followUp" ? "followUp" : "steer")
+				: options?.triggerTurn ? "newTurn"
+				: "append";
+			sentMessages.push({ message, options, mode });
+		},
 		// Phase 6 registers TUI surfaces at load; the smoke drives none of them.
 		registerCommand: () => {},
 		registerShortcut: () => {},
 	};
 	extensionFactory(stubPi);
+	// Emulate ONE host agent run with the REAL SDK's event ordering: agent_end
+	// is emitted while isStreaming is still true (_isAgentRunActive is cleared
+	// only in _emitAgentSettled, AFTER agent_end); agent_settled fires once the
+	// run has fully settled and isStreaming is false.
+	const fireHostTurn = async (ctx, messages = []) => {
+		stubPi.isStreaming = true;
+		for (const h of handlers.agent_start ?? []) await h({ type: "agent_start" }, ctx);
+		for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages }, ctx);
+		stubPi.isStreaming = false;
+		for (const h of handlers.agent_settled ?? []) await h({ type: "agent_settled" }, ctx);
+	};
 	assert.deepEqual(
 		[...registeredTools.keys()].sort(),
 		["subagent_collect", "subagent_interrupt", "subagent_retire", "subagent_send", "subagent_spawn", "subagent_status", "subagent_steer"],
@@ -588,6 +645,7 @@ await test("question auto-wakes idle main; report queues quietly; digest injecte
 		await sleep(15);
 	}
 	assert.equal(sentMessages[0].options.triggerTurn, true, "question auto-woke idle main (D16)");
+	assert.equal(sentMessages[0].mode, "newTurn", "idle wake starts a real turn (isStreaming=false + triggerTurn)");
 	assert.match(sentMessages[0].message.customType, /subagent-mail/);
 
 	// Phase-6 carried-forward fix: the digest is EMBEDDED in the wake trigger
@@ -605,11 +663,23 @@ await test("question auto-wakes idle main; report queues quietly; digest injecte
 	// A real user turn starting now finds nothing left to inject.
 	assert.equal(await handlers.before_agent_start[0]({}, ctx), undefined, "no double-injection");
 
+	// M4: before the answer exists, the unanswered question is recoverable via
+	// subagent_status detail (outstandingQuestions) — even if main's own
+	// context lost the digest.
+	const statusTool = registeredTools.get("subagent_status");
+	const detailRes = await statusTool.execute("tq", { address: "worker/main" }, undefined, undefined, ctx);
+	const detailJson = JSON.parse(detailRes.content[0].text);
+	assert.ok(
+		detailJson.outstandingQuestions.some((q) => q.id === corr && q.text.includes("EXT_QUESTION")),
+		"unanswered question listed in peek detail",
+	);
+
 	// main answers via subagent_send(correlationId) → asker wakes with the quote
 	const sendTool = registeredTools.get("subagent_send");
 	const answerRes = await sendTool.execute("t2", { to: "worker/main", text: "Use branch main-2. EXT_ANSWER", correlationId: corr }, undefined, undefined, ctx);
 	const answerJson = JSON.parse(answerRes.content[0].text);
-	assert.deepEqual(Object.keys(answerJson).sort(), ["delivery", "recipientState"], "spec-exact send result");
+	assert.deepEqual(Object.keys(answerJson).sort(), ["delivery", "disposition", "recipientState"], "spec-exact send result");
+	assert.ok(["woken", "held", "queued"].includes(answerJson.disposition), "Deliverer disposition surfaced");
 	{
 		const s2 = Date.now();
 		while (!llmCalls.some((c) => c.agent === "worker/main" && c.lastUserText.includes("EXT_ANSWER"))) {
@@ -638,9 +708,132 @@ await test("question auto-wakes idle main; report queues quietly; digest injecte
 	await sleep(100);
 	assert.equal(sentMessages.length, before, "report did NOT auto-wake (quiet queue)");
 	assert.ok(mailbox.pendingCount(layout2.mainMailboxDir) >= 1, "unread count exposed for the widget");
-	// agent_end at the next boundary: reports alone still don't wake
-	await handlers.agent_end[0]({}, ctx);
-	assert.equal(sentMessages.length, before, "agent_end boundary: reports stay quiet");
+	// A full host run at the next boundary: reports alone still don't wake —
+	// neither at agent_end nor at agent_settled.
+	await fireHostTurn(ctx);
+	assert.equal(sentMessages.length, before, "turn boundary: reports stay quiet");
+
+	// --- M1 pin: the boundary wake fires at agent_settled, NOT agent_end ----
+	// The real SDK still counts the session as streaming during agent_end, so a
+	// sendMessage(triggerTurn) there would STEER into the ending turn. Simulate
+	// a host turn with wake-worthy mail arriving mid-turn and assert the wake
+	// is issued only once isStreaming has dropped (mode "newTurn").
+	scripts.push({
+		match: (c) => c.agent === "worker/main" && c.lastUserText.includes("EXT_TASK2"),
+		reply: () => ({ tools: [{ name: "ask", args: { text: "Main, held until the boundary? MIDTURN_Q_MARKER" } }] }),
+	});
+	scripts.push({
+		match: (c) => c.agent === "worker/main" && c.lastRole === "toolResult",
+		reply: () => ({ text: "checkpoint: waiting on main (2)." }),
+	});
+	const beforeMidturn = sentMessages.length;
+	stubPi.isStreaming = true; // a main turn is running…
+	for (const h of handlers.agent_start ?? []) await h({ type: "agent_start" }, ctx);
+	await sendTool.execute("t4", { to: "worker/main", text: "EXT_TASK2: ask main something mid-turn" }, undefined, undefined, ctx);
+	{
+		const s4 = Date.now();
+		while (!mailbox.readPending(layout2.mainMailboxDir).some((p) => p.envelope.type === "question")) {
+			if (Date.now() - s4 > 20000) throw new Error("timeout waiting for mid-turn question");
+			await sleep(15);
+		}
+	}
+	await sleep(100);
+	assert.equal(sentMessages.length, beforeMidturn, "mid-turn wake-worthy mail never interrupts (D11)");
+	// agent_end arrives while isStreaming is STILL true (real SDK ordering) —
+	// the wake must NOT fire here (it would be recorded as a "steer").
+	for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages: [] }, ctx);
+	assert.equal(sentMessages.length, beforeMidturn, "no wake at agent_end (still streaming — would steer)");
+	stubPi.isStreaming = false;
+	for (const h of handlers.agent_settled ?? []) await h({ type: "agent_settled" }, ctx);
+	assert.equal(sentMessages.length, beforeMidturn + 1, "boundary wake fired at agent_settled");
+	const boundaryWake = sentMessages[sentMessages.length - 1];
+	assert.equal(boundaryWake.mode, "newTurn", "settled-time wake starts a REAL new turn, not a steer");
+	assert.equal(boundaryWake.options.triggerTurn, true);
+	assert.match(boundaryWake.message.content, /MIDTURN_Q_MARKER/, "digest embedded in the wake trigger");
+	assert.equal(mailbox.pendingCount(layout2.mainMailboxDir), 0, "boundary wake drained main mail");
+
+	// --- M2: D21 token charging of auto-woken main turns, with REAL usage ----
+	// The wake above marked the now-running main turn auto-woken. Finish it with
+	// a realistic agent_end payload (pi-ai AssistantMessage.usage: input/output/
+	// cacheRead/cacheWrite) and bracket the pool cap (1,000,000 from the
+	// settings file above):
+	//   turn 1 charges 600k + 390k = 990k  → must NOT pause (wake 2 still fires)
+	//   turn 2 charges  50k        → 1040k → MUST pause (wake 3 blocked)
+	// Decoy usage on non-assistant messages pins the role check; dropping any
+	// of the four usage fields (or charging 0) lands under the cap and fails
+	// the "paused" leg; counting decoys pauses early and fails the "not paused"
+	// leg.
+	const mkUsage = (input, output, cacheRead, cacheWrite) => ({
+		input, output, cacheRead, cacheWrite,
+		totalTokens: input + output + cacheRead + cacheWrite,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 },
+	});
+	const assistantMsg = (usage) => ({
+		role: "assistant", api: "mock-api", provider: "mock", model: "mock-1",
+		content: [{ type: "text", text: "worked on the digest" }],
+		usage, stopReason: "stop", timestamp: Date.now(),
+	});
+	await fireHostTurn(ctx, [
+		{ role: "user", content: [{ type: "text", text: "decoy" }], usage: mkUsage(7_777_777, 0, 0, 0), timestamp: Date.now() },
+		assistantMsg(mkUsage(400_000, 90_000, 80_000, 30_000)), // 600k
+		{ role: "toolResult", toolCallId: "t0", content: [{ type: "text", text: "decoy" }], usage: mkUsage(5_555_555, 0, 0, 0), timestamp: Date.now() },
+		assistantMsg(mkUsage(200_000, 100_000, 60_000, 30_000)), // 390k
+	]);
+	// 990k charged < 1M cap → NOT paused: the next question still auto-wakes.
+	scripts.push({
+		match: (c) => c.agent === "worker/main" && c.lastUserText.includes("EXT_TASK3"),
+		reply: () => ({ tools: [{ name: "ask", args: { text: "Main, still under budget? UNDER_CAP_Q_MARKER" } }] }),
+	});
+	scripts.push({
+		match: (c) => c.agent === "worker/main" && c.lastRole === "toolResult",
+		reply: () => ({ text: "checkpoint: waiting on main (3)." }),
+	});
+	const beforeUnderCap = sentMessages.length;
+	await sendTool.execute("t5", { to: "worker/main", text: "EXT_TASK3: ask main again" }, undefined, undefined, ctx);
+	{
+		const s5 = Date.now();
+		while (sentMessages.length === beforeUnderCap) {
+			if (Date.now() - s5 > 20000) throw new Error("timeout waiting for under-cap wake (was the pool over-charged?)");
+			await sleep(15);
+		}
+	}
+	assert.match(sentMessages[sentMessages.length - 1].message.content, /UNDER_CAP_Q_MARKER/);
+	assert.equal(sentMessages[sentMessages.length - 1].mode, "newTurn");
+
+	// That wake's turn now runs; a THIRD question arrives mid-turn, then the
+	// turn's agent_end charges 50k more → the pool trips at/over the cap and
+	// the settled-time boundary re-check must SKIP the wake (paused, D21).
+	scripts.push({
+		match: (c) => c.agent === "worker/main" && c.lastUserText.includes("EXT_TASK4"),
+		reply: () => ({ tools: [{ name: "ask", args: { text: "Main, over budget now? OVER_CAP_Q_MARKER" } }] }),
+	});
+	scripts.push({
+		match: (c) => c.agent === "worker/main" && c.lastRole === "toolResult",
+		reply: () => ({ text: "checkpoint: waiting on main (4)." }),
+	});
+	stubPi.isStreaming = true;
+	for (const h of handlers.agent_start ?? []) await h({ type: "agent_start" }, ctx);
+	await sendTool.execute("t6", { to: "worker/main", text: "EXT_TASK4: one more ask" }, undefined, undefined, ctx);
+	{
+		const s6 = Date.now();
+		while (!mailbox.readPending(layout2.mainMailboxDir).some((p) => p.envelope.type === "question")) {
+			if (Date.now() - s6 > 20000) throw new Error("timeout waiting for the over-cap question");
+			await sleep(15);
+		}
+	}
+	const beforePaused = sentMessages.length;
+	for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages: [assistantMsg(mkUsage(30_000, 5_000, 10_000, 5_000))] }, ctx); // +50k → ≥ cap
+	stubPi.isStreaming = false;
+	for (const h of handlers.agent_settled ?? []) await h({ type: "agent_settled" }, ctx);
+	await sleep(100);
+	assert.equal(sentMessages.length, beforePaused, "paused pool: wake-worthy mail queues, no auto-wake (D21)");
+	assert.ok(
+		mailbox.readPending(layout2.mainMailboxDir).some((p) => p.envelope.type === "question"),
+		"question parked on disk while paused",
+	);
+	// The next REAL user turn resets the pool and drains the held question.
+	const injected = await handlers.before_agent_start[0]({}, ctx);
+	assert.match(injected.message.content, /OVER_CAP_Q_MARKER/, "user-turn digest drained the paused-held question");
 
 	// D17: user → subagent FYI. Reach the runtime through a fresh core-level path:
 	// sendAsUser is a runtime power; exercised in the runtime section below.

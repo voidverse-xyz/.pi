@@ -177,6 +177,28 @@ export function lookupSentQuestion(mailboxDir: string, correlationId: string): s
 	return typeof value === "string" ? value : undefined;
 }
 
+/**
+ * Drop consumed questions from the sent index. Called AFTER the wake digest
+ * that quoted them was composed and the correlated `answer`/`error` envelopes
+ * were markDone'd — an answered question will never be quoted again, and
+ * without this delete the index grows one entry per question for the agent's
+ * whole life (and is rewritten in full each time: O(n²) I/O). Missing ids are
+ * ignored; the file is rewritten only when something actually matched.
+ */
+export function deleteSentQuestions(mailboxDir: string, envelopeIds: string[]): void {
+	if (envelopeIds.length === 0) return;
+	const file = sentQuestionsFileOf(mailboxDir);
+	const index = readIndex(file);
+	let changed = false;
+	for (const id of envelopeIds) {
+		if (id in index) {
+			delete index[id];
+			changed = true;
+		}
+	}
+	if (changed) atomicWriteJson(file, index);
+}
+
 /** Remember an outstanding collect request (envelopeId → schema). */
 export function recordCollectRequest(mailboxDir: string, envelopeId: string, schema: unknown): void {
 	const file = collectRequestsFileOf(mailboxDir);

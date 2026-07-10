@@ -57,6 +57,7 @@ TESTS=(
 	phase5-sandbox.mjs
 	phase6-tui.mjs
 	phase7-full-story.mjs
+	phase-lifecycle-fixes.mjs
 	phase-runtime-fixes.mjs
 	loadcheck.mjs
 )

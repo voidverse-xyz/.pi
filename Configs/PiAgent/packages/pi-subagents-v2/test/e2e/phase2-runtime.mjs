@@ -253,7 +253,10 @@ await test("system prompt has D18 layers 1+3+4, and NO layer 2 (projectContext: 
 	assert.match(call.systemPrompt, /RESEARCHER_BODY_MARKER/); // layer 3: type body
 	assert.match(call.systemPrompt, /address `researcher\/main`/); // layer 4: identity
 	assert.match(call.systemPrompt, /Questions are non-blocking/); // layer 4: conventions
+	assert.match(call.systemPrompt, /never finish silently/); // layer 4: completion protocol (M2)
+	assert.match(call.systemPrompt, /FINAL report/); // final:true taught up front
 	assert.match(call.systemPrompt, /solo worker/); // teamless comm powers
+	assert.match(call.systemPrompt, /peer messages will bounce/); // solo ≠ no send tool
 	assert.doesNotMatch(call.systemPrompt, /MARKER_PROJECT_CONTEXT/); // layer 2 off
 	assert.match(call.messages[call.messages.length - 1].content[0]?.text ?? String(call.messages.at(-1).content), /TASK_ONE_MARKER/);
 });
@@ -402,10 +405,13 @@ await test("roster joins registry + teams + vitals", async () => {
 	assert.deepEqual(hallway.teams, ["welcome-crew"]);
 	assert.ok(hallway.vitals.tokens > 0);
 	assert.equal(hallway.purview, "hallway");
+	assert.equal(hallway.unread, 0, "roster carries mailbox unread count (M4)");
+	assert.equal(hallway.waitingOn, undefined, "waitingOn only present while waiting");
 });
 await test("peek returns detail + transcript tail from the session file", async () => {
 	const detail = await runtime.peek("researcher/main", 2);
 	assert.equal(detail.typeFileHash.length, 64);
+	assert.deepEqual(detail.outstandingQuestions, [], "detail lists outstanding sent-questions (M4)");
 	assert.ok(detail.sessionFile.endsWith(".jsonl"));
 	assert.equal(detail.tail.length, 2);
 	assert.equal(detail.tail[1].role, "assistant");
@@ -456,6 +462,13 @@ await test("subagent_spawn / subagent_status tools return spec-shaped JSON", asy
 	assert.equal(badSpawn.isError, true);
 	assert.match(badSpawn.content[0].text, /Available types:/);
 	assert.match(badSpawn.content[0].text, /researcher \(project\)/);
+
+	// The type catalog is scoped to unknown-TYPE errors only — a lifetime-rule
+	// violation keeps its actual error unburied.
+	const badOneshot = await spawnTool.execute("t2b", { type: "greeter", id: "x", lifetime: "oneshot" }, undefined, undefined, ctx);
+	assert.equal(badOneshot.isError, true);
+	assert.match(badOneshot.content[0].text, /never take an explicit id/);
+	assert.ok(!badOneshot.content[0].text.includes("Available types:"), "no catalog appendix on non-type errors");
 
 	const rosterRes = await statusTool.execute("t3", {}, undefined, undefined, ctx);
 	const roster = JSON.parse(rosterRes.content[0].text);

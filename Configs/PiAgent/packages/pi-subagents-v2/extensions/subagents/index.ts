@@ -15,8 +15,14 @@
  *    digest would strand until the next real user turn while agent_end kept
  *    re-triggering). `before_agent_start` still drains quietly-queued reports
  *    into a digest at the start of every REAL user turn, per D16.
- *  - Mid-turn mail waits for the turn boundary (D11): `agent_end` re-checks
- *    the mailbox and auto-wakes then if warranted.
+ *  - Mid-turn mail waits for the turn boundary (D11): `agent_settled` re-checks
+ *    the mailbox and auto-wakes then if warranted. NOT `agent_end`: the SDK
+ *    emits agent_end while the run still counts as streaming
+ *    (AgentSession._isAgentRunActive is cleared only in _emitAgentSettled,
+ *    which runs AFTER agent_end), so a sendMessage(triggerTurn) there would
+ *    take sendCustomMessage's streaming branch and STEER into the ending turn
+ *    instead of starting a fresh one. At agent_settled isStreaming is false
+ *    and triggerTurn genuinely starts a new main-agent turn.
  *  - Plain reports queue silently; core.mainUnreadCount() feeds the Phase 6
  *    widget. settings.autoWake=false drops to fully-manual queueing.
  *
@@ -29,10 +35,11 @@
  *    directly and never fires it. So auto-woken digest turns can never reset
  *    the pool — no customType inspection needed.
  *  - Auto-woken main turns are autonomous: triggerWake() consumes a pool turn
- *    and agent_end charges that turn's assistant token usage.
- *  - Paused system starts no auto-wake main turns: onMainMail/agent_end skip
- *    triggerWake while paused (wake-worthy mail queues on disk; the reset on
- *    the next user turn drains it via the before_agent_start digest).
+ *    and agent_end charges that turn's assistant token usage (agent_end is the
+ *    only host event that carries the run's messages).
+ *  - Paused system starts no auto-wake main turns: onMainMail/agent_settled
+ *    skip triggerWake while paused (wake-worthy mail queues on disk; the reset
+ *    on the next user turn drains it via the before_agent_start digest).
  *
  * Phase 6 (05-tui-spec): the ambient belowEditor widget, /subagents picker,
  * full-screen session viewer (ctrl+j quick-switch), and the escalation modal
@@ -451,8 +458,13 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_start", async () => {
 		mainBusy = true;
 	});
+	// D21 token charging lives at agent_end — the only host event carrying the
+	// run's messages. The boundary wake re-check does NOT: agent_end is emitted
+	// while AgentSession.isStreaming is still true (_isAgentRunActive is only
+	// cleared in _emitAgentSettled, which runs after agent_end), so a
+	// sendMessage(triggerTurn) here would steer into the ending turn instead of
+	// starting a fresh one — see the agent_settled handler below.
 	pi.on("agent_end", async (event) => {
-		mainBusy = false;
 		// D21: charge an auto-woken main turn's assistant token usage to the pool.
 		if (autoWokenTurn) {
 			autoWokenTurn = false;
@@ -465,8 +477,17 @@ export default function (pi: ExtensionAPI) {
 			}
 			core?.autonomy.noteTokens(tokens);
 		}
-		// Turn boundary (D11): mail held during the host turn gets its wake now.
-		// A paused system starts no auto-wake turns (D21).
+	});
+	// Turn boundary (D11): mail held during the host turn gets its wake now.
+	// agent_settled fires once per run, after retries/compaction/queued
+	// continuations resolve AND after isStreaming goes false — so triggerWake's
+	// sendMessage(triggerTurn) genuinely starts a new main-agent turn (it never
+	// fires before_agent_start, keeping the D21 pool reset user-input-only).
+	// mainBusy stays true through the agent_end→agent_settled gap so onMainMail
+	// can never steer a wake into a run that is still settling.
+	// A paused system starts no auto-wake turns (D21).
+	pi.on("agent_settled", async () => {
+		mainBusy = false;
 		if (core?.settings.autoWake && !core.autonomy.paused && core.mainHasWakeWorthy()) triggerWake();
 	});
 

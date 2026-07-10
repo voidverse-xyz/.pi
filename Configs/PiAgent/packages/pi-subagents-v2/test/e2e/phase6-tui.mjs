@@ -568,6 +568,35 @@ await test("viewer input: alt+Enter steers; x (empty editor) interrupts; Esc/ctr
 	component2.handleInput("\x1b");
 	assert.deepEqual(result2, { action: "back" });
 });
+await test("viewer polls peek with tail 0 (vitals only) — transcript comes from its own tail reader", async () => {
+	const file = makeSessionFixture();
+	const peekTails = [];
+	const base = fakeViewerCore(file, []);
+	const core = {
+		...base,
+		peek: async (address, tail) => {
+			peekTails.push(tail);
+			return base.peek(address, tail);
+		},
+	};
+	const component = viewer.createViewer({
+		core,
+		tui: fakeTui,
+		theme: realTheme,
+		address: "worker/main",
+		onDone: () => {},
+	});
+	await tick();
+	await tick();
+	assert.ok(peekTails.length > 0, "viewer polled peek");
+	assert.ok(peekTails.every((tail) => tail === 0), `every poll asks for tail 0, got ${JSON.stringify(peekTails)}`);
+	// With tail:0 peek carrying NO transcript, the header AND the transcript
+	// must still render — the transcript via the incremental TailReader.
+	const text = component.render(100).map(strip).join("\n");
+	assert.match(text, /worker\/main · billing-refactor · running · ctx 42%/, "header strip intact");
+	assert.match(text, /On it — replying now\./, "live transcript intact (own tail reader, not peek's tail)");
+	component.dispose();
+});
 await test("archived viewer: read-only (no input line, no superuser hints)", async () => {
 	const file = makeSessionFixture();
 	const log = [];
