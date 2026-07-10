@@ -258,6 +258,7 @@ await test("system prompt has D18 layers 1+3+4, and NO layer 2 (projectContext: 
 	assert.match(call.systemPrompt, /solo worker/); // teamless comm powers
 	assert.match(call.systemPrompt, /peer messages will bounce/); // solo ≠ no send tool
 	assert.doesNotMatch(call.systemPrompt, /MARKER_PROJECT_CONTEXT/); // layer 2 off
+	assert.doesNotMatch(call.systemPrompt, /<project_context>/); // no wrapper either — layer 2 fully omitted
 	assert.match(call.messages[call.messages.length - 1].content[0]?.text ?? String(call.messages.at(-1).content), /TASK_ONE_MARKER/);
 });
 
@@ -328,6 +329,41 @@ await test("greeter inherits session model, gets project context, joins team", a
 	assert.match(call.systemPrompt, /MARKER_PROJECT_CONTEXT/); // layer 2 ON by default
 	assert.match(call.systemPrompt, /Team `welcome-crew`/);
 	assert.deepEqual(readTeams(layout.teamsFile), { "welcome-crew": ["greeter/hallway"] });
+});
+await test("D18 strict layer ORDER: base(1) < project context(2) < type body(3) < identity(4)", async () => {
+	// The greeter turn above ran with projectContext ON — inspect its prompt.
+	const call = llmCalls[llmCalls.length - 1];
+	const sp = call.systemPrompt;
+	const iBase = sp.indexOf("expert coding assistant"); // layer 1: Pi base
+	const iProject = sp.indexOf("<project_context>"); // layer 2
+	const iBody = sp.indexOf("GREETER_BODY_MARKER"); // layer 3
+	const iIdentity = sp.indexOf("## Your identity"); // layer 4
+	assert.ok(iBase >= 0, "layer 1 present");
+	assert.ok(iProject >= 0, "layer 2 present");
+	assert.ok(iBody >= 0, "layer 3 present");
+	assert.ok(iIdentity >= 0, "layer 4 present");
+	assert.ok(iBase < iProject, `layer 1 (${iBase}) before layer 2 (${iProject})`);
+	assert.ok(iProject < iBody, `layer 2 (${iProject}) before layer 3 (${iBody})`);
+	assert.ok(iBody < iIdentity, `layer 3 (${iBody}) before layer 4 (${iIdentity})`);
+	assert.equal(sp.indexOf("<project_context>", iProject + 1), -1, "exactly one project block");
+});
+await test("layer-2 block is byte-identical to the SDK's own <project_context> output", async () => {
+	// Reference: what the SDK itself would have produced for the same
+	// cwd/agentDir — its own discovery (loadProjectContextFiles) fed through
+	// its own wrapper (buildSystemPrompt), block extracted verbatim.
+	const { buildSystemPrompt } = await jiti.import(join(PI_PKG, "dist/core/system-prompt.js"));
+	const contextFiles = piSdk.loadProjectContextFiles({
+		cwd: project,
+		agentDir: join(home, ".pi", "agent"),
+	});
+	assert.ok(contextFiles.length > 0, "discovery finds the test AGENTS.md");
+	const reference = buildSystemPrompt({ customPrompt: "REF", cwd: project, contextFiles });
+	const blockRe = /<project_context>[\s\S]*?<\/project_context>/;
+	const refBlock = reference.match(blockRe)?.[0];
+	assert.ok(refBlock, "reference prompt contains a project block");
+	assert.match(refBlock, /MARKER_PROJECT_CONTEXT/);
+	const ourBlock = llmCalls[llmCalls.length - 1].systemPrompt.match(blockRe)?.[0];
+	assert.equal(ourBlock, refBlock, "our layer-2 block === SDK-produced block, byte for byte");
 });
 await test("teammate rosters carry purviews (D18 layer 4)", async () => {
 	events.length = 0;

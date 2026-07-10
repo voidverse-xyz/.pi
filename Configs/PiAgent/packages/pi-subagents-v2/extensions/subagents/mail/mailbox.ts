@@ -18,6 +18,20 @@
  * its .attempt marker — the next wake re-delivers it and readPending reports
  * redelivered:true so the digest can label it (at-least-once, never lost).
  *
+ * MAIN-mailbox extra state (the host owns the main session JSONL, so there is
+ * no after-append hook — durability is closed by RECONCILIATION instead):
+ *
+ *   .delivering/<msg-id>.json       moved by beginHostDelivery() when the
+ *                                   composed digest is handed to the host
+ *   .delivering/<msg-id>.json.meta  { sessionFile } — where the digest was
+ *                                   injected (written BEFORE the move)
+ *
+ * reconcileHostDelivery() later checks the recorded session JSONL for the
+ * envelope id (every digest embeds it) on a line carrying our customType
+ * marker: found → finalize to .done/; missing → the injection was lost
+ * (crash before the host append) and the envelope is requeued as pending
+ * (redelivered:true) — at-least-once for the main mailbox too.
+ *
  * Also owns the two small sender-side JSON indexes (paths from layout):
  *   .sent-questions.json    envelopeId → question text (digest quoting, D14)
  *   .collect-requests.json  envelopeId → schema (collect validation, D16/03)
@@ -32,6 +46,8 @@ import { atomicWriteJson } from "../store/registry.ts";
 import {
 	attemptMarkerOf,
 	collectRequestsFileOf,
+	deliveringMetaOf,
+	mailboxDeliveringDirOf,
 	mailboxDoneDirOf,
 	sentQuestionsFileOf,
 } from "../store/layout.ts";
@@ -144,6 +160,147 @@ export function markDone(mailboxDir: string, envelopeIds: string[]): void {
 		if (existsSync(file)) renameSync(file, join(doneDir, `${id}.json`));
 		rmSync(attemptMarkerOf(file), { force: true });
 	}
+}
+
+// ---------------------------------------------------------------------------
+// MAIN-mailbox host-delivery reconciliation (at-least-once without an
+// after-append hook — see the module header)
+// ---------------------------------------------------------------------------
+
+/**
+ * Park composed-into-a-digest envelopes in .delivering/ instead of finalizing
+ * them: the digest was handed to the HOST for injection into the main session
+ * JSONL, but the append is not yet verified. For each envelope the target
+ * `sessionFile` is recorded in a sibling .meta BEFORE the envelope moves, so
+ * every crash window degrades to at-least-once:
+ *   - crash before the move → envelope still pending (orphan meta is swept by
+ *     the next reconcile) → recomposed next drain;
+ *   - crash after the move → reconcileHostDelivery decides from the JSONL.
+ * Call ONLY for the main mailbox (subagent appends are runtime-owned and use
+ * markDone directly).
+ */
+export function beginHostDelivery(mailboxDir: string, envelopeIds: string[], sessionFile: string): void {
+	const deliveringDir = mailboxDeliveringDirOf(mailboxDir);
+	mkdirSync(deliveringDir, { recursive: true });
+	for (const id of envelopeIds) {
+		const file = join(mailboxDir, `${id}.json`);
+		if (!existsSync(file)) continue;
+		const parked = join(deliveringDir, `${id}.json`);
+		writeFileSync(
+			deliveringMetaOf(parked),
+			`${JSON.stringify({ sessionFile, recordedAt: new Date().toISOString() })}\n`,
+			"utf8",
+		);
+		renameSync(file, parked);
+		rmSync(attemptMarkerOf(file), { force: true });
+	}
+}
+
+export interface HostDeliveryReconcile {
+	/** Envelope ids verified in their session JSONL and finalized to .done/. */
+	finalized: string[];
+	/** Envelope ids whose injection was lost — moved back to pending (redelivered). */
+	requeued: string[];
+	/** Envelope ids left in .delivering/ (injection may still be in flight). */
+	inFlight: string[];
+}
+
+export interface ReconcileHostDeliveryOptions {
+	/**
+	 * A JSONL line counts as the delivered digest only if it contains BOTH the
+	 * envelope id and this marker (the extension's customType prefix) — the id
+	 * alone can leak into the session via tool results (e.g. subagent_status
+	 * listing outstanding question ids) and must not finalize undelivered mail.
+	 */
+	marker: string;
+	/**
+	 * True (session_start, fresh process): an unverified envelope is a CRASH
+	 * LOSS — requeue it as pending so the next drain re-delivers. False
+	 * (in-process reconcile at the next drain): the host append may still be
+	 * in flight — leave it in .delivering/ (never re-deliver in-process: that
+	 * would double-deliver and double-charge the D21 pool).
+	 */
+	requeueUndelivered: boolean;
+}
+
+/**
+ * Settle the .delivering/ state against the source of truth — the recorded
+ * main session JSONL files. Delivered (id + marker found on one line) →
+ * finalize to .done/. Not delivered → requeue as pending (with an .attempt
+ * marker so the digest labels the re-delivery) or leave in flight, per
+ * options. Orphan .meta files (crash between meta write and move) are swept.
+ * Best-effort per envelope: one unreadable file never wedges the mailbox.
+ */
+export function reconcileHostDelivery(
+	mailboxDir: string,
+	options: ReconcileHostDeliveryOptions,
+): HostDeliveryReconcile {
+	const out: HostDeliveryReconcile = { finalized: [], requeued: [], inFlight: [] };
+	const deliveringDir = mailboxDeliveringDirOf(mailboxDir);
+	if (!existsSync(deliveringDir)) return out;
+	let names: string[];
+	try {
+		names = readdirSync(deliveringDir).sort();
+	} catch {
+		return out;
+	}
+	const sessionCache = new Map<string, string[] | null>(); // file → lines (null = unreadable)
+	const readSessionLines = (file: string): string[] | null => {
+		if (!sessionCache.has(file)) {
+			try {
+				sessionCache.set(file, readFileSync(file, "utf8").split("\n"));
+			} catch {
+				sessionCache.set(file, null);
+			}
+		}
+		return sessionCache.get(file) ?? null;
+	};
+
+	const envelopeNames = names.filter((name) => ENVELOPE_FILE_RE.test(name));
+	// Sweep orphan metas first (crash between meta write and envelope move —
+	// the envelope is still pending and will be recomposed; the meta is stale).
+	for (const name of names) {
+		if (!name.endsWith(".meta")) continue;
+		if (!envelopeNames.includes(name.slice(0, -".meta".length))) {
+			rmSync(join(deliveringDir, name), { force: true });
+		}
+	}
+
+	for (const name of envelopeNames) {
+		const id = name.slice(0, -".json".length);
+		const parked = join(deliveringDir, name);
+		const metaFile = deliveringMetaOf(parked);
+		let sessionFile: string | null = null;
+		try {
+			const meta = JSON.parse(readFileSync(metaFile, "utf8")) as { sessionFile?: unknown };
+			if (typeof meta.sessionFile === "string") sessionFile = meta.sessionFile;
+		} catch {
+			// Missing/corrupt meta — treat as unverifiable (undelivered).
+		}
+		const lines = sessionFile !== null ? readSessionLines(sessionFile) : null;
+		const delivered =
+			lines !== null && lines.some((line) => line.includes(id) && line.includes(options.marker));
+		try {
+			if (delivered) {
+				const doneDir = mailboxDoneDirOf(mailboxDir);
+				mkdirSync(doneDir, { recursive: true });
+				renameSync(parked, join(doneDir, name));
+				rmSync(metaFile, { force: true });
+				out.finalized.push(id);
+			} else if (options.requeueUndelivered) {
+				const restored = join(mailboxDir, name);
+				renameSync(parked, restored);
+				writeFileSync(attemptMarkerOf(restored), "", "utf8"); // digest labels the re-delivery
+				rmSync(metaFile, { force: true });
+				out.requeued.push(id);
+			} else {
+				out.inFlight.push(id);
+			}
+		} catch {
+			out.inFlight.push(id); // fs race — settled on a later reconcile
+		}
+	}
+	return out;
 }
 
 // ---------------------------------------------------------------------------

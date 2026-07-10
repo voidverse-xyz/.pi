@@ -9,9 +9,12 @@
  *    beside Pi's own (D3), resumable by Pi itself; wake = open the latest
  *    JSONL, memory restored by the SDK.
  *  - resourceLoader: a DefaultResourceLoader with all discovery disabled
- *    (no extensions/skills/prompts/themes — subagents get a deterministic
- *    context) carrying the D18 layers: layer 2 via noContextFiles =
- *    !projectContext, layers 3+4 via appendSystemPrompt (context/compose.ts).
+ *    (no extensions/skills/prompts/themes, noContextFiles always true —
+ *    subagents get a deterministic context) carrying the D18 layers 2+3+4
+ *    in D18 order via appendSystemPrompt (context/compose.ts): layer 2 is
+ *    loaded here with the SDK's loadProjectContextFiles when the type's
+ *    projectContext flag is on, and compose places it FIRST (the SDK's own
+ *    contextFiles path would put it after layers 3+4, hence the takeover).
  *  - model/thinking: frontmatter pin resolved against the shared ModelRegistry,
  *    else inherited session defaults, else SDK defaults (04-type-schema).
  *  - customTools: the subagent tool trio (tools/sub-agent.ts) with the agent's
@@ -76,6 +79,7 @@ import {
 	createAgentSession,
 	type CreateAgentSessionOptions,
 	DefaultResourceLoader,
+	loadProjectContextFiles,
 	type ModelRegistry,
 	parseSessionEntries,
 	resolveCliModel,
@@ -1228,8 +1232,16 @@ export class InProcessRuntime implements SubagentRuntime {
 			? SessionManager.open(latest, instanceDir, layout.cwd)
 			: SessionManager.create(layout.cwd, instanceDir);
 
-		// Layers 2+3+4 via the resource loader (context/compose.ts).
-		const composed = composeContext(def, this._identityFor(address, record));
+		// Layers 2+3+4 via the resource loader (context/compose.ts). Layer 2
+		// (project context) is loaded HERE with the SDK's own discovery
+		// (loadProjectContextFiles — same AGENTS.md rules as a plain Pi
+		// session) and handed to compose, which places it BEFORE layers 3+4
+		// so the prompt reads in D18 order 1,2,3,4. The SDK's own contextFiles
+		// mechanism stays off below (it would append layer 2 LAST).
+		const projectFiles = def.config.projectContext
+			? loadProjectContextFiles({ cwd: layout.cwd, agentDir: layout.agentDir })
+			: [];
+		const composed = composeContext(def, this._identityFor(address, record), projectFiles);
 		const loader = new DefaultResourceLoader({
 			cwd: layout.cwd,
 			agentDir: layout.agentDir,
@@ -1240,8 +1252,8 @@ export class InProcessRuntime implements SubagentRuntime {
 			noSkills: true,
 			noPromptTemplates: true,
 			noThemes: true,
-			noContextFiles: !composed.includeProjectContext, // layer-2 toggle (D18/D19)
-			appendSystemPrompt: composed.appendSystemPrompt, // layers 3+4
+			noContextFiles: true, // layer 2 is ours (placed in appendSystemPrompt above, D18 order)
+			appendSystemPrompt: composed.appendSystemPrompt, // layers 2+3+4, in order
 		});
 		await loader.reload();
 

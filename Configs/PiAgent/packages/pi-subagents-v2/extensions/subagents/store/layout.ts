@@ -72,6 +72,29 @@ export function mailboxDoneDirOf(mailboxDir: string): string {
 }
 
 /**
+ * <mailboxDir>/.delivering — envelopes whose digest was handed to the HOST
+ * for injection but whose durable append to the main session JSONL is not yet
+ * verified (the main-mailbox at-least-once gap). Each envelope file has a
+ * sibling meta (deliveringMetaOf) recording the target session file; the next
+ * reconciliation either finalizes to .done (digest found in the JSONL) or
+ * requeues as pending (crash lost it). Only the MAIN mailbox uses this —
+ * subagent mailboxes markDone directly after their runtime-owned append.
+ */
+export function mailboxDeliveringDirOf(mailboxDir: string): string {
+	return join(mailboxDir, ".delivering");
+}
+
+/**
+ * <deliveringEnvelopeFile>.meta — JSON `{ sessionFile, recordedAt }` naming
+ * the main session JSONL the digest for this envelope was injected into.
+ * Written BEFORE the envelope moves into .delivering/ (a crash between the
+ * two leaves the envelope pending — at-least-once, never lost).
+ */
+export function deliveringMetaOf(envelopeFile: string): string {
+	return `${envelopeFile}.meta`;
+}
+
+/**
  * <envelopeFile>.attempt — delivery-attempt marker (at-least-once): stamped
  * before the receiving turn runs, removed on markDone. An envelope whose
  * marker already exists at read time is a RE-delivery (crash between delivery
@@ -139,6 +162,8 @@ export interface Layout {
 	readonly mainMailboxDir: string;
 	/** <subagentsRoot>/.main/mailbox/.done */
 	readonly mainMailboxDoneDir: string;
+	/** <subagentsRoot>/.main/mailbox/.delivering — host-append pending verification. */
+	readonly mainMailboxDeliveringDir: string;
 	/** <subagentsRoot>/.main/escalations — pending/resolved escalation records (Phase 5, D10/D22). */
 	readonly escalationsDir: string;
 	/** <subagentsRoot>/.archive */
@@ -218,6 +243,7 @@ export function createLayout(cwd: string, options: LayoutOptions = {}): Layout {
 		teamsFile: join(subagentsRoot, "teams.json"),
 		mainMailboxDir,
 		mainMailboxDoneDir: join(mainMailboxDir, ".done"),
+		mainMailboxDeliveringDir: mailboxDeliveringDirOf(mainMailboxDir),
 		escalationsDir,
 		archiveRoot,
 

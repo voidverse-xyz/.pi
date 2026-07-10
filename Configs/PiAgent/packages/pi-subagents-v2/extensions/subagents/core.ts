@@ -12,7 +12,10 @@
  * plumbing for D16 selective auto-wake: onMainMail notification, unread
  * count (📬 widget, Phase 6), and drainMainMail() — compose the wake digest
  * over .main/mailbox/ (validating collect results against their recorded
- * schemas on the way) and mark the envelopes done.
+ * schemas on the way) and park the envelopes in .delivering/ until the
+ * injected digest is verified in the main session JSONL (reconciliation:
+ * drainMainMail finalizes in-process, reconcileMainMailFor requeues crash
+ * losses at session_start — main-mailbox at-least-once).
  *
  * Phase 4 adds the D21 rails: the consolidated settings object (autoWake,
  * maxConcurrent, maxHops, autonomousTurns, autonomousTokens — doc defaults)
@@ -41,10 +44,13 @@ import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
 import type { Envelope } from "./mail/envelope.ts";
 import {
 	beginDelivery,
+	beginHostDelivery,
+	type HostDeliveryReconcile,
 	lookupSentQuestion,
 	markDone,
 	pendingCount,
 	readPending,
+	reconcileHostDelivery,
 	takeCollectRequest,
 } from "./mail/mailbox.ts";
 import { AutonomyBudget } from "./rails/autonomy.ts";
@@ -80,6 +86,16 @@ export { defaultSettings, type SubagentsSettings } from "./store/settings.ts";
 
 /** Envelope types that auto-wake an idle main agent (D16, option c). */
 export const WAKE_WORTHY_TYPES = ["question", "escalation", "error"] as const;
+
+/**
+ * The customType (prefix) index.ts stamps on every main-mail digest message
+ * it injects into the host session ("subagent-mail" and "subagent-mail-wake"
+ * both contain it). Reconciliation uses it to recognize OUR injected digests
+ * in the main session JSONL: an envelope counts as delivered only when its id
+ * appears on a JSONL line that also carries this marker — envelope ids alone
+ * can leak into the session via tool results and must not finalize mail.
+ */
+export const MAIN_MAIL_CUSTOM_TYPE = "subagent-mail";
 
 export interface CreateCoreOptions {
 	/** Project cwd (layout scope, D3). */
@@ -195,13 +211,24 @@ export interface SubagentsCore {
 	/** True if pending main mail contains a question|escalation|error (D16). */
 	mainHasWakeWorthy(): boolean;
 	/**
-	 * Compose the main agent's wake digest over all pending mail and mark the
-	 * envelopes done; null when the mailbox is empty. Collect results are
-	 * validated against their recorded schemas and annotated (03-tool-surface).
-	 * Callers inject the digest into the host session immediately (the mail is
-	 * considered delivered once the injected message rides a host turn).
+	 * Compose the main agent's wake digest over all pending mail; null when
+	 * the mailbox is empty. Collect results are validated against their
+	 * recorded schemas and annotated (03-tool-surface). Callers inject the
+	 * digest into the host session immediately.
+	 *
+	 * Durability (02-envelope-contract at-least-once, main-mailbox variant):
+	 * pass the ACTIVE main session JSONL path (ctx.sessionManager
+	 * .getSessionFile()) and the drained envelopes are parked in
+	 * .delivering/ rather than finalized — the next drain (or the next
+	 * process's session_start via reconcileMainMailFor) verifies the injected
+	 * digest actually landed in that JSONL before moving them to .done/; a
+	 * crash before the host append requeues them instead. Every call also
+	 * finalizes previously parked envelopes whose digests are now verifiably
+	 * in the JSONL. Pass null/undefined only when no persisted session file
+	 * exists (print mode / stub hosts): the envelopes are finalized at compose
+	 * time, as nothing durable could ever verify them.
 	 */
-	drainMainMail(): string | null;
+	drainMainMail(sessionFile?: string | null): string | null;
 
 	dispose(): Promise<void>;
 }
@@ -297,7 +324,17 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 			readPending(mainMailbox).some((p) =>
 				(WAKE_WORTHY_TYPES as readonly string[]).includes(p.envelope.type),
 			),
-		drainMainMail: () => {
+		drainMainMail: (sessionFile) => {
+			// Settle earlier batches first: digests verified in their session
+			// JSONL finalize to .done/ now (the "exactly once" half of the
+			// contract); unverified ones stay in .delivering/ — in-process we
+			// never requeue (the host append may still be in flight; requeueing
+			// here could double-deliver and double-charge the D21 pool). Crash
+			// recovery requeues at session_start via reconcileMainMailFor.
+			reconcileHostDelivery(mainMailbox, {
+				marker: MAIN_MAIL_CUSTOM_TYPE,
+				requeueUndelivered: false,
+			});
 			const pending = readPending(mainMailbox);
 			if (pending.length === 0) return null;
 			const ids = pending.map((p) => p.envelope.id);
@@ -324,12 +361,20 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 				items,
 				questionLookup: (correlationId) => lookupSentQuestion(mainMailbox, correlationId),
 			});
-			// DEVIATION (documented): the main session's JSONL append is owned
-			// by the host Pi process — we cannot hook "after durable append"
-			// there, so main mail is marked done at digest composition time
-			// (injection is immediate). Subagent mailboxes keep the strict
-			// at-least-once ordering.
-			markDone(mainMailbox, ids);
+			// The host owns the main session JSONL — there is no "after durable
+			// append" hook. Instead of finalizing here (the old, lossy
+			// DEVIATION), park the envelopes in .delivering/ with the target
+			// session file on record; reconciliation (above / session_start)
+			// finalizes them once the injected digest — which embeds every
+			// envelope id — is verifiably in that JSONL, and requeues them
+			// after a crash that lost the injection. Without a persisted
+			// session file nothing could ever verify delivery, so finalize at
+			// compose time as before.
+			if (typeof sessionFile === "string" && sessionFile.length > 0) {
+				beginHostDelivery(mainMailbox, ids, sessionFile);
+			} else {
+				markDone(mainMailbox, ids);
+			}
 			return digest;
 		},
 
@@ -351,6 +396,24 @@ export function runGcSweepFor(cwd: string, home?: string): GcSweepResult {
 	const layout = createLayout(cwd, home !== undefined ? { home } : {});
 	const { settings } = loadSettings(layout);
 	return gcSweep(layout, { days: settings.archiveGcDays });
+}
+
+/**
+ * Session-start reconciliation of the main mailbox's .delivering/ state,
+ * without needing a live core (index.ts fires this before the lazy core
+ * exists). A fresh session_start is the one point where "not in the recorded
+ * session JSONL" can only mean the injection was LOST (no host append can
+ * still be in flight), so undelivered envelopes are requeued as pending —
+ * the next drain re-composes them into a fresh digest (at-least-once);
+ * verified ones finalize to .done/ (exactly once). Idempotent and cheap
+ * (one directory scan; session files read once each).
+ */
+export function reconcileMainMailFor(cwd: string, home?: string): HostDeliveryReconcile {
+	const layout = createLayout(cwd, home !== undefined ? { home } : {});
+	return reconcileHostDelivery(layout.mainMailboxDir, {
+		marker: MAIN_MAIL_CUSTOM_TYPE,
+		requeueUndelivered: true,
+	});
 }
 
 // ---------------------------------------------------------------------------

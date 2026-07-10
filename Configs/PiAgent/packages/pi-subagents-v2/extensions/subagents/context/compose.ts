@@ -3,8 +3,9 @@
  *
  * D18's six fixed layers, and who owns each:
  *   1. Pi base            — createAgentSession's own system prompt (tools, cwd)
- *   2. Project context    — AGENTS.md et al; toggled here via projectContext,
- *                           loaded by the runtime's resource loader
+ *   2. Project context    — AGENTS.md et al; toggled by the type's
+ *                           projectContext flag, loaded by the runtime (SDK
+ *                           loadProjectContextFiles) and formatted+placed here
  *   3. Type body          — role prose from the type .md (live-resolved, D6)
  *   4. Runtime identity   — deterministic block composed here: address,
  *                           purview, team roster WITH purviews, comm powers,
@@ -12,17 +13,23 @@
  *   5. Own session history— the persistent Pi-native JSONL (runtime)
  *   6. Per-turn input     — task / wake digest (runtime, Phase 3)
  *
- * This module owns layers 3+4 (as append-system-prompt segments) and the
- * layer-2 decision flag. Deliberately NOT composed here: the main agent's
- * conversation ("context by briefing, not osmosis"), other agents'
- * transcripts, mail not addressed to the agent.
+ * This module owns layers 2+3+4 as ORDERED append-system-prompt segments.
+ * Deliberately NOT composed here: the main agent's conversation ("context by
+ * briefing, not osmosis"), other agents' transcripts, mail not addressed to
+ * the agent.
  *
- * // DEVIATION: Pi's buildSystemPrompt places appendSystemPrompt segments
- * (layers 3+4) BEFORE the <project_context> block (layer 2) in the final
- * prompt text, so the effective order is 1,3,4,2 — all D18 layers are present
- * but the 2↔3 order is fixed by the SDK and not overridable without
- * reimplementing Pi's base prompt (which would break layer 1's "evolves with
- * Pi for free" property).
+ * Layer-2 placement (D18 order, was a DEVIATION — now fixed): Pi's
+ * buildSystemPrompt hardcodes base → appendSystemPrompt → <project_context>,
+ * i.e. 1,3,4,2. So we never let the SDK append its own project context
+ * (runtime sets noContextFiles: true unconditionally); instead the runtime
+ * loads the resolved context files via the SDK's exported
+ * loadProjectContextFiles (same discovery rules as Pi itself) and passes them
+ * in, and formatProjectContext() below wraps them in the byte-identical
+ * <project_context>/<project_instructions path=...> markup that
+ * core/system-prompt.js would have emitted, placed as the FIRST append
+ * segment — giving base(1) → project(2) → type body(3) → identity(4).
+ * Trade-off: we depend on the SDK's loadProjectContextFiles API and replicate
+ * its wrapper format verbatim; if either changes upstream, update here.
  *
  * Pure module: values in, strings out. No fs, no runtime imports.
  */
@@ -142,26 +149,65 @@ export function composeIdentityBlock(options: IdentityOptions): string {
 }
 
 // ---------------------------------------------------------------------------
+// Project context block (layer 2)
+// ---------------------------------------------------------------------------
+
+/** One resolved project context file (AGENTS.md et al), as the SDK's loadProjectContextFiles returns them. */
+export interface ProjectContextFile {
+	path: string;
+	content: string;
+}
+
+/**
+ * Layer 2: wrap resolved project context files in the EXACT markup Pi's own
+ * core/system-prompt.js emits (copied verbatim), so the agent sees
+ * byte-identical project context to a plain Pi session — only the placement
+ * differs (before layers 3+4, per D18). Returns "" when there are no files.
+ */
+export function formatProjectContext(files: ProjectContextFile[]): string {
+	if (files.length === 0) return "";
+	let block = "<project_context>\n\n";
+	block += "Project-specific instructions and guidelines:\n\n";
+	for (const { path: filePath, content } of files) {
+		block += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
+	}
+	block += "</project_context>";
+	return block;
+}
+
+// ---------------------------------------------------------------------------
 // Full composition
 // ---------------------------------------------------------------------------
 
 export interface ComposedContext {
-	/** Layer-2 toggle: whether the runtime should load AGENTS.md et al (D18/D19). */
-	includeProjectContext: boolean;
 	/**
-	 * Append-system-prompt segments in order: [layer 3 type body, layer 4
-	 * identity block]. Pi joins them with blank lines after its base prompt.
+	 * Append-system-prompt segments in D18 order: [layer 2 project context
+	 * (when enabled and non-empty), layer 3 type body, layer 4 identity
+	 * block]. Pi joins them with blank lines after its base prompt.
 	 */
 	appendSystemPrompt: string[];
 }
 
-/** Compose everything this module owns for one agent instance wake. */
-export function composeContext(def: TypeDefinition, identity: IdentityOptions): ComposedContext {
+/**
+ * Compose everything this module owns for one agent instance wake.
+ *
+ * `projectContextFiles` are the runtime-loaded AGENTS.md et al (SDK
+ * loadProjectContextFiles); pass them only when the type's projectContext
+ * flag is on — this stays a pure function, the fs work lives in the runtime.
+ * The def's projectContext flag is still honored here as a belt-and-braces
+ * gate: files passed for a projectContext:false type are ignored.
+ */
+export function composeContext(
+	def: TypeDefinition,
+	identity: IdentityOptions,
+	projectContextFiles: ProjectContextFile[] = [],
+): ComposedContext {
 	const segments: string[] = [];
+	if (def.config.projectContext) {
+		const projectBlock = formatProjectContext(projectContextFiles);
+		if (projectBlock.length > 0) segments.push(projectBlock);
+	}
 	if (def.body.trim().length > 0) segments.push(def.body.trim());
 	segments.push(composeIdentityBlock(identity));
-	return {
-		includeProjectContext: def.config.projectContext,
-		appendSystemPrompt: segments,
-	};
+	return { appendSystemPrompt: segments };
 }

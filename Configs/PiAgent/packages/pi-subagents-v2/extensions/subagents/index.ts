@@ -25,6 +25,12 @@
  *    and triggerTurn genuinely starts a new main-agent turn.
  *  - Plain reports queue silently; core.mainUnreadCount() feeds the Phase 6
  *    widget. settings.autoWake=false drops to fully-manual queueing.
+ *  - Main-mail durability (at-least-once): every drain passes the ACTIVE main
+ *    session JSONL path (ctx.sessionManager.getSessionFile(), captured into
+ *    `sessionMgr` from event contexts) so core parks drained envelopes in
+ *    .delivering/ instead of finalizing at compose time; session_start runs
+ *    reconcileMainMailFor — digests verified in the recorded JSONL finalize,
+ *    injections lost to a crash are requeued (and re-auto-woken in TUI).
  *
  * D21 rails (Phase 4) — this file owns the MAIN-side half of the shared
  * autonomy pool (core.autonomy; the runtime meters subagent turns itself):
@@ -56,7 +62,14 @@
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createCore, runGcSweepFor, type SubagentsCore, WAKE_WORTHY_TYPES } from "./core.ts";
+import {
+	createCore,
+	MAIN_MAIL_CUSTOM_TYPE,
+	reconcileMainMailFor,
+	runGcSweepFor,
+	type SubagentsCore,
+	WAKE_WORTHY_TYPES,
+} from "./core.ts";
 import {
 	createCollectTool,
 	createInterruptTool,
@@ -71,7 +84,10 @@ import { createPicker, type PickerResult } from "./tui/picker.ts";
 import { createViewer, type ViewerOptions, type ViewerResult } from "./tui/viewer.ts";
 import { createWidgetController, renderWidgetLines, type WidgetController } from "./tui/widget.ts";
 
-const MAIL_CUSTOM_TYPE = "subagent-mail";
+// The digest-message customType prefix ("subagent-mail" / "subagent-mail-wake").
+// Lives in core.ts because reconciliation greps the main session JSONL for it
+// to verify a digest actually landed (main-mailbox at-least-once).
+const MAIL_CUSTOM_TYPE = MAIN_MAIL_CUSTOM_TYPE;
 const WAKE_TRIGGER_TEXT =
 	"[subagent mail] Wake-worthy subagent mail (question/escalation/error) arrived — the digest follows.";
 const WIDGET_KEY = "subagents";
@@ -84,6 +100,17 @@ export default function (pi: ExtensionAPI) {
 	let autoWokenTurn = false;
 	/** Last UI-capable context seen (event handlers get no ctx from runtime events). */
 	let uiCtx: ExtensionContext | undefined;
+	/**
+	 * The host session manager, captured from event contexts so triggerWake
+	 * (called from runtime callbacks that carry no ctx) can name the ACTIVE
+	 * main session JSONL when draining — the target reconciliation later
+	 * verifies against (main-mailbox at-least-once). Optional-chained
+	 * everywhere: harness stubs may omit it, and a non-persisted session has
+	 * no file (getSessionFile() undefined) — both fall back to the
+	 * finalize-at-compose-time path.
+	 */
+	let sessionMgr: ExtensionContext["sessionManager"] | undefined;
+	const currentSessionFile = (): string | null => sessionMgr?.getSessionFile?.() ?? null;
 	/** One TUI surface at a time (picker/viewer/modal never stack). */
 	let overlayOpen = false;
 	/** An escalation arrived while an overlay was open — retry when it closes. */
@@ -137,7 +164,7 @@ export default function (pi: ExtensionAPI) {
 	const triggerWake = (): void => {
 		const current = core;
 		if (!current) return;
-		const digest = current.drainMainMail();
+		const digest = current.drainMainMail(currentSessionFile());
 		if (digest === null) return; // raced — someone else drained the box
 		mainBusy = true; // suppress double-triggers until agent_start lands
 		// D21: an auto-woken main turn is autonomous — it consumes a pool turn
@@ -438,7 +465,8 @@ export default function (pi: ExtensionAPI) {
 	// quietly-queued reports, D16) into one digest injected at turn start.
 	// Auto-woken turns never reach this hook — they carry their digest inline
 	// in the trigger message (see triggerWake).
-	pi.on("before_agent_start", async () => {
+	pi.on("before_agent_start", async (_event, ctx) => {
+		sessionMgr = ctx?.sessionManager ?? sessionMgr;
 		if (!core) return;
 		// Phase 7: settings files are re-read at every real user turn — edits
 		// to ~/.pi/agent/subagents.json / <project>/.pi/subagents.json apply
@@ -450,7 +478,7 @@ export default function (pi: ExtensionAPI) {
 		// drains the queued mailboxes.
 		autoWokenTurn = false;
 		core.autonomy.reset();
-		const digest = core.drainMainMail();
+		const digest = core.drainMainMail(currentSessionFile());
 		if (digest === null) return;
 		return { message: { customType: MAIL_CUSTOM_TYPE, content: digest, display: true } };
 	});
@@ -486,7 +514,8 @@ export default function (pi: ExtensionAPI) {
 	// mainBusy stays true through the agent_end→agent_settled gap so onMainMail
 	// can never steer a wake into a run that is still settling.
 	// A paused system starts no auto-wake turns (D21).
-	pi.on("agent_settled", async () => {
+	pi.on("agent_settled", async (_event, ctx) => {
+		sessionMgr = ctx?.sessionManager ?? sessionMgr;
 		mainBusy = false;
 		if (core?.settings.autoWake && !core.autonomy.paused && core.mainHasWakeWorthy()) triggerWake();
 	});
@@ -499,10 +528,33 @@ export default function (pi: ExtensionAPI) {
 		autoWokenTurn = false;
 		await releaseCore();
 		uiCtx = ctx;
+		sessionMgr = ctx.sessionManager ?? sessionMgr;
+		// Main-mailbox crash recovery (at-least-once): settle .delivering/
+		// against the recorded session JSONLs BEFORE the widget reads unread
+		// counts. Verified digests finalize to .done/; injections a crashed
+		// process never appended are requeued as pending — re-composed into a
+		// fresh digest at the next drain (a re-delivered escalation surfaces
+		// again instead of silently stranding its subagent in `waiting`).
+		let requeued = 0;
+		try {
+			requeued = reconcileMainMailFor(ctx.cwd).requeued.length;
+		} catch {
+			// Reconciliation must never break a session start.
+		}
 		// TUI sessions get the ambient widget up front (it must show queued
 		// mail from PREVIOUS sessions before any tool call re-creates the
 		// core); headless modes stay fully lazy as before.
 		if (ctx.hasUI) installWidget(ctx);
+		// Crash-requeued wake-worthy mail gets its D16 auto-wake back right
+		// away in TUI sessions (installWidget already built the core there;
+		// headless stays lazy — the next real user turn's before_agent_start
+		// digest picks the mail up instead). Normal D21 gates apply.
+		if (requeued > 0 && ctx.hasUI && core) {
+			const current = core;
+			if (current.settings.autoWake && !current.autonomy.paused && !mainBusy && current.mainHasWakeWorthy()) {
+				triggerWake();
+			}
+		}
 		// Phase 7 retention GC: archive funerals, processed .done/ mail, and
 		// resolved escalation records past archiveGcDays (default 7). Cheap
 		// directory scans, off the session-start path (unref'd — a short-lived

@@ -247,5 +247,178 @@ console.log("(4) resume drain respects lifecycle state (m2):");
 	await runtime.dispose();
 }
 
+// ---------------------------------------------------------------------------
+// (5) Main-mail durability (core level): crash-before-host-append re-delivers;
+//     verified append finalizes exactly once. (Closes the old documented
+//     DEVIATION: drainMainMail used to markDone at digest-compose time, so a
+//     crash between compose and the host's JSONL append LOST the mail — worst
+//     case a dropped escalation stranding its subagent in `waiting` forever.)
+// ---------------------------------------------------------------------------
+console.log("(5) main-mail durability (core):");
+{
+	const { createCore, reconcileMainMailFor } = await jiti.import(join(EXT, "core.ts"));
+	const projectM = join(scratch, "project-mainmail");
+	mkdirSync(projectM, { recursive: true });
+	const layoutM = createLayout(projectM, { home });
+	// The "main session JSONL" the host owns; the extension only reads it.
+	const sessionFile = join(home, ".pi", "agent", "sessions", "fake-main-session.jsonl");
+	mkdirSync(join(home, ".pi", "agent", "sessions"), { recursive: true });
+	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 1 })}\n`);
+	// What the host would durably append for an injected digest message.
+	const hostAppend = (customType, content) => {
+		writeFileSync(sessionFile, `${JSON.stringify({ type: "custom-message", customType, content })}\n`, { flag: "a" });
+	};
+
+	// --- crash path: composed, parked, never appended → re-delivered ---------
+	const esc = makeEnvelope({
+		from: "worker/alpha", to: "main", type: "escalation",
+		text: "Blocked: need human approval for `rm -rf build/` ESC_MARKER",
+	});
+	mailbox.writeEnvelope(layoutM.mainMailboxDir, esc);
+	const core1 = createCore({ cwd: projectM, home, settings: {} });
+	const digest1 = core1.drainMainMail(sessionFile);
+	assert.ok(digest1.includes("ESC_MARKER") && digest1.includes(esc.id), "digest composed with the envelope id embedded");
+	assert.equal(mailbox.pendingCount(layoutM.mainMailboxDir), 0, "drained mail no longer pending");
+	assert.ok(!existsSync(join(layoutM.mainMailboxDoneDir, `${esc.id}.json`)), "NOT finalized at compose time");
+	assert.ok(existsSync(join(layoutM.mainMailboxDeliveringDir, `${esc.id}.json`)), "parked in .delivering/ awaiting the host append");
+	assert.ok(existsSync(join(layoutM.mainMailboxDeliveringDir, `${esc.id}.json.meta`)), "target session file on record");
+	ok("drain parks envelopes in .delivering/ instead of finalizing (host append unverified)");
+
+	// In the SAME process an unverified envelope is in flight, never re-queued —
+	// a drain loop can't double-deliver it (and can't double-charge the D21 pool).
+	assert.equal(core1.drainMainMail(sessionFile), null, "no re-delivery while the injection may be in flight");
+	assert.ok(existsSync(join(layoutM.mainMailboxDeliveringDir, `${esc.id}.json`)), "still parked");
+	ok("in-process re-drain leaves in-flight envelopes alone (no double delivery)");
+
+	// CRASH: host dies before appending the injected digest. Restart:
+	await core1.dispose();
+	const rec = reconcileMainMailFor(projectM, home);
+	assert.deepEqual(rec, { finalized: [], requeued: [esc.id], inFlight: [] }, "session_start reconcile detects the loss");
+	assert.equal(mailbox.pendingCount(layoutM.mainMailboxDir), 1, "escalation back in the pending mailbox");
+	const core2 = createCore({ cwd: projectM, home, settings: {} });
+	const digest2 = core2.drainMainMail(sessionFile);
+	assert.ok(digest2.includes("ESC_MARKER"), "escalation re-delivered after the crash (was: silently lost)");
+	assert.match(digest2, /re-delivered: an earlier delivery attempt did not complete/, "re-delivery labeled in the digest");
+	ok("crash before the host append RE-DELIVERS the escalation on restart (at-least-once)");
+
+	// --- no-crash path: host appends → next opportunity finalizes exactly once
+	hostAppend("subagent-mail", digest2);
+	assert.equal(core2.drainMainMail(sessionFile), null, "nothing pending after the verified delivery");
+	assert.ok(existsSync(join(layoutM.mainMailboxDoneDir, `${esc.id}.json`)), "finalized to .done/ once verified in the JSONL");
+	assert.ok(!existsSync(join(layoutM.mainMailboxDeliveringDir, `${esc.id}.json`)), ".delivering/ cleared");
+	assert.equal(mailbox.pendingCount(layoutM.mainMailboxDir), 0);
+	// Idempotent: neither reconcile flavor resurrects mail the agent has seen.
+	assert.deepEqual(reconcileMainMailFor(projectM, home), { finalized: [], requeued: [], inFlight: [] });
+	assert.equal(core2.drainMainMail(sessionFile), null, "finalized exactly once — never re-delivered");
+	ok("verified host append finalizes exactly once; reconciliation never resurrects seen mail");
+
+	// --- no verifiable target (stub host / non-persisted session) ------------
+	const plain = makeEnvelope({ from: "worker/alpha", to: "main", type: "report", text: "PLAIN_MARKER" });
+	mailbox.writeEnvelope(layoutM.mainMailboxDir, plain);
+	const digest3 = core2.drainMainMail(null);
+	assert.ok(digest3.includes("PLAIN_MARKER"));
+	assert.ok(existsSync(join(layoutM.mainMailboxDoneDir, `${plain.id}.json`)), "no session file → finalize at compose time (old behavior)");
+	ok("null session file falls back to compose-time finalize (nothing durable to verify against)");
+	await core2.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// (6) Main-mail durability (index.ts wiring): the session file reaches drains
+//     via ctx.sessionManager.getSessionFile(); session_start reconciles and
+//     re-auto-wakes crash-lost wake-worthy mail; no wake loop afterwards.
+// ---------------------------------------------------------------------------
+console.log("(6) main-mail durability (host wiring):");
+{
+	const extensionFactory = (await jiti.import(join(EXT, "index.ts"))).default ?? (await jiti.import(join(EXT, "index.ts")));
+	const projectW = join(scratch, "project-mainmail-wiring");
+	mkdirSync(projectW, { recursive: true });
+	const layoutW = createLayout(projectW, { home });
+	const sessionFile = join(home, ".pi", "agent", "sessions", "fake-wiring-session.jsonl");
+	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 1 })}\n`);
+	const prevHome = process.env.HOME;
+	process.env.HOME = home; // index.ts derives the layout home from os.homedir()
+
+	const handlers = {};
+	const sentMessages = [];
+	const stubPi = {
+		isStreaming: false,
+		on: (event, handler) => (handlers[event] ??= []).push(handler),
+		registerTool: () => {},
+		registerCommand: () => {},
+		registerShortcut: () => {},
+		sendMessage: (message, options) => {
+			const mode =
+				options?.deliverAs === "nextTurn" ? "nextTurn"
+				: stubPi.isStreaming ? (options?.deliverAs === "followUp" ? "followUp" : "steer")
+				: options?.triggerTurn ? "newTurn"
+				: "append";
+			sentMessages.push({ message, options, mode });
+		},
+	};
+	extensionFactory(stubPi);
+	// hasUI so session_start builds the core (widget install path) — the
+	// crash-requeued wake-worthy mail must get its D16 auto-wake back.
+	const ctx = {
+		cwd: projectW,
+		modelRegistry,
+		hasUI: true,
+		ui: { setWidget: () => {}, notify: () => {} },
+		sessionManager: { getSessionFile: () => sessionFile },
+	};
+	const fire = async (event) => {
+		for (const h of handlers[event] ?? []) await h({ type: event }, ctx);
+	};
+	const hostAppend = (message) => {
+		writeFileSync(sessionFile, `${JSON.stringify({ type: "custom-message", customType: message.customType, content: message.content })}\n`, { flag: "a" });
+	};
+
+	await fire("session_start"); // clean start — nothing to reconcile
+	assert.equal(sentMessages.length, 0);
+
+	// A subagent escalation lands; a real user turn drains it into the digest.
+	const esc = makeEnvelope({ from: "worker/alpha", to: "main", type: "escalation", text: "approve the deploy? WIRE_ESC_MARKER" });
+	mailbox.writeEnvelope(layoutW.mainMailboxDir, esc);
+	const injected = await handlers.before_agent_start[0]({ type: "before_agent_start" }, ctx);
+	assert.match(injected.message.content, /WIRE_ESC_MARKER/, "user-turn digest drained the escalation");
+	assert.ok(existsSync(join(layoutW.mainMailboxDeliveringDir, `${esc.id}.json`)), "parked against the ACTIVE session file (ctx.sessionManager)");
+	// CRASH before the host appended `injected.message` — nothing written.
+	await fire("session_shutdown");
+
+	// Restart: session_start reconciles, requeues, and re-auto-wakes (D16).
+	await fire("session_start");
+	assert.equal(sentMessages.length, 1, "crash-lost escalation re-auto-woken at session_start");
+	const wake = sentMessages[0];
+	assert.equal(wake.mode, "newTurn");
+	assert.equal(wake.options.triggerTurn, true);
+	assert.match(wake.message.customType, /subagent-mail/);
+	assert.match(wake.message.content, /WIRE_ESC_MARKER/, "fresh digest carries the escalation");
+	assert.match(wake.message.content, /re-delivered: an earlier delivery attempt did not complete/, "labeled as a re-delivery");
+	ok("crash-lost escalation is re-delivered AND re-auto-woken on restart (was: lost, subagent stranded)");
+
+	// No wake loop while the new injection is unverified: boundary re-checks
+	// find nothing pending (envelope is in .delivering) → no extra pool charge.
+	await fire("agent_settled");
+	await fire("agent_settled");
+	assert.equal(sentMessages.length, 1, "no self-wake loop / no repeated pool charge while in flight");
+	ok("unverified re-delivery never re-wakes in-process (D21 pool charged once per actual wake)");
+
+	// The host now durably appends the wake message; the next user turn
+	// finalizes — exactly once, no duplicate digest.
+	hostAppend(wake.message);
+	const second = await handlers.before_agent_start[0]({ type: "before_agent_start" }, ctx);
+	assert.equal(second, undefined, "no duplicate delivery once the append is verified");
+	assert.ok(existsSync(join(layoutW.mainMailboxDoneDir, `${esc.id}.json`)), "finalized to .done/");
+	assert.ok(!existsSync(join(layoutW.mainMailboxDeliveringDir, `${esc.id}.json`)));
+	assert.equal(mailbox.pendingCount(layoutW.mainMailboxDir), 0);
+	// And another restart resurrects nothing.
+	await fire("session_shutdown");
+	await fire("session_start");
+	assert.equal(sentMessages.length, 1, "restart after verified delivery re-delivers nothing");
+	ok("verified delivery finalizes exactly once; restarts never resurrect seen mail");
+
+	await fire("session_shutdown");
+	process.env.HOME = prevHome;
+}
+
 console.log(`\nall ${passed} runtime-fixes regression tests passed`);
 process.exit(0);
