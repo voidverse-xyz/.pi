@@ -238,6 +238,44 @@ await test("redelivered mail is labeled; notes and roster lines render", async (
 	assert.match(digest, /\[collect result — conforms/);
 	assert.match(digest, /## Roster changes\n\n- worker\/gamma joined team duo/);
 });
+await test("report data renders as a fenced JSON block (with verdict note as caption)", async () => {
+	const r = env({ from: "worker/alpha", type: "report", text: "collect result ready", data: { answer: 42, label: "DISTINCTIVE_VALUE" } });
+	const digest = composeWakeDigest({
+		items: [{ envelope: r, redelivered: false, note: "[collect result — conforms to the requested schema]" }],
+		questionLookup: () => undefined,
+	});
+	assert.match(digest, /   Data:/, "labeled data block");
+	assert.match(digest, /```json/, "fenced json block");
+	assert.match(digest, /"answer": 42/, "actual JSON data rendered");
+	assert.match(digest, /DISTINCTIVE_VALUE/, "distinctive value from the returned data appears");
+	assert.match(digest, /\[collect result — conforms/, "verdict note still shown as caption");
+});
+await test("collect REQUEST still renders the recipe, not a data block", async () => {
+	const req = env({ from: "main", type: "message", text: "Collect request", data: { collectSchema: { type: "object" } } });
+	const digest = composeWakeDigest({ items: [{ envelope: req, redelivered: false }], questionLookup: () => undefined });
+	assert.match(digest, /To fulfill this collect request/, "recipe rendered for the request direction");
+	assert.doesNotMatch(digest, /   Data:/, "request schema is not rendered as a result data block");
+});
+await test("oversized report data is truncated with an explicit marker", async () => {
+	const big = "x".repeat(6000);
+	const r = env({ from: "worker/alpha", type: "report", text: "big", data: { blob: big } });
+	const digest = composeWakeDigest({ items: [{ envelope: r, redelivered: false }], questionLookup: () => undefined });
+	assert.match(digest, /truncated at 4000 chars — the full value is in the report envelope/, "truncation marker present");
+	assert.ok(digest.length < 6000 + 500, "digest bounded well under the raw payload size");
+});
+await test("non-serializable report data does not throw and yields a placeholder", async () => {
+	const circular = {};
+	circular.self = circular;
+	const r = env({ from: "worker/alpha", type: "report", text: "bad", data: circular });
+	let digest;
+	assert.doesNotThrow(() => { digest = composeWakeDigest({ items: [{ envelope: r, redelivered: false }], questionLookup: () => undefined }); });
+	assert.match(digest, /\(unserializable data\)/, "placeholder rendered for circular data");
+});
+await test("absent report data renders no extra data block", async () => {
+	const r = env({ from: "worker/alpha", type: "report", text: "no data here" });
+	const digest = composeWakeDigest({ items: [{ envelope: r, redelivered: false }], questionLookup: () => undefined });
+	assert.doesNotMatch(digest, /   Data:/, "no empty data block when payload.data is absent");
+});
 await test("digest is deterministic (same inputs → same string)", async () => {
 	const m = env({ text: "x" });
 	const opts = { items: [{ envelope: m, redelivered: false }], questionLookup: () => undefined };

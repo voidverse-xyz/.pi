@@ -478,6 +478,10 @@ await test("5. collect with schema → report validated on drain (digest note)",
 	assert.ok(digest, "user turn drained the quiet queue (autoWake:false)");
 	assert.match(digest, /RUNNER_FINAL_RESULT/, "oneshot final report rode the same digest");
 	assert.match(digest, /\[collect result — conforms to the requested schema\]/);
+	// The digest must surface the ACTUAL JSON data the main agent collected —
+	// not merely the schema verdict — so the requested values are readable.
+	assert.match(digest, /"status": "ok"/, "collected JSON data rendered in the digest");
+	assert.match(digest, /"files": 2/, "distinctive collected value present in the digest");
 });
 
 let escalationEnvelopeId;

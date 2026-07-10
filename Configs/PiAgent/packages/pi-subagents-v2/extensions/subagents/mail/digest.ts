@@ -49,6 +49,42 @@ function quote(text: string): string {
 const REDELIVERY_LABEL =
 	"(re-delivered: an earlier delivery attempt did not complete — you may have seen this before)";
 
+// Character cap for the inline structured-data block. The digest is injected
+// into the main session as a wake message, so an unbounded JSON dump (a huge
+// collect result) could crowd the context window. We render up to this many
+// characters and note that the full value lives in the report envelope on disk.
+// 4000 chars keeps a rich result visible while staying bounded and deterministic.
+const MAX_DATA_CHARS = 4000;
+
+/**
+ * Render an envelope's structured `payload.data` as a fenced JSON block. PURE
+ * and SAFE: never throws — a non-serializable value (circular refs, BigInt)
+ * yields a short placeholder instead of propagating out of this composer.
+ * BOUNDED: output is truncated to MAX_DATA_CHARS with an explicit marker.
+ */
+function formatDataBlock(data: unknown): string {
+	let serialized: string;
+	try {
+		serialized = JSON.stringify(data, null, 2);
+	} catch {
+		return "   Data: (unserializable data)";
+	}
+	// JSON.stringify returns undefined for values like a bare `undefined` or a
+	// function; treat that the same as "nothing to render" would elsewhere.
+	if (serialized === undefined) return "   Data: (unserializable data)";
+	const lines: string[] = ["   Data:", "```json"];
+	if (serialized.length > MAX_DATA_CHARS) {
+		lines.push(serialized.slice(0, MAX_DATA_CHARS));
+		lines.push(
+			`… [truncated at ${MAX_DATA_CHARS} chars — the full value is in the report envelope]`,
+		);
+	} else {
+		lines.push(serialized);
+	}
+	lines.push("```");
+	return lines.join("\n");
+}
+
 function byId(a: DigestItem, b: DigestItem): number {
 	return a.envelope.id < b.envelope.id ? -1 : a.envelope.id > b.envelope.id ? 1 : 0;
 }
@@ -68,11 +104,18 @@ function formatItem(item: DigestItem, index: number): string {
 	// out the fulfillment recipe so the recipient never has to connect "THIS
 	// message" to the (msg_...) header on its own.
 	const data = envelope.payload.data;
-	if (typeof data === "object" && data !== null && "collectSchema" in data) {
+	const isCollectRequest = typeof data === "object" && data !== null && "collectSchema" in data;
+	if (isCollectRequest) {
 		lines.push(
 			"   To fulfill this collect request, call the `report` tool with `data` conforming " +
 				`to the schema above and correlationId "${envelope.id}".`,
 		);
+	} else if (data !== undefined) {
+		// Structured result carried by a non-request envelope (e.g. a collect
+		// RESULT report): render the actual JSON the main agent asked for, so it
+		// sees the data — not just the schema verdict (item.note reads as its
+		// caption below).
+		lines.push(formatDataBlock(data));
 	}
 	if (item.note !== undefined) lines.push(`   ${item.note}`);
 	if (item.redelivered) lines.push(`   ${REDELIVERY_LABEL}`);
