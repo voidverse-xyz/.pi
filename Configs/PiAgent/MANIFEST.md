@@ -20,6 +20,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-questions` | LLM-callable `ask_user` TUI questions |
 | `pi-queue` | Managed, session-persistent steer/follow-up messages with `/queue` |
 | `pi-run-guard` | Confirmation before interrupting an active run |
+| `pi-safety` | Main-agent Bash confirmation modes and privacy-preserving `/safety-log` |
 | `pi-session-name` | Session naming commands |
 | `pi-show-files` | LLM-callable `show_files` curated file browser |
 | `pi-status-line` | Two-line footer and shared extension statuses |

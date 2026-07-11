@@ -1,0 +1,194 @@
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import {
+	getAgentDir,
+	isToolCallEventType,
+	type ExtensionAPI,
+	type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import { AUDIT_PATH, auditLog, readRecentEntries } from "./audit.ts";
+import { CATEGORY_META, type Category, classifyCommand } from "./categories.ts";
+import { confirmGatedCommand } from "./confirm.ts";
+
+export type SafetyMode = "off" | "on" | "max";
+
+const MODES: SafetyMode[] = ["off", "on", "max"];
+const DEFAULT_MODE: SafetyMode = "max";
+const STATUS_KEY = "safety";
+const CONFIG_PATH = join(getAgentDir(), "safety.json");
+const MAX_CLASSIFIED_COMMAND_LENGTH = 256 * 1024;
+
+const MODE_CATEGORIES: Record<SafetyMode, ReadonlySet<Category>> = {
+	off: new Set(),
+	on: new Set<Category>(["destructive"]),
+	max: new Set<Category>(["destructive", "network", "exec", "other"]),
+};
+
+function isMode(value: unknown): value is SafetyMode {
+	return typeof value === "string" && MODES.includes(value as SafetyMode);
+}
+
+function loadMode(): { mode: SafetyMode; warning?: string } {
+	try {
+		const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as { mode?: unknown };
+		if (isMode(raw?.mode)) return { mode: raw.mode };
+		return { mode: DEFAULT_MODE, warning: `Invalid safety mode in ${CONFIG_PATH}; using ${DEFAULT_MODE}` };
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { mode: DEFAULT_MODE };
+		return { mode: DEFAULT_MODE, warning: `Could not read ${CONFIG_PATH}; using ${DEFAULT_MODE}` };
+	}
+}
+
+function saveMode(mode: SafetyMode): string | null {
+	const temp = `${CONFIG_PATH}.tmp-${process.pid}-${randomUUID()}`;
+	try {
+		mkdirSync(dirname(CONFIG_PATH), { recursive: true });
+		writeFileSync(temp, `${JSON.stringify({ mode }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+		renameSync(temp, CONFIG_PATH);
+		return null;
+	} catch (error) {
+		if (existsSync(temp)) {
+			try {
+				unlinkSync(temp);
+			} catch {
+				// Best effort cleanup.
+			}
+		}
+		return error instanceof Error ? error.message : String(error);
+	}
+}
+
+function updateStatus(ctx: ExtensionContext, mode: SafetyMode): void {
+	if (ctx.mode !== "tui") return;
+	const color = mode === "max" ? "success" : mode === "on" ? "warning" : "error";
+	ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(color, `safety:${mode}`));
+}
+
+export default function safetyExtension(pi: ExtensionAPI): void {
+	let currentMode = loadMode().mode;
+	let confirmationTail: Promise<void> = Promise.resolve();
+
+	async function confirmSerial(ctx: ExtensionContext, category: Category, command: string): Promise<boolean> {
+		const previous = confirmationTail;
+		let release!: () => void;
+		confirmationTail = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		await previous;
+		try {
+			return await confirmGatedCommand(ctx, category, command);
+		} finally {
+			release();
+		}
+	}
+
+	pi.on("tool_call", async (event, ctx) => {
+		if (!isToolCallEventType("bash", event)) return;
+		const command = event.input.command;
+		if (typeof command !== "string" || !command.trim()) return;
+
+		const category = command.length > MAX_CLASSIFIED_COMMAND_LENGTH ? "destructive" : classifyCommand(command);
+		if (!category) {
+			auditLog({ rawCommand: command, category: "read-only", mode: currentMode, decision: "auto-allowed", source: "auto" });
+			return;
+		}
+		if (!MODE_CATEGORIES[currentMode].has(category)) {
+			auditLog({ rawCommand: command, category, mode: currentMode, decision: "auto-allowed", source: "auto" });
+			return;
+		}
+
+		if (!ctx.hasUI) {
+			auditLog({ rawCommand: command, category, mode: currentMode, decision: "denied", source: "auto" });
+			return {
+				block: true,
+				reason: `pi-safety blocked a ${category} command because no confirmation UI is available`,
+			};
+		}
+
+		let approved: boolean;
+		try {
+			approved = await confirmSerial(ctx, category, command);
+		} catch (error) {
+			auditLog({ rawCommand: command, category, mode: currentMode, decision: "denied", source: "auto" });
+			ctx.ui.notify("Safety confirmation failed; command blocked", "error");
+			return {
+				block: true,
+				reason: `pi-safety confirmation failed: ${error instanceof Error ? error.message : String(error)}`,
+			};
+		}
+		auditLog({ rawCommand: command, category, mode: currentMode, decision: approved ? "approved" : "denied", source: "user" });
+		if (approved) return;
+		ctx.ui.notify(`Blocked ${CATEGORY_META[category].label.toLowerCase()} command`, "warning");
+		return { block: true, reason: `Blocked by pi-safety (${category}; declined by user)` };
+	});
+
+	pi.registerCommand("safety", {
+		description: "Set main-agent Bash safety: off | on | max",
+		getArgumentCompletions: (prefix) => {
+			const items = MODES.filter((mode) => mode.startsWith(prefix)).map((mode) => ({
+				value: mode,
+				label: `${mode}${mode === currentMode ? " (current)" : ""}`,
+			}));
+			return items.length ? items : null;
+		},
+		handler: async (args, ctx) => {
+			const arg = args.trim().toLowerCase();
+			if (!arg) {
+				ctx.ui.notify(
+					[
+						`Main-agent Bash safety: ${currentMode}`,
+						"  max — confirm everything except commands proven read-only",
+						"  on  — confirm destructive commands only",
+						"  off — do not confirm",
+						"Usage: /safety <off|on|max>",
+					].join("\n"),
+					"info",
+				);
+				return;
+			}
+			if (!isMode(arg)) {
+				ctx.ui.notify(`Unknown mode "${arg}". Use: off | on | max`, "error");
+				return;
+			}
+			currentMode = arg;
+			const saveError = saveMode(arg);
+			updateStatus(ctx, currentMode);
+			ctx.ui.notify(
+				saveError ? `Bash safety is ${arg} for this process, but could not save it: ${saveError}` : `Main-agent Bash safety: ${arg}`,
+				saveError ? "warning" : "info",
+			);
+		},
+	});
+
+	pi.registerCommand("safety-log", {
+		description: "Show recent pi-safety decisions (arguments are never logged)",
+		handler: async (args, ctx) => {
+			if (args.trim()) {
+				ctx.ui.notify("Usage: /safety-log", "error");
+				return;
+			}
+			const entries = readRecentEntries(20);
+			if (!entries.length) {
+				ctx.ui.notify(`No safety decisions yet.\nLog: ${AUDIT_PATH}`, "info");
+				return;
+			}
+			const lines = entries.map((entry) => {
+				const timestamp = entry.ts.replace("T", " ").replace(/\.\d+Z?$/, "");
+				return `${timestamp}  ${entry.decision.padEnd(12)} ${entry.category}/${entry.mode}  ${entry.command}  #${entry.commandHash}`;
+			});
+			lines.push("", `Log: ${AUDIT_PATH} (arguments omitted; rotates at 1 MiB)`);
+			ctx.ui.notify(lines.join("\n"), "info");
+		},
+	});
+
+	pi.on("session_start", (_event, ctx) => {
+		const loaded = loadMode();
+		currentMode = loaded.mode;
+		updateStatus(ctx, currentMode);
+		if (loaded.warning && ctx.hasUI) ctx.ui.notify(loaded.warning, "warning");
+	});
+	pi.on("session_shutdown", (_event, ctx) => {
+		if (ctx.mode === "tui") ctx.ui.setStatus(STATUS_KEY, undefined);
+	});
+}

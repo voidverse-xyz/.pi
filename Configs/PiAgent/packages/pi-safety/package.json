@@ -1,0 +1,14 @@
+{
+  "name": "pi-safety",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Risk-based confirmation gates for main-agent Bash commands, with persistent modes and privacy-preserving audit records.",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}
