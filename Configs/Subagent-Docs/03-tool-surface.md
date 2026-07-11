@@ -60,6 +60,11 @@ validation); one-tool-per-power (context bloat).
   result conforming to `schema`; result arrives later as a report envelope with
   payload.data validated against the schema (restricted subset: type/properties/
   required/items/enum/const/additionalProperties:false; other keywords ignored).
+  Within the subset validation is honest: `additionalProperties:false` closes the
+  object even when `properties` is absent/partial (unknown keys rejected);
+  `const`/`enum` equality is JSON-semantic (order-independent for objects,
+  recursive); and a `type` whose value is not a known type keyword is reported as
+  a schema error, not a silent match. Out-of-subset keywords stay ignored.
 - requestId = the collect-request envelope's id; the fulfilling report carries it
   as correlationId, so multiple outstanding collects stay distinguishable.
 

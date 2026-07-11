@@ -20,6 +20,7 @@
  * phase3-mail.mjs). Run: node test/e2e/phase-runtime-fixes.mjs
  */
 import { strict as assert } from "node:assert";
+import { spawn as spawnChild } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
@@ -32,6 +33,8 @@ const { InProcessRuntime } = await jiti.import(join(EXT, "runtime/in-process.ts"
 const { AutonomyBudget } = await jiti.import(join(EXT, "rails/autonomy.ts"));
 const { makeEnvelope, ulid } = await jiti.import(join(EXT, "mail/envelope.ts"));
 const mailbox = await jiti.import(join(EXT, "mail/mailbox.ts"));
+const { archiveAgentDir } = await jiti.import(join(EXT, "store/archive.ts"));
+const { readSettingsFile, applySettingsInto, defaultSettings } = await jiti.import(join(EXT, "store/settings.ts"));
 
 // ---------------------------------------------------------------------------
 // World + mock provider
@@ -47,6 +50,10 @@ writeFileSync(
 	["---", "name: worker", "description: fixes-test worker", "model: mock/mock-1", "projectContext: false", "---", "You are a worker.", ""].join("\n"),
 );
 
+// When > 0, the mock holds the turn `streaming` for this long before finishing
+// — long enough for a test to interrupt() it mid-flight (the turn still settles
+// on its own so abort()/waitForIdle never deadlocks).
+let streamDelayMs = 0;
 function mockStream(model) {
 	const stream = piAi.createAssistantMessageEventStream();
 	(async () => {
@@ -54,10 +61,15 @@ function mockStream(model) {
 		const output = { role: "assistant", api: model.api, provider: model.provider, model: model.id, usage, timestamp: Date.now(), content: [{ type: "text", text: "ok" }], stopReason: "stop" };
 		stream.push({ type: "start", partial: output });
 		stream.push({ type: "text_start", contentIndex: 0, partial: output });
-		stream.push({ type: "text_delta", contentIndex: 0, delta: "ok", partial: output });
-		stream.push({ type: "text_end", contentIndex: 0, content: "ok", partial: output });
-		stream.push({ type: "done", reason: "stop", message: output });
-		stream.end();
+		if (streamDelayMs > 0) await new Promise((r) => setTimeout(r, streamDelayMs));
+		try {
+			stream.push({ type: "text_delta", contentIndex: 0, delta: "ok", partial: output });
+			stream.push({ type: "text_end", contentIndex: 0, content: "ok", partial: output });
+			stream.push({ type: "done", reason: "stop", message: output });
+			stream.end();
+		} catch {
+			// The consumer is gone (aborted) — nothing to push.
+		}
 	})();
 	return stream;
 }
@@ -70,6 +82,17 @@ modelRegistry.registerProvider("mock", {
 const layout = createLayout(project, { home });
 const settingsManager = piSdk.SettingsManager.create(project, join(home, ".pi", "agent"));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** A fresh, isolated project world with the mock worker type (empty registry). */
+function makeWorld(name) {
+	const proj = join(scratch, name);
+	mkdirSync(join(proj, ".pi", "subagents"), { recursive: true });
+	writeFileSync(
+		join(proj, ".pi", "subagents", "worker.md"),
+		["---", "name: worker", "description: iso worker", "model: mock/mock-1", "projectContext: false", "---", "You are a worker.", ""].join("\n"),
+	);
+	return createLayout(proj, { home });
+}
 
 let passed = 0;
 function ok(name) {
@@ -418,6 +441,234 @@ console.log("(6) main-mail durability (host wiring):");
 
 	await fire("session_shutdown");
 	process.env.HOME = prevHome;
+}
+
+// ---------------------------------------------------------------------------
+// (7) Finding 1 — interrupt/shutdown leaves the triggering mail PENDING and the
+//     agent alive (was: markDone ran unconditionally after an aborted turn,
+//     consuming the mail the subagent_interrupt contract says must survive).
+// ---------------------------------------------------------------------------
+console.log("(7) interrupt leaves triggering mail pending + agent alive (Finding 1):");
+{
+	const layoutI = makeWorld("interrupt-world");
+	const runtime = new InProcessRuntime({ layout: layoutI, modelRegistry, settingsManager, maxConcurrent: 2 });
+	const events = [];
+	runtime.onEvent((e) => events.push(e));
+
+	// Hold the turn streaming so we can interrupt it mid-flight.
+	streamDelayMs = 800;
+	await runtime.spawn({ type: "worker", id: "victim", task: "long task INT_MARKER" });
+	for (let i = 0; i < 400 && !events.some((e) => e.type === "turn-started" && e.address === "worker/victim"); i++) await sleep(15);
+	await sleep(60); // ensure prompt() is actually streaming
+	const res = await runtime.interrupt("worker/victim");
+	assert.equal(res.interrupted, true, "interrupt fired on the streaming turn");
+	streamDelayMs = 0;
+	for (let i = 0; i < 400 && !events.some((e) => e.type === "turn-finished" && e.address === "worker/victim"); i++) await sleep(15);
+
+	const box = layoutI.mailboxDir("worker", "victim");
+	assert.equal(mailbox.pendingCount(box), 1, "triggering mail LEFT PENDING after interrupt (not consumed)");
+	const rec = getAgent(readRegistry(layoutI.registryFile), "worker/victim");
+	assert.ok(rec, "agent still alive (interrupt does not retire)");
+	assert.equal(rec.state, "dormant", "interrupted agent parks dormant");
+
+	// No IMMEDIATE auto-retry — the mail waits for a real wake, not a self-re-run.
+	await sleep(300);
+	assert.equal(mailbox.pendingCount(box), 1, "no immediate auto-retry — mail waits for a real wake");
+
+	// A fresh send is that real wake: the pending mail re-delivers and drains.
+	await runtime.send({ to: "worker/victim", text: "resume please" });
+	for (let i = 0; i < 400 && mailbox.pendingCount(box) > 0; i++) await sleep(15);
+	assert.equal(mailbox.pendingCount(box), 0, "next real wake re-delivers the interrupted mail (at-least-once)");
+	ok("interrupt leaves the triggering envelope pending + agent alive + no auto-retry; next wake re-delivers");
+	await runtime.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// (8) Finding 5 — a LIVE foreign run-owner blocks the wake WITHOUT clobbering
+//     its marker (was: check-then-write overwrote it); a DEAD owner's stale
+//     marker is swept by the atomic (wx) claim and the turn runs.
+// ---------------------------------------------------------------------------
+console.log("(8) atomic run-owner claim — live foreign blocks, stale swept (Finding 5):");
+{
+	const layoutC = makeWorld("claim-world");
+	const runtime = new InProcessRuntime({ layout: layoutC, modelRegistry, settingsManager, maxConcurrent: 2 });
+	const events = [];
+	runtime.onEvent((e) => events.push(e));
+	await runtime.spawn({ type: "worker", id: "shared" }); // dormant; instance dir exists
+	await sleep(50);
+
+	// A live FOREIGN process "owns" the run marker.
+	const child = spawnChild(process.execPath, ["-e", "setTimeout(()=>{}, 30000)"], { stdio: "ignore" });
+	const ownerFile = join(layoutC.agentInstanceDir("worker", "shared"), ".run-owner.json");
+	writeFileSync(ownerFile, JSON.stringify({ pid: child.pid, runtimeId: "foreign-rt", claimedAt: new Date().toISOString() }));
+
+	await runtime.send({ to: "worker/shared", text: "do not double-run" });
+	await sleep(400);
+	assert.equal(mailbox.pendingCount(layoutC.mailboxDir("worker", "shared")), 1, "mail stays queued under a live foreign owner");
+	assert.ok(
+		events.some((e) => e.type === "turn-error" && /run-owned by another live|Lost the run-ownership/.test(e.error)),
+		"turn-error notes the foreign owner",
+	);
+	const stillForeign = JSON.parse(readFileSync(ownerFile, "utf8"));
+	assert.equal(stillForeign.pid, child.pid, "live owner's marker NOT clobbered (was: check-then-write overwrote it)");
+	assert.equal(stillForeign.runtimeId, "foreign-rt");
+	await runtime.dispose();
+
+	// The owner dies; ANOTHER process (fresh runtime, cross-process takeover)
+	// starts up. Reconciliation sees the dead-pid marker, sweeps it, and drains
+	// the queued mail — the atomic claim now succeeds for the new owner.
+	child.kill("SIGKILL");
+	await new Promise((r) => child.on("exit", r));
+	const runtime2 = new InProcessRuntime({ layout: layoutC, modelRegistry, settingsManager, maxConcurrent: 2 });
+	for (let i = 0; i < 400 && mailbox.pendingCount(layoutC.mailboxDir("worker", "shared")) > 0; i++) await sleep(15);
+	assert.equal(mailbox.pendingCount(layoutC.mailboxDir("worker", "shared")), 0, "dead-pid owner swept; the new owner's atomic claim runs the turn and drains");
+	assert.ok(!existsSync(ownerFile), "stale run-owner marker cleared");
+	ok("live foreign run-owner blocks the wake without clobbering its marker; a dead owner is swept and reclaimed");
+	await runtime2.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// (9) Finding 13 — a retire that CRASHED after the archive move but before the
+//     registry removal is reconciled on restart (record removed), and a fresh
+//     same-address spawn does NOT resurrect the old memory.
+// ---------------------------------------------------------------------------
+console.log("(9) retire tombstone survives a mid-retire crash; no resurrection (Finding 13):");
+{
+	const layoutR = makeWorld("retire-crash-world");
+	const runtime = new InProcessRuntime({ layout: layoutR, modelRegistry, settingsManager, maxConcurrent: 2 });
+	const ev1 = [];
+	runtime.onEvent((e) => ev1.push(e));
+	await runtime.spawn({ type: "worker", id: "ghost", task: "remember GHOST_MEMORY_MARKER" });
+	for (let i = 0; i < 400 && !ev1.some((e) => e.type === "turn-finished" && e.address === "worker/ghost"); i++) await sleep(15);
+	await runtime.dispose();
+
+	// Simulate the NEW retire order crashing AFTER archiveAgentDir but BEFORE
+	// removeAgent: dir in .archive/ (tombstoned), registry record still present.
+	const archiveDir = archiveAgentDir(layoutR, "worker", "ghost");
+	assert.ok(archiveDir && existsSync(archiveDir), "dir archived");
+	assert.ok(existsSync(join(archiveDir, ".retired-at")), "tombstone travelled WITH the move");
+	assert.ok(getAgent(readRegistry(layoutR.registryFile), "worker/ghost"), "registry record still present (crash before removal)");
+	assert.ok(!existsSync(layoutR.agentInstanceDir("worker", "ghost")), "live instance dir gone");
+
+	// Restart: startup reconciliation finishes the funeral.
+	const runtime2 = new InProcessRuntime({ layout: layoutR, modelRegistry, settingsManager, maxConcurrent: 2 });
+	const ev2 = [];
+	runtime2.onEvent((e) => ev2.push(e));
+	await sleep(80);
+	assert.equal(getAgent(readRegistry(layoutR.registryFile), "worker/ghost"), undefined, "crashed retire reconciled — record removed");
+
+	// A fresh same-address spawn is created ANEW with no resurrected memory.
+	const again = await runtime2.spawn({ type: "worker", id: "ghost", task: "fresh start FRESH_MARKER" });
+	assert.equal(again.created, true, "get-or-create makes a NEW identity, not a resurrected one");
+	for (let i = 0; i < 400 && !ev2.some((e) => e.type === "turn-finished" && e.address === "worker/ghost"); i++) await sleep(15);
+	const dir = layoutR.agentInstanceDir("worker", "ghost");
+	const content = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => readFileSync(join(dir, f), "utf8")).join("");
+	assert.ok(content.length > 0, "fresh session file written");
+	assert.ok(!content.includes("GHOST_MEMORY_MARKER"), "old memory NOT resurrected into the fresh identity");
+	ok("crashed retire (dir archived, record present) is reconciled on restart with no memory resurrection");
+	await runtime2.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// (10) Finding 14 — a USER message from the viewer (sendAsUser) resets +
+//      resumes a paused autonomy pool and drains queued mail; a main-agent
+//      send() does NOT (autonomous, no reset).
+// ---------------------------------------------------------------------------
+console.log("(10) sendAsUser resets + resumes a paused pool and drains (Finding 14):");
+{
+	const layoutU = makeWorld("senduser-world");
+	// Large budget tripped MANUALLY, so the post-reset drain turns (~15 tokens
+	// each) don't immediately re-pause the pool.
+	const autonomy = new AutonomyBudget({ autonomousTurns: 1e9, autonomousTokens: 1e9 });
+	const runtime = new InProcessRuntime({ layout: layoutU, modelRegistry, settingsManager, maxConcurrent: 2, autonomy });
+	const events = [];
+	runtime.onEvent((e) => events.push(e));
+	await runtime.spawn({ type: "worker", id: "direct" });
+	await runtime.spawn({ type: "worker", id: "sleeper" });
+	await sleep(80);
+
+	autonomy.noteTokens(2e9); // trip the pause
+	assert.ok(autonomy.paused, "pool paused");
+
+	// Queued mail on a DIFFERENT dormant agent — the resume-drain's real target.
+	mailbox.writeEnvelope(layoutU.mailboxDir("worker", "sleeper"), makeEnvelope({ from: "main", to: "worker/sleeper", type: "message", text: "queued while paused" }));
+
+	// A MAIN send while paused must NOT reset the pool (autonomous).
+	await runtime.send({ to: "worker/direct", text: "autonomous, stays queued" });
+	await sleep(200);
+	assert.ok(autonomy.paused, "main send did NOT resume the pool");
+	assert.equal(mailbox.pendingCount(layoutU.mailboxDir("worker", "sleeper")), 1, "sleeper still queued while paused");
+
+	// A USER send from the viewer resets + resumes + drains (D21 / Finding 14).
+	const finishedBefore = events.filter((e) => e.type === "turn-finished").length;
+	await runtime.sendAsUser({ to: "worker/direct", text: "user message DIRECT_MARKER" });
+	assert.equal(autonomy.paused, false, "sendAsUser reset (and resumed) the pool");
+	for (
+		let i = 0;
+		i < 400 &&
+		(mailbox.pendingCount(layoutU.mailboxDir("worker", "sleeper")) > 0 ||
+			mailbox.pendingCount(layoutU.mailboxDir("worker", "direct")) > 0);
+		i++
+	) {
+		await sleep(15);
+	}
+	assert.equal(mailbox.pendingCount(layoutU.mailboxDir("worker", "sleeper")), 0, "resume-drain cleared the sleeper's queued mail");
+	assert.equal(mailbox.pendingCount(layoutU.mailboxDir("worker", "direct")), 0, "the user's direct message was delivered + drained");
+	assert.ok(events.filter((e) => e.type === "turn-finished").length > finishedBefore, "turns ran after the user reset");
+	ok("sendAsUser resets/resumes the paused pool and drains queued mail; a main send does not");
+	await runtime.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// (11) Finding 12 — a malformed settings file RETAINS its last-known-good layer
+//      (was: collapsed to an empty layer, failing open to defaults) and warns;
+//      an intentionally MISSING file removes the layer.
+// ---------------------------------------------------------------------------
+console.log("(11) settings last-known-good on malformed reload (Finding 12):");
+{
+	// readSettingsFile stays PURE: a parse failure is an empty patch flagged
+	// `degraded` (retention lives in the live-reload path, not here).
+	const probe = join(scratch, "lkg-probe.json");
+	writeFileSync(probe, "{ not json");
+	const badRead = readSettingsFile(probe);
+	assert.deepEqual(badRead.values, {}, "readSettingsFile: empty patch on parse failure (pure)");
+	assert.equal(badRead.degraded, true, "readSettingsFile: degraded flag set");
+	assert.ok(badRead.warnings.some((w) => /invalid JSON/.test(w)));
+
+	// The live-reload path RETAINS the last-known-good layer for a degraded file
+	// instead of failing open to defaults.
+	const proj = join(scratch, "lkg-project");
+	mkdirSync(proj, { recursive: true });
+	const lay = {
+		globalSettingsFile: join(scratch, "lkg-nonexistent-global.json"), // never present
+		projectSettingsFile: join(proj, "subagents.json"),
+	};
+	writeFileSync(lay.projectSettingsFile, JSON.stringify({ maxTokensTotal: 1234, autonomousTurns: 7 }));
+	const target = defaultSettings();
+	let warnings = applySettingsInto(target, lay);
+	assert.equal(target.maxTokensTotal, 1234, "valid reload applied the ceiling");
+	assert.equal(target.autonomousTurns, 7);
+	assert.deepEqual(warnings, []);
+
+	// Malformed save: the restrictive live values are KEPT (not reset to defaults),
+	// and the warning surfaces.
+	writeFileSync(lay.projectSettingsFile, "{ half-written edit");
+	warnings = applySettingsInto(target, lay);
+	assert.equal(target.maxTokensTotal, 1234, "malformed reload KEPT the last-known-good ceiling (did NOT fail open)");
+	assert.equal(target.autonomousTurns, 7, "malformed reload kept the last-known-good turn budget");
+	assert.ok(warnings.some((w) => /invalid JSON/.test(w)), "warning surfaced for the malformed file");
+
+	// Fix the file with a different value → the new value applies.
+	writeFileSync(lay.projectSettingsFile, JSON.stringify({ maxTokensTotal: 50 }));
+	applySettingsInto(target, lay);
+	assert.equal(target.maxTokensTotal, 50, "a valid re-save takes effect");
+	assert.equal(target.autonomousTurns, defaultSettings().autonomousTurns, "field absent in the new file falls back to default");
+
+	// Intentional deletion removes the layer (back to defaults).
+	rmSync(lay.projectSettingsFile, { force: true });
+	applySettingsInto(target, lay);
+	assert.equal(target.maxTokensTotal, undefined, "intentional deletion removed the layer (ceiling cleared)");
+	ok("live reload keeps last-known-good on a malformed file + warns; a valid save or deletion updates the layer");
 }
 
 console.log(`\nall ${passed} runtime-fixes regression tests passed`);

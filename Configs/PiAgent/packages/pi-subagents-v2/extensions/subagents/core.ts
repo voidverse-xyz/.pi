@@ -36,7 +36,7 @@
  * settings-controlled retention).
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import type { ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { collectResultNote, validateAgainstSchema } from "./mail/collect.ts";
@@ -48,6 +48,7 @@ import {
 	type HostDeliveryReconcile,
 	lookupSentQuestion,
 	markDone,
+	peekCollectRequest,
 	pendingCount,
 	readPending,
 	reconcileHostDelivery,
@@ -72,6 +73,7 @@ import type {
 import { gcSweep, type GcSweepResult } from "./store/archive.ts";
 import { createLayout, type Layout } from "./store/layout.ts";
 import { listAgents, readRegistry } from "./store/registry.ts";
+import { isValidTeamName } from "./store/teams.ts";
 import {
 	applySettingsInto,
 	defaultSettings,
@@ -233,8 +235,37 @@ export interface SubagentsCore {
 	dispose(): Promise<void>;
 }
 
+/**
+ * Adopt a pre-digest (legacy) state root into the digest-suffixed root (finding
+ * 6 compat). Before finding 6 our state lived at <projectSessionDir>/subagents;
+ * now it lives at <projectSessionDir>/subagents-<cwd-digest> so slug-colliding
+ * projects can't share a root. A real user's existing state is under the legacy
+ * dir — orphaning it would silently lose every subagent, its memory and mail.
+ *
+ * Rule: if the new digest root does NOT yet exist but the legacy dir DOES, this
+ * cwd is the sole (or first) occupant of that slug, so rename legacy → digest
+ * root and the user keeps everything. If the digest root already exists we are
+ * past migration (no-op). If neither exists it's a fresh project (no-op). A
+ * genuine slug collision (two live projects) resolves cleanly: whichever runs
+ * first adopts the legacy dir under ITS digest; the other starts empty under a
+ * different digest and never sees the first's data. Best-effort and idempotent
+ * — any fs race leaves the legacy dir in place to be retried next run.
+ */
+export function migrateStateRootIfNeeded(layout: Layout): void {
+	if (layout.subagentsRoot === layout.legacySubagentsRoot) return; // digest disabled
+	if (existsSync(layout.subagentsRoot)) return; // already migrated / fresh digest root
+	if (!existsSync(layout.legacySubagentsRoot)) return; // fresh project, nothing to adopt
+	try {
+		renameSync(layout.legacySubagentsRoot, layout.subagentsRoot);
+	} catch {
+		// Cross-device or race — leave legacy in place; a later run retries. State
+		// is never lost, only unmigrated.
+	}
+}
+
 export function createCore(options: CreateCoreOptions): SubagentsCore {
 	const layout = createLayout(options.cwd, options.home !== undefined ? { home: options.home } : {});
+	migrateStateRootIfNeeded(layout);
 	// Phase 7 settings source: files first, programmatic overrides win.
 	const loaded = loadSettings(layout);
 	const settings: SubagentsSettings = { ...loaded.settings, ...options.settings };
@@ -272,7 +303,23 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 			return warnings;
 		},
 		autonomy,
-		spawn: (spawnOptions) => runtime.spawn(spawnOptions),
+		spawn: (spawnOptions) => {
+			// Validate the team name at the spawn boundary — BEFORE runtime.spawn
+			// commits any registry record (finding 11). The old flow committed the
+			// record first and only then called addTo, so a bad name (e.g.
+			// "__proto__") threw AFTER the roster was mutated, leaving partial
+			// state. Rejecting here keeps spawn all-or-nothing for every caller.
+			if (spawnOptions.team !== undefined && !isValidTeamName(spawnOptions.team)) {
+				return Promise.reject(
+					new Error(
+						`Invalid team name ${JSON.stringify(spawnOptions.team)} — use a slug ` +
+							"(letters, digits, and ._-, not starting with a dot), not a reserved word " +
+							"(__proto__/prototype/constructor) or empty string.",
+					),
+				);
+			}
+			return runtime.spawn(spawnOptions);
+		},
 		send: (sendOptions) => runtime.send(sendOptions),
 		sendAsUser: (sendOptions) => runtime.sendAsUser(sendOptions),
 		steer: (to, text) => runtime.steer(to, text),
@@ -343,9 +390,14 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 			const items: DigestItem[] = pending.map((p) => {
 				// Collect-result validation on arrival (03-tool-surface): a
 				// report whose correlationId matches a recorded collect request.
+				// PEEK, don't take (finding 8): the schema stays on record until the
+				// report is DURABLY delivered, so a crash-then-requeue re-validates.
+				// The record is retired at the finalize point (reconcileHostDelivery
+				// for the parked path, or right after markDone for the no-session
+				// path below).
 				let note: string | undefined;
 				if (p.envelope.type === "report" && p.envelope.correlationId !== null) {
-					const schema = takeCollectRequest(mainMailbox, p.envelope.correlationId);
+					const schema = peekCollectRequest(mainMailbox, p.envelope.correlationId);
 					if (schema !== undefined) {
 						note = collectResultNote(validateAgainstSchema(p.envelope.payload.data, schema));
 					}
@@ -373,7 +425,16 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 			if (typeof sessionFile === "string" && sessionFile.length > 0) {
 				beginHostDelivery(mainMailbox, ids, sessionFile);
 			} else {
+				// No persisted session file — finalize at compose time. This IS the
+				// finalize point for this path, so retire any collect requests these
+				// reports fulfilled now (finding 8): their verdict was just composed
+				// into a digest that nothing durable could ever verify.
 				markDone(mainMailbox, ids);
+				for (const p of pending) {
+					if (p.envelope.type === "report" && p.envelope.correlationId !== null) {
+						takeCollectRequest(mainMailbox, p.envelope.correlationId);
+					}
+				}
 			}
 			return digest;
 		},
@@ -394,6 +455,7 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
  */
 export function runGcSweepFor(cwd: string, home?: string): GcSweepResult {
 	const layout = createLayout(cwd, home !== undefined ? { home } : {});
+	migrateStateRootIfNeeded(layout);
 	const { settings } = loadSettings(layout);
 	return gcSweep(layout, { days: settings.archiveGcDays });
 }
@@ -410,6 +472,7 @@ export function runGcSweepFor(cwd: string, home?: string): GcSweepResult {
  */
 export function reconcileMainMailFor(cwd: string, home?: string): HostDeliveryReconcile {
 	const layout = createLayout(cwd, home !== undefined ? { home } : {});
+	migrateStateRootIfNeeded(layout);
 	return reconcileHostDelivery(layout.mainMailboxDir, {
 		marker: MAIN_MAIL_CUSTOM_TYPE,
 		requeueUndelivered: true,

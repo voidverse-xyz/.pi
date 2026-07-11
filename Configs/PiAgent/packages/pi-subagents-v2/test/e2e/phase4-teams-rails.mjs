@@ -614,6 +614,44 @@ await test("tiny token budget: first turn's token delta trips the pause; resume(
 });
 
 // ---------------------------------------------------------------------------
+// (c2) Finding 2 — a pool that trips WHILE a turn queues for its scheduler slot
+//      must not start that queued turn after the pause. With maxConcurrent=1 and
+//      a 1-turn budget, one turn runs (and trips), the waiter re-checks the
+//      budget AFTER acquiring the slot and stands down — no over-start, no
+//      double-charge.
+// ---------------------------------------------------------------------------
+console.log("(c2) paused pool blocks a queued waiter post-slot (Finding 2):");
+await test("only one of two simultaneous turns runs; the waiter bails paused (no double-charge)", async () => {
+	const projectF = makeProject("project-f2");
+	const layoutF = createLayout(projectF, { home });
+	const autonomy = new autonomyMod.AutonomyBudget({ autonomousTurns: 1, autonomousTokens: 1e12 });
+	// maxConcurrent=1 forces B to wait for A's slot — A's noteTurnStart trips the
+	// pause while B is queued, exactly the race Finding 2 closes.
+	const runtime = new InProcessRuntime({ layout: layoutF, modelRegistry, settingsManager, maxConcurrent: 1, autonomy });
+	const events = [];
+	runtime.onEvent((e) => events.push(e));
+	const finished = () => events.filter((e) => e.type === "turn-finished").length;
+
+	await runtime.spawn({ type: "worker", id: "one", task: "F2_TASK_ONE" });
+	await runtime.spawn({ type: "worker", id: "two", task: "F2_TASK_TWO" });
+	await waitUntil(() => finished() >= 1, "first turn finishes");
+	await sleep(400); // give a mistaken second turn time to (wrongly) start
+
+	assert.equal(finished(), 1, "exactly ONE turn ran; the waiter did NOT start after the pause");
+	assert.ok(autonomy.paused, "pool paused");
+	assert.equal(autonomy.status().turnsUsed, 1, "budget charged EXACTLY once (no double-charge)");
+	const pendingOne = mailbox.pendingCount(layoutF.mailboxDir("worker", "one"));
+	const pendingTwo = mailbox.pendingCount(layoutF.mailboxDir("worker", "two"));
+	assert.equal(pendingOne + pendingTwo, 1, "the un-run agent's task stays queued on disk (pause never kills)");
+
+	// A user reset drains the waiter — its task was never lost.
+	autonomy.reset();
+	await waitUntil(() => finished() >= 2, "waiter drains after reset");
+	assert.equal(mailbox.pendingCount(layoutF.mailboxDir("worker", "one")) + mailbox.pendingCount(layoutF.mailboxDir("worker", "two")), 0, "both drained after resume");
+	await runtime.dispose();
+});
+
+// ---------------------------------------------------------------------------
 // (e) rail events recap (collected along the way)
 // ---------------------------------------------------------------------------
 console.log("(e) rail events:");

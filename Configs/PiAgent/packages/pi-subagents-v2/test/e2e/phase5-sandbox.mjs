@@ -369,7 +369,7 @@ await test("read-only commands allow (incl. pipes and read-only git)", async () 
 		"echo hi",
 		"sed 's/a/b/' file.txt",
 		"echo hi > /dev/null",
-		"cmd_output=ignored ls",
+		"LANG=C ls", // benign locale prefix strips and stays read-only (F3b)
 		"",
 	]) {
 		assert.deepEqual(classify(cmd), { verdict: "allow" }, cmd);
@@ -493,8 +493,8 @@ await test("C2: find action predicates escalate (deny under readOnly); filter-on
 await test("C3: env is a wrapper — the REAL command is classified; ambiguous env forms escalate", async () => {
 	const cases = [
 		["env rm /etc/x", "escalate", /rm target/],
-		["env FOO=1 rm -rf /etc/x", "escalate", /rm target/],
-		["env -i FOO=1 touch other/x", "escalate", /touch target/],
+		["env LANG=C rm -rf /etc/x", "escalate", /rm target/], // benign env consumed, real command classified
+		["env -i LANG=C touch other/x", "escalate", /touch target/],
 		["env -u PATH frobnicate", "escalate", /unknown command/],
 		["/usr/bin/env rm /etc/x", "escalate", /rm target/],
 		["env env rm /etc/x", "escalate", /rm target/],
@@ -502,10 +502,10 @@ await test("C3: env is a wrapper — the REAL command is classified; ambiguous e
 		["env -C /tmp touch x", "escalate", /too ambiguous/], // -C changes cwd → relative targets untrustworthy
 		["env -S 'rm x' f", "escalate", /too ambiguous/],
 		["env rm x", "deny", /readOnly/, ro],
-		// controls: genuinely read-only env uses
+		// controls: genuinely read-only env uses (benign locale prefixes only)
 		["env", "allow"],
-		["env FOO=1", "allow"],
-		["env FOO=1 ls -la", "allow"],
+		["env LANG=C", "allow"],
+		["env LANG=C ls -la", "allow"],
 		["env -u PATH ls", "allow"],
 		["env ls", "allow", null, ro],
 		["env rm allowed/x", "allow"], // in-scope target through the wrapper
@@ -569,6 +569,179 @@ await test("M2: read-only-listed commands with write-capable args escalate (deny
 	];
 	for (const [cmd, expected, re, opts] of cases) {
 		const v = classify(cmd, opts ?? rw);
+		assert.equal(v.verdict, expected, cmd);
+		if (re) assert.match(v.reason, re, cmd);
+	}
+});
+
+// --- security dogfood regression (findings 3 & 4) ---------------------------
+// Each command below was a verified silent-ALLOW of an out-of-scope mutation
+// (or a control proving reads / in-scope writes still ALLOW). Fail-safe: a
+// mutation not provably in-scope must NOT allow.
+await test("F3a: git remote/reflog (and other) mutating actions escalate (deny under readOnly); read-only actions allow", async () => {
+	const cases = [
+		// git remote MUTATING actions — previously wholly-read-only → allow (bug)
+		["git remote add evil /tmp/repo", "escalate", /git remote add/],
+		["git remote remove origin", "escalate", /git remote remove/],
+		["git remote rm origin", "escalate", /git remote rm/],
+		["git remote set-url origin http://x", "escalate", /git remote set-url/],
+		["git remote prune origin", "escalate", /git remote prune/],
+		["git remote rename a b", "escalate", /git remote rename/],
+		// git reflog MUTATING actions — previously wholly-read-only → allow (bug)
+		["git reflog expire --all", "escalate", /git reflog expire/],
+		["git reflog delete HEAD@{0}", "escalate", /git reflog delete/],
+		// other read-only-looking-but-mutating subcommands stay escalated
+		["git stash", "escalate", /git stash/],
+		["git stash pop", "escalate", /git stash/],
+		["git worktree add /tmp/x", "escalate", /git worktree/],
+		["git notes add", "escalate", /git notes/],
+		["git config --unset core.x", "escalate", /git config/],
+		["git config user.name x", "escalate", /git config/],
+		["git gc", "escalate", /git gc/],
+		["git tag v1", "escalate", /git tag/],
+		["git -C /other status", "escalate", /not provable/], // -C reroots git → unprovable
+		// readOnly type: a clearly-mutating git action DENIES (never allows)
+		["git remote add evil /tmp/repo", "deny", /readOnly/, ro],
+		["git reflog expire --all", "deny", /readOnly/, ro],
+		["git remote remove origin", "deny", /readOnly/, ro],
+		// controls: read-only remote/reflog actions + generic read-only subcommands ALLOW
+		["git remote", "allow"],
+		["git remote -v", "allow"],
+		["git remote --verbose", "allow"],
+		["git remote show origin", "allow"],
+		["git remote get-url origin", "allow"],
+		["git reflog", "allow"],
+		["git reflog show", "allow"],
+		["git status", "allow"],
+		["git log --oneline", "allow"],
+		["git diff HEAD~1", "allow"],
+		["git show abc123", "allow"],
+		["git remote -v", "allow", null, ro], // read-only remote stays allowed even under readOnly
+		["git reflog show", "allow", null, ro],
+	];
+	for (const [cmd, expected, re, opts] of cases) {
+		const v = classify(cmd, opts ?? rw);
+		assert.equal(v.verdict, expected, cmd);
+		if (re) assert.match(v.reason, re, cmd);
+	}
+});
+
+await test("F3b: dangerous/unknown leading env assignments escalate (execution hooks); benign locale prefixes allow", async () => {
+	const cases = [
+		// execution-hook / loader / path / field-splitting vars — previously
+		// blanket-stripped as benign → allow (bug)
+		["GIT_EXTERNAL_DIFF='touch /tmp/pwn' git diff", "escalate", /GIT_EXTERNAL_DIFF/],
+		["LESSOPEN='|touch /tmp/pwn %s' less README.md", "escalate", /LESSOPEN/],
+		["LESSCLOSE='touch x' less f", "escalate", /LESSCLOSE/],
+		["GIT_PAGER='touch x' git log", "escalate", /GIT_PAGER/],
+		["PAGER='touch x' git log", "escalate", /PAGER/],
+		["EDITOR='touch x' git commit", "escalate", /EDITOR/],
+		["VISUAL=vi git commit", "escalate", /VISUAL/],
+		["LD_PRELOAD=/tmp/x.so ls", "escalate", /LD_PRELOAD/],
+		["LD_LIBRARY_PATH=/tmp ls", "escalate", /LD_LIBRARY_PATH/],
+		["IFS=x ls", "escalate", /IFS/],
+		["PATH=/tmp ls", "escalate", /PATH/],
+		["BASH_ENV=/tmp/x ls", "escalate", /BASH_ENV/],
+		["ENV=/tmp/x sh -c x", "escalate", /ENV/],
+		["PROMPT_COMMAND='touch x' ls", "escalate", /PROMPT_COMMAND/],
+		["NODE_OPTIONS=--require=/x node y", "escalate", /NODE_OPTIONS/],
+		// unknown var name → escalate too (escalate-unknown, not prove-safe)
+		["FOO=1 ls", "escalate", /harmless allowlist/],
+		["cmd_output=ignored ls", "escalate", /harmless allowlist/],
+		// SAME bypass through the `env` runner is closed too
+		["env LD_PRELOAD=/tmp/x.so ls", "escalate", /LD_PRELOAD/],
+		["env GIT_EXTERNAL_DIFF='touch x' git diff", "escalate", /GIT_EXTERNAL_DIFF/],
+		["env FOO=1 ls", "escalate", /harmless allowlist/],
+		// readOnly: a dangerous env prefix on a read-only command still escalates
+		// (an exec hook is not "clearly mutating" — the unclear bucket)
+		["LD_PRELOAD=/x ls", "escalate", /LD_PRELOAD/, ro],
+		// controls: benign locale/display prefixes strip and stay classified
+		["LANG=C ls", "allow"],
+		["LC_ALL=C sort a.txt", "allow"],
+		["TZ=UTC date", "allow"],
+		["COLUMNS=80 ls", "allow"],
+		["env LANG=C ls -la", "allow"],
+		["LANG=C git status", "allow"],
+		// an env prefix never rescues an out-of-scope mutation — deny still wins
+		["LANG=C touch SYSTEM/x", "deny", /system state/],
+	];
+	for (const [cmd, expected, re, opts] of cases) {
+		const v = classify(cmd, opts ?? rw);
+		assert.equal(v.verdict, expected, cmd);
+		if (re) assert.match(v.reason, re, cmd);
+	}
+});
+
+await test("F4a: mutating an ANCESTOR of a protected prefix is DENIED (paths, both directions)", async () => {
+	const policy = {
+		...basePolicy,
+		cwd: "/proj",
+		writePaths: ["**", "/**"], // even 'write everything' cannot reach system state
+		systemDenyPrefixes: ["/proj/.pi/subagents", "/home/u/.pi/agent/subagents"],
+	};
+	// equal / below (pre-existing behaviour) still deny
+	for (const t of ["/proj/.pi/subagents", "/proj/.pi/subagents/worker.md"]) {
+		assert.equal(paths.checkWrite(t, policy).verdict, "denied", t);
+	}
+	// ANCESTORS now deny too — deleting/moving them removes the protected tree
+	// (and the settings-file sibling) from above.
+	for (const t of ["/proj/.pi", "/proj", "/home/u/.pi", "/home/u/.pi/agent", "/proj/.pi/subagents.json"]) {
+		const r = paths.checkWrite(t, policy);
+		assert.equal(r.verdict, "denied", t);
+		assert.match(r.reason, /system state/, t);
+	}
+	// controls: siblings / unrelated in-scope writes still ALLOW (no over-block)
+	for (const t of ["/proj/.pi/other.json", "/proj/.pi/subagents-lookalike", "/proj/src/x.ts", "/proj/README.md"]) {
+		assert.equal(paths.checkWrite(t, policy).verdict, "allowed", t);
+	}
+});
+
+await test("F4b: bash mutation on an ANCESTOR of protected state is denied (rm/mv on .pi)", async () => {
+	const protPolicy = {
+		cwd: "/proj", readOnly: false, writePaths: ["**", "/**"], denyPaths: [],
+		systemDenyPrefixes: ["/proj/.pi/subagents"], realpath: (p) => p,
+	};
+	const rwProt = { readOnly: false, checkWrite: (p) => paths.checkWrite(p, protPolicy) };
+	const cases = [
+		["rm -rf /proj/.pi", "deny", /system state/], // ancestor delete removes the protected tree
+		["mv /proj/.pi /tmp/stash", "deny", /system state/], // ancestor move
+		["rm -rf /proj", "deny", /system state/], // the cwd itself is an ancestor
+		["rm -rf /proj/.pi/subagents", "deny", /system state/], // direct (control)
+		["touch /proj/.pi/notes.json", "allow"], // sibling of subagents, not ancestor
+		["touch /proj/src/x.ts", "allow"], // ordinary in-scope write
+	];
+	for (const [cmd, expected, re] of cases) {
+		const v = classify(cmd, rwProt);
+		assert.equal(v.verdict, expected, cmd);
+		if (re) assert.match(v.reason, re, cmd);
+	}
+});
+
+await test("F4c: cp/mv/install into a DIRECTORY validate the effective dest/basename(source)", async () => {
+	// dest DIR is in-scope, but a denyPaths CHILD reached through it must not
+	// slip through: the effective write is dest/basename(source), not dest.
+	const dpPolicy = {
+		cwd: "/proj", readOnly: false,
+		writePaths: ["/proj/allowed/**"], denyPaths: ["/proj/allowed/secret/**"],
+		systemDenyPrefixes: [], realpath: (p) => p,
+	};
+	const rwDp = { readOnly: false, checkWrite: (p) => paths.checkWrite(p, dpPolicy) };
+	const cases = [
+		// two-arg form where dest may be a directory
+		["cp /src/secret /proj/allowed", "escalate", /denyPaths/], // effective /proj/allowed/secret is a deny child
+		["install /src/secret /proj/allowed", "escalate", /denyPaths/],
+		["ln -s /src/secret /proj/allowed", "escalate", /denyPaths/],
+		// explicit -t DIR form (dest is unambiguously a directory)
+		["cp -t /proj/allowed /src/secret", "escalate", /denyPaths/],
+		["cp --target-directory=/proj/allowed /src/secret", "escalate", /denyPaths/],
+		["mv -t /proj/allowed /proj/allowed/secret", "escalate", /denyPaths/], // effective + source both deny children
+		// controls: effective path inside scope still ALLOWS
+		["cp /src/ok.txt /proj/allowed", "allow"],
+		["cp -t /proj/allowed /src/ok.txt", "allow"],
+		["mv /proj/allowed/a /proj/allowed", "allow"], // effective /proj/allowed/a in scope
+	];
+	for (const [cmd, expected, re] of cases) {
+		const v = classify(cmd, rwDp);
 		assert.equal(v.verdict, expected, cmd);
 		if (re) assert.match(v.reason, re, cmd);
 	}

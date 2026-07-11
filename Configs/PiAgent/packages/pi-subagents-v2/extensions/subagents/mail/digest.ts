@@ -14,7 +14,7 @@
  * the recipient can correlate its reply without seeing raw envelope files.
  */
 
-import type { Envelope } from "./envelope.ts";
+import { type Envelope, MAIN_ADDRESS } from "./envelope.ts";
 
 export interface DigestItem {
 	envelope: Envelope;
@@ -56,13 +56,20 @@ const REDELIVERY_LABEL =
 // 4000 chars keeps a rich result visible while staying bounded and deterministic.
 const MAX_DATA_CHARS = 4000;
 
+// Character cap for an envelope's free-text body. `payload.data` is bounded
+// (MAX_DATA_CHARS) but `payload.text` was not — a subagent could put a huge
+// report in text and overflow the main context the digest is injected into.
+// Bound each item's quoted text with an explicit truncation marker; the full
+// text always remains in the envelope file on disk.
+const MAX_TEXT_CHARS = 4000;
+
 /**
  * Render an envelope's structured `payload.data` as a fenced JSON block. PURE
  * and SAFE: never throws — a non-serializable value (circular refs, BigInt)
  * yields a short placeholder instead of propagating out of this composer.
  * BOUNDED: output is truncated to MAX_DATA_CHARS with an explicit marker.
  */
-function formatDataBlock(data: unknown): string {
+function formatDataBlock(data: unknown, envelopeId: string): string {
 	let serialized: string;
 	try {
 		serialized = JSON.stringify(data, null, 2);
@@ -75,14 +82,28 @@ function formatDataBlock(data: unknown): string {
 	const lines: string[] = ["   Data:", "```json"];
 	if (serialized.length > MAX_DATA_CHARS) {
 		lines.push(serialized.slice(0, MAX_DATA_CHARS));
+		// Reference the exact envelope so the truncated value is retrievable: the
+		// file is <mailboxDir>/.done/<id>.json after this digest is finalized (the
+		// id is the digest header's `(msg_...)` above). Note the truncated JSON is
+		// syntactically incomplete — read the envelope file for the whole value.
 		lines.push(
-			`… [truncated at ${MAX_DATA_CHARS} chars — the full value is in the report envelope]`,
+			`… [truncated at ${MAX_DATA_CHARS} chars — the full value is in report envelope ${envelopeId} on disk (…/.done/${envelopeId}.json)]`,
 		);
 	} else {
 		lines.push(serialized);
 	}
 	lines.push("```");
 	return lines.join("\n");
+}
+
+/**
+ * Bound a free-text body to MAX_TEXT_CHARS with an explicit marker (the full
+ * text stays in the envelope file). Applied to every quoted body so no single
+ * report can flood the injected digest.
+ */
+function boundText(text: string, envelopeId: string): string {
+	if (text.length <= MAX_TEXT_CHARS) return text;
+	return `${text.slice(0, MAX_TEXT_CHARS)}\n… [truncated at ${MAX_TEXT_CHARS} chars — full text in envelope ${envelopeId} on disk]`;
 }
 
 function byId(a: DigestItem, b: DigestItem): number {
@@ -94,17 +115,24 @@ function formatItem(item: DigestItem, index: number): string {
 	const { envelope } = item;
 	const lines: string[] = [];
 	lines.push(`${index}. ${envelope.type} from \`${envelope.from}\` (${envelope.id}):`);
-	lines.push(quote(envelope.payload.text));
+	lines.push(quote(boundText(envelope.payload.text, envelope.id)));
 	if (envelope.type === "question") {
 		lines.push(
 			`   To answer, send a message back to \`${envelope.from}\` with correlationId "${envelope.id}".`,
 		);
 	}
-	// Collect requests carry their schema in payload.data.collectSchema — spell
-	// out the fulfillment recipe so the recipient never has to connect "THIS
-	// message" to the (msg_...) header on its own.
+	// A collect REQUEST is identified by its envelope shape, NOT by sniffing a
+	// `collectSchema` key on arbitrary data (finding 10): it is a `message` FROM
+	// `main` carrying the schema in payload.data.collectSchema. Requiring the
+	// type + direction means a legitimate `report` RESULT whose data happens to
+	// contain a field named `collectSchema` renders as data, not as a request.
 	const data = envelope.payload.data;
-	const isCollectRequest = typeof data === "object" && data !== null && "collectSchema" in data;
+	const isCollectRequest =
+		envelope.type === "message" &&
+		envelope.from === MAIN_ADDRESS &&
+		typeof data === "object" &&
+		data !== null &&
+		"collectSchema" in data;
 	if (isCollectRequest) {
 		lines.push(
 			"   To fulfill this collect request, call the `report` tool with `data` conforming " +
@@ -115,7 +143,7 @@ function formatItem(item: DigestItem, index: number): string {
 		// RESULT report): render the actual JSON the main agent asked for, so it
 		// sees the data — not just the schema verdict (item.note reads as its
 		// caption below).
-		lines.push(formatDataBlock(data));
+		lines.push(formatDataBlock(data, envelope.id));
 	}
 	if (item.note !== undefined) lines.push(`   ${item.note}`);
 	if (item.redelivered) lines.push(`   ${REDELIVERY_LABEL}`);
@@ -136,7 +164,7 @@ function formatAnswer(item: DigestItem, lookup: DigestOptions["questionLookup"])
 		);
 	}
 	lines.push(`\`${envelope.from}\` answered (${envelope.id}):`);
-	lines.push(quote(envelope.payload.text));
+	lines.push(quote(boundText(envelope.payload.text, envelope.id)));
 	if (item.note !== undefined) lines.push(item.note);
 	if (item.redelivered) lines.push(REDELIVERY_LABEL);
 	return lines.join("\n");

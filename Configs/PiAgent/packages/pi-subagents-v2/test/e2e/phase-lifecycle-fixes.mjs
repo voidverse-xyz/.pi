@@ -37,6 +37,25 @@ const { createLayout } = await jiti.import(join(EXT, "store/layout.ts"));
 const { readRegistry, updateRegistry, getAgent } = await jiti.import(join(EXT, "store/registry.ts"));
 const { InProcessRuntime, readTranscriptTail } = await jiti.import(join(EXT, "runtime/in-process.ts"));
 const { makeEnvelope, ulid } = await jiti.import(join(EXT, "mail/envelope.ts"));
+
+// ulid() is monotonic-nondecreasing and never backdates (a wall-clock
+// regression is treated as the same ms), so it cannot mint an id whose EMBEDDED
+// timestamp is in the past. To fabricate an *aged* collect-request key (whose
+// age gcCollectRequests reads from the key's own ULID time), encode the old ms
+// directly — same Crockford-base32, 10-char big-endian time + 16 random chars
+// as mail/envelope.ts, decoded by store/archive.ts's ulidTimestampMs.
+const B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+function ulidAt(ms) {
+	let time = "";
+	let t = ms;
+	for (let i = 0; i < 10; i++) {
+		time = B32[t % 32] + time;
+		t = Math.floor(t / 32);
+	}
+	let rand = "";
+	for (let i = 0; i < 16; i++) rand += B32[Math.floor(Math.random() * 32)];
+	return time + rand;
+}
 const mailbox = await jiti.import(join(EXT, "mail/mailbox.ts"));
 const archive = await jiti.import(join(EXT, "store/archive.ts"));
 
@@ -260,7 +279,8 @@ console.log("(4) gcSweep coverage:");
 	}
 
 	// Aged + fresh collect-request entries (age = the key's ULID timestamp).
-	const agedCollectId = `msg_${ulid(oldMs)}`;
+	// ulidAt encodes oldMs directly since monotonic ulid() won't backdate.
+	const agedCollectId = `msg_${ulidAt(oldMs)}`;
 	const freshCollectId = `msg_${ulid()}`;
 	mailbox.recordCollectRequest(layout.mainMailboxDir, agedCollectId, { type: "object" });
 	mailbox.recordCollectRequest(layout.mainMailboxDir, freshCollectId, { type: "string" });

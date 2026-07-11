@@ -15,6 +15,14 @@
  * subset are IGNORED (validation stays permissive-but-honest rather than
  * failing on schemas we half-understand); an outright malformed schema reports
  * itself as a schema error instead of a data error.
+ *
+ * "Honest" is load-bearing (finding 9): `additionalProperties:false` closes the
+ * object even when `properties` is absent/partial (unknown keys are rejected,
+ * not accepted); `const`/`enum` equality is JSON-SEMANTIC (order-independent for
+ * objects, recursive), not stringify-based; and a `type` whose VALUE is not a
+ * known type keyword is reported as a schema error rather than silently matching
+ * every value. Out-of-subset KEYWORDS are still ignored; a malformed known
+ * keyword is not.
  */
 
 export interface ValidationResult {
@@ -28,6 +36,9 @@ function typeName(value: unknown): string {
 	if (Array.isArray(value)) return "array";
 	return typeof value;
 }
+
+/** The type keywords the restricted subset understands. */
+const KNOWN_TYPES = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
 
 function matchesType(value: unknown, type: string): boolean {
 	switch (type) {
@@ -46,12 +57,38 @@ function matchesType(value: unknown, type: string): boolean {
 		case "null":
 			return value === null;
 		default:
-			return true; // unknown type keyword — outside the subset, ignore
+			// Unreachable: unknown type strings are caught as a schema error before
+			// matchesType is consulted (see check). Never silently pass (finding 9c).
+			return false;
 	}
 }
 
+/**
+ * JSON-semantic deep equality for const/enum (finding 9b). The old
+ * `JSON.stringify(a) === JSON.stringify(b)` made object equality depend on
+ * property INSERTION ORDER, so `{a:1,b:2}` failed against a `{b:2,a:1}` const
+ * even though the two are the same JSON value. This compares by value:
+ * order-independent for objects, positional for arrays, recursive throughout.
+ */
 function deepEqual(a: unknown, b: unknown): boolean {
-	return JSON.stringify(a) === JSON.stringify(b);
+	if (a === b) return true;
+	if (typeof a !== typeof b) return false;
+	if (a === null || b === null) return a === b;
+	if (Array.isArray(a) || Array.isArray(b)) {
+		if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+		return a.every((item, i) => deepEqual(item, b[i]));
+	}
+	if (typeof a === "object") {
+		const ao = a as Record<string, unknown>;
+		const bo = b as Record<string, unknown>;
+		const aKeys = Object.keys(ao);
+		const bKeys = Object.keys(bo);
+		if (aKeys.length !== bKeys.length) return false;
+		return aKeys.every(
+			(key) => Object.prototype.hasOwnProperty.call(bo, key) && deepEqual(ao[key], bo[key]),
+		);
+	}
+	return false; // distinct primitives (strict-=== above already caught equal ones)
 }
 
 function check(value: unknown, schema: unknown, path: string, errors: string[]): void {
@@ -72,8 +109,18 @@ function check(value: unknown, schema: unknown, path: string, errors: string[]):
 		errors.push(`${path}: value ${JSON.stringify(value)} not in enum ${JSON.stringify(s.enum)}`);
 	}
 
-	if (typeof s.type === "string" || Array.isArray(s.type)) {
-		const types = Array.isArray(s.type) ? s.type.filter((t): t is string => typeof t === "string") : [s.type];
+	if (s.type !== undefined) {
+		// A `type` keyword that isn't a string or array of type strings — or that
+		// names a type outside the subset — is a MALFORMED schema, not a silent
+		// pass (finding 9c). Report it and stop: we can't honestly validate value
+		// shape against a type we don't understand.
+		const rawTypes = Array.isArray(s.type) ? s.type : [s.type];
+		const malformed = rawTypes.filter((t) => typeof t !== "string" || !KNOWN_TYPES.has(t));
+		if (malformed.length > 0) {
+			errors.push(`${path}: malformed schema — unknown type ${JSON.stringify(s.type)}`);
+			return;
+		}
+		const types = rawTypes as string[];
 		if (types.length > 0 && !types.some((t) => matchesType(value, t))) {
 			errors.push(`${path}: expected type ${types.join("|")}, got ${typeName(value)}`);
 			return; // deeper checks would only cascade
@@ -95,10 +142,13 @@ function check(value: unknown, schema: unknown, path: string, errors: string[]):
 			for (const [key, sub] of Object.entries(properties)) {
 				if (key in obj) check(obj[key], sub, `${path}.${key}`, errors);
 			}
-			if (s.additionalProperties === false) {
-				for (const key of Object.keys(obj)) {
-					if (!(key in properties)) errors.push(`${path}: unexpected property "${key}"`);
-				}
+		}
+		// additionalProperties:false rejects unknown keys even when `properties`
+		// is absent or only partially declared (finding 9a): with no declared
+		// properties the closed object admits NO keys, so every key is unexpected.
+		if (s.additionalProperties === false) {
+			for (const key of Object.keys(obj)) {
+				if (!(properties && key in properties)) errors.push(`${path}: unexpected property "${key}"`);
 			}
 		}
 	}

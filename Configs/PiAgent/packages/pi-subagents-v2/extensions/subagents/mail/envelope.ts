@@ -117,17 +117,25 @@ function incrementDigits(digits: number[]): void {
 
 /**
  * A 26-char ULID: 10 chars of millisecond time + 16 chars of randomness,
- * monotonic within this process (same-ms ids increment the random part).
+ * monotonic-NONDECREASING within this process. Same-ms ids increment the random
+ * part; a wall-clock REGRESSION (now < lastTime — NTP step, VM snapshot resume)
+ * is treated exactly like the same millisecond: keep the last (higher) time and
+ * increment the random part, so ids never move backward even when the clock
+ * does. Without this, a backward clock would reset lastTime to the smaller value
+ * and mint a smaller id, corrupting mailbox processing order (the id is the
+ * filename and the sort key).
  */
 export function ulid(now: number = Date.now()): string {
-	if (now === lastTime) {
+	if (now <= lastTime) {
 		incrementDigits(lastRandom);
 	} else {
 		lastTime = now;
 		lastRandom = randomDigits();
 	}
+	// Encode lastTime (never `now`): under a clock regression lastTime is the
+	// monotonic high-water mark, so the time component is nondecreasing too.
 	let time = "";
-	let t = now;
+	let t = lastTime;
 	for (let i = 0; i < 10; i++) {
 		time = B32[t % 32]! + time;
 		t = Math.floor(t / 32);

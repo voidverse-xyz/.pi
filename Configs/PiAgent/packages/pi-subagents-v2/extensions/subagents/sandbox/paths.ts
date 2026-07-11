@@ -190,12 +190,22 @@ export function checkWrite(target: string, policy: PathPolicy): WriteCheck {
 	// the type-definition dirs.
 	for (const prefix of policy.systemDenyPrefixes) {
 		const settingsSibling = settingsFileSiblingOf(prefix.endsWith(sep) ? prefix.slice(0, -1) : prefix);
-		if (isWithin(prefix, real) || real === settingsSibling) {
+		// Deny in BOTH directions: the target is protected if it is EQUAL TO or
+		// BELOW a protected location (a direct write), OR an ANCESTOR of one (a
+		// mutation on `.pi` or the cwd itself would delete/move the protected
+		// `.pi/subagents` tree and the settings file from above). `isWithin(real,
+		// prefix)` catches ancestors; `isWithin(prefix, real)` catches equal/below.
+		if (
+			isWithin(prefix, real) ||
+			isWithin(real, prefix) ||
+			real === settingsSibling ||
+			isWithin(real, settingsSibling)
+		) {
 			return {
 				verdict: "denied",
 				reason:
-					`system state (${real} is inside the protected subagent state / type-definition / ` +
-					"settings tree — never writable for any agent, not even with approval)",
+					`system state (${real} is on the path to the protected subagent state / ` +
+					"type-definition / settings tree — never writable for any agent, not even with approval)",
 			};
 		}
 	}

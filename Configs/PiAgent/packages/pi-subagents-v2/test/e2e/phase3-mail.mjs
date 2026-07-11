@@ -260,8 +260,20 @@ await test("oversized report data is truncated with an explicit marker", async (
 	const big = "x".repeat(6000);
 	const r = env({ from: "worker/alpha", type: "report", text: "big", data: { blob: big } });
 	const digest = composeWakeDigest({ items: [{ envelope: r, redelivered: false }], questionLookup: () => undefined });
-	assert.match(digest, /truncated at 4000 chars — the full value is in the report envelope/, "truncation marker present");
+	assert.match(digest, /truncated at 4000 chars — the full value is in report envelope msg_[0-9A-HJKMNP-TV-Z]{26} on disk/, "truncation marker present, references the envelope");
 	assert.ok(digest.length < 6000 + 500, "digest bounded well under the raw payload size");
+});
+await test("oversized report TEXT is bounded too (finding: unbounded text)", async () => {
+	const r = env({ from: "worker/alpha", type: "report", text: "y".repeat(6000) });
+	const digest = composeWakeDigest({ items: [{ envelope: r, redelivered: false }], questionLookup: () => undefined });
+	assert.match(digest, /truncated at 4000 chars — full text in envelope msg_[0-9A-HJKMNP-TV-Z]{26} on disk/, "text truncation marker present");
+	assert.ok(digest.length < 6000, "digest bounded under the raw text size");
+});
+await test("a report whose data has a `collectSchema` field renders its DATA, not a request recipe (finding 10)", async () => {
+	const r = env({ from: "worker/alpha", type: "report", text: "done", data: { collectSchema: { note: "user field" }, value: 7 } });
+	const digest = composeWakeDigest({ items: [{ envelope: r, redelivered: false }], questionLookup: () => undefined });
+	assert.doesNotMatch(digest, /To fulfill this collect request/, "a report is never treated as a collect request");
+	assert.match(digest, /"value": 7/, "the report's own data is rendered");
 });
 await test("non-serializable report data does not throw and yields a placeholder", async () => {
 	const circular = {};
@@ -347,6 +359,63 @@ await test("collect validator: subset checks + note text", async () => {
 	assert.ok(bad.errors.some((e) => e.includes('unexpected property "extra"')));
 	assert.match(collectResultNote(bad), /SCHEMA VIOLATIONS/);
 	assert.match(collectResultNote({ valid: true, errors: [] }), /conforms/);
+});
+await test("collect validator (finding 9): the three false-verdict cases now reject", async () => {
+	// 9a: additionalProperties:false with NO/partial properties must reject unknown keys.
+	assert.equal(validateAgainstSchema({ x: 1 }, { type: "object", additionalProperties: false }).valid, false);
+	assert.equal(validateAgainstSchema({}, { type: "object", additionalProperties: false }).valid, true);
+	assert.equal(
+		validateAgainstSchema({ a: 1, b: 2 }, { type: "object", additionalProperties: false, properties: { a: {} } }).valid,
+		false,
+		"partial properties still closes the object",
+	);
+	// 9b: object const/enum equality is JSON-semantic (order-independent, recursive).
+	assert.equal(validateAgainstSchema({ a: 1, b: { c: 2 } }, { const: { b: { c: 2 }, a: 1 } }).valid, true);
+	assert.equal(validateAgainstSchema({ a: 1 }, { enum: [{ z: 9 }, { a: 1 }] }).valid, true);
+	assert.equal(validateAgainstSchema({ a: 1, b: 2 }, { const: { a: 1 } }).valid, false, "different value still rejected");
+	// 9c: a malformed `type` value is a schema error, not a silent match.
+	assert.equal(validateAgainstSchema(123, { type: "strung" }).valid, false);
+	assert.match(validateAgainstSchema(123, { type: "strung" }).errors.join(""), /malformed schema/);
+	// out-of-subset KEYWORDS are still ignored (permissive-but-honest).
+	assert.equal(validateAgainstSchema("anything", { type: "string", pattern: "^x$" }).valid, true);
+});
+await test("collect metadata survives a crash-then-requeue (finding 8)", async () => {
+	const dir = join(scratch, "unit-collect-durable");
+	const reqId = env({ type: "message" }).id; // stand-in collect-request id
+	mailbox.recordCollectRequest(dir, reqId, { type: "object" });
+	const report = env({ from: "worker/alpha", to: "main", type: "report", text: "r", data: { ok: true }, correlationId: reqId });
+	mailbox.writeEnvelope(dir, report);
+	// Compose-time PEEK is non-destructive: repeated peeks still find the schema.
+	assert.deepEqual(mailbox.peekCollectRequest(dir, reqId), { type: "object" });
+	assert.deepEqual(mailbox.peekCollectRequest(dir, reqId), { type: "object" }, "peek does not delete");
+	// Park for host delivery, then simulate a CRASH that lost the injection: the
+	// session file has no digest line → reconcile-at-session-start requeues.
+	const sessionFile = join(dir, "sess.jsonl");
+	writeFileSync(sessionFile, "{}\n"); // envelope id absent → undelivered
+	mailbox.beginHostDelivery(dir, [report.id], sessionFile);
+	const lost = mailbox.reconcileHostDelivery(dir, { marker: "subagent-mail", requeueUndelivered: true });
+	assert.deepEqual(lost.requeued, [report.id]);
+	// The verdict survived: the requeued report can still be validated.
+	assert.deepEqual(mailbox.peekCollectRequest(dir, reqId), { type: "object" }, "schema kept for the re-delivered report");
+	// Now a clean delivery: the session file carries the id + marker → finalize.
+	writeFileSync(sessionFile, `{"customType":"subagent-mail","id":"${report.id}"}\n`);
+	mailbox.beginDelivery(dir, [report.id]); // (marker only; not required)
+	mailbox.beginHostDelivery(dir, [report.id], sessionFile);
+	const done = mailbox.reconcileHostDelivery(dir, { marker: "subagent-mail", requeueUndelivered: false });
+	assert.deepEqual(done.finalized, [report.id]);
+	// Only NOW, at the durable finalize point, is the collect request retired.
+	assert.equal(mailbox.peekCollectRequest(dir, reqId), undefined, "schema retired after durable delivery");
+});
+await test("envelope whose FILENAME id != body id is quarantined (endless re-delivery guard)", async () => {
+	const dir = join(scratch, "unit-idmismatch");
+	const e = env({ text: "mismatch" });
+	mailbox.writeEnvelope(dir, e); // writes <e.id>.json correctly
+	// Corrupt: a valid body stored under a DIFFERENT valid msg-id filename.
+	const other = env({ text: "other body" }); // its id != e.id
+	writeFileSync(join(dir, `${other.id}.json`), JSON.stringify(e)); // filename=other.id, body.id=e.id
+	const pending = mailbox.readPending(dir);
+	assert.deepEqual(pending.map((p) => p.envelope.id), [e.id], "only the consistent envelope is pending");
+	assert.ok(existsSync(join(dir, ".corrupt", `${other.id}.json`)), "mismatched file quarantined");
 });
 
 // ---------------------------------------------------------------------------

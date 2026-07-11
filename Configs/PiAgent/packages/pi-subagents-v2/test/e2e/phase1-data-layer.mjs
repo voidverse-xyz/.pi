@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { EXT, WORLDS, jiti } from "./env.mjs";
 
-const { createLayout, cwdSlug, sessionFileName } = await jiti.import(join(EXT, "store/layout.ts"));
+const { createLayout, cwdSlug, cwdDigest, sessionFileName } = await jiti.import(join(EXT, "store/layout.ts"));
 const registry = await jiti.import(join(EXT, "store/registry.ts"));
 const teams = await jiti.import(join(EXT, "store/teams.ts"));
 const archive = await jiti.import(join(EXT, "store/archive.ts"));
@@ -44,7 +44,7 @@ ok("session filename matches Pi's convention", () => {
 });
 const layout = createLayout(project, { home });
 ok("all paths derive from the sessions dir", () => {
-	const root = join(home, ".pi/agent/sessions/--home-user-fake-project--/subagents");
+	const root = join(home, `.pi/agent/sessions/--home-user-fake-project--/subagents-${cwdDigest(project)}`);
 	assert.equal(layout.subagentsRoot, root);
 	assert.equal(layout.registryFile, join(root, "registry.json"));
 	assert.equal(layout.teamsFile, join(root, "teams.json"));
@@ -65,6 +65,39 @@ ok("all paths derive from the sessions dir", () => {
 	// Phase 7 settings files (store/settings.ts source of truth)
 	assert.equal(layout.globalSettingsFile, join(home, ".pi/agent/subagents.json"));
 	assert.equal(layout.projectSettingsFile, join(project, ".pi/subagents.json"));
+	// finding 6: the legacy (pre-digest) root is exposed for migration.
+	assert.equal(layout.legacySubagentsRoot, join(home, ".pi/agent/sessions/--home-user-fake-project--/subagents"));
+});
+
+// finding 6 regression: slug-colliding cwds no longer share OUR state root, but
+// still share Pi's own (slug) session dir; and existing legacy state migrates.
+const { migrateStateRootIfNeeded } = await jiti.import(join(EXT, "core.ts"));
+ok("cwd-slug collision no longer shares the subagents state root", () => {
+	assert.equal(cwdSlug("/a-b/c"), cwdSlug("/a/b-c")); // the lossy slug still collides
+	const home2 = join(scratch, "home-collide");
+	const lA = createLayout("/a-b/c", { home: home2 });
+	const lB = createLayout("/a/b-c", { home: home2 });
+	assert.equal(lA.projectSessionDir, lB.projectSessionDir); // Pi's dir: unchanged, shared
+	assert.notEqual(lA.subagentsRoot, lB.subagentsRoot); // OUR root: disambiguated
+	assert.notEqual(cwdDigest("/a-b/c"), cwdDigest("/a/b-c"));
+});
+ok("existing legacy state migrates into the digest root (compat)", () => {
+	const home2 = join(scratch, "home-migrate");
+	const cwd = "/home/user/legacy-project";
+	const lay = createLayout(cwd, { home: home2 });
+	// Seed pre-digest state under the legacy dir; digest root absent.
+	mkdirSync(lay.legacySubagentsRoot, { recursive: true });
+	writeFileSync(join(lay.legacySubagentsRoot, "registry.json"), '{"agents":{}}\n');
+	assert.ok(!existsSync(lay.subagentsRoot));
+	migrateStateRootIfNeeded(lay);
+	// Legacy adopted into the digest root; its files came along.
+	assert.ok(!existsSync(lay.legacySubagentsRoot));
+	assert.ok(existsSync(join(lay.subagentsRoot, "registry.json")));
+	// Idempotent: a second call with an already-populated digest root is a no-op.
+	mkdirSync(lay.legacySubagentsRoot, { recursive: true }); // a stray legacy dir reappears
+	writeFileSync(join(lay.legacySubagentsRoot, "registry.json"), '{"stray":true}\n');
+	migrateStateRootIfNeeded(lay);
+	assert.equal(readFileSync(join(lay.subagentsRoot, "registry.json"), "utf8"), '{"agents":{}}\n');
 });
 
 // ---------------------------------------------------------------- registry
@@ -130,6 +163,39 @@ ok("add / shared / scrub with empty-team deletion", () => {
 	// removeFrom deletes emptied team
 	teams.removeFrom(t, "docs", "docs-keeper/main");
 	assert.deepEqual(Object.keys(t), []);
+});
+// finding 11: team-name validation + prototype-safe, substring-proof membership.
+ok("team names validated; reserved/malformed rejected", () => {
+	assert.equal(teams.isValidTeamName("billing-refactor"), true);
+	assert.equal(teams.isValidTeamName("a.b_c-1"), true);
+	for (const bad of ["", "__proto__", "prototype", "constructor", ".hidden", "a/b", "a b", "-lead"]) {
+		assert.equal(teams.isValidTeamName(bad), false, bad);
+	}
+	// addTo with a reserved name neither throws nor mutates (defense-in-depth).
+	const t = {};
+	teams.addTo(t, "__proto__", "refactorer/auth");
+	assert.deepEqual(Object.keys(t), []);
+	assert.equal(Object.getPrototypeOf(t), Object.prototype); // not polluted
+});
+ok("persisted teams.json is normalized: poison keys + non-array/invalid members dropped", () => {
+	const tf = join(scratch, "teams-malformed.json");
+	writeFileSync(
+		tf,
+		JSON.stringify({
+			real: ["refactorer/auth", "refactorer/api", "refactorer/auth", "bogus address!"],
+			spoof: "refactorer/authX", // a bare STRING, not an array — substring-attack vector
+			__proto__: ["evil/x"],
+		}),
+	);
+	const t = teams.readTeams(tf);
+	// valid array kept, deduped, invalid element dropped
+	assert.deepEqual(t.real, ["refactorer/auth", "refactorer/api"]);
+	// string member dropped entirely (no substring authorization)
+	assert.equal(t.spoof, undefined);
+	assert.equal(teams.sharedTeam(t, "refactorer/auth", "refactorer/aut"), null); // no substring match
+	assert.equal(teams.sharedTeam(t, "refactorer/auth", "refactorer/api"), "real"); // exact still works
+	// null-prototype map — a persisted __proto__ key can't poison lookups
+	assert.equal(Object.getPrototypeOf(t), null);
 });
 
 // ---------------------------------------------------------------- archive
@@ -294,6 +360,13 @@ ok("ulid ordering: 2000 ids strictly increasing", () => {
 	const b = envelope.ulid(1000000000001);
 	assert.ok(a < b);
 	assert.equal(a.length, 26);
+});
+ok("ulid is nondecreasing under a backward clock (regression guard)", () => {
+	const forward = envelope.ulid(2000000000000);
+	const back1 = envelope.ulid(1000000000000); // wall clock jumped BACKWARD
+	const back2 = envelope.ulid(1000000000000); // still behind
+	assert.ok(back1 > forward, `${forward} !< ${back1}`); // never moved backward
+	assert.ok(back2 > back1);
 });
 
 console.log(`\nall ${passed} checks passed`);

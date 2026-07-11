@@ -11,7 +11,7 @@
  * is runtime work); this module owns only the disk moves.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Layout } from "./layout.ts";
 import { atomicWriteJson, listAgents, readRegistry } from "./registry.ts";
@@ -19,14 +19,34 @@ import { atomicWriteJson, listAgents, readRegistry } from "./registry.ts";
 /** Marker file inside an archived agent dir recording when it was retired. */
 const RETIRED_AT_FILE = ".retired-at";
 
+/**
+ * The retirement-tombstone filename (Finding 13). Exported so the runtime can
+ * detect a crash-interrupted retire — an instance dir that already carries this
+ * marker was tombstoned but not yet moved to .archive/, and the startup
+ * reconciliation finishes its funeral.
+ */
+export const RETIREMENT_TOMBSTONE = RETIRED_AT_FILE;
+
+/** True if `dir` carries a retirement tombstone (a crash-interrupted retire). */
+export function hasRetirementTombstone(dir: string): boolean {
+	return existsSync(join(dir, RETIRED_AT_FILE));
+}
+
 export const DEFAULT_GC_DAYS = 7;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Move a retired agent's dir to the archive, collision-safe: if
  * .archive/<type>/<id>/ already holds an earlier funeral, the new archive gets
- * a `-2`, `-3`, ... suffix instead of clobbering it. Stamps a retirement
- * marker for the GC clock (dir mtimes don't survive renames meaningfully).
+ * a `-2`, `-3`, ... suffix instead of clobbering it.
+ *
+ * The retirement marker is written INTO THE SOURCE dir BEFORE the rename
+ * (Finding 13), so the tombstone travels WITH the move and the archived dir is
+ * never observed marker-less: a concurrent gcArchive always sees a stamp (and,
+ * being recent, keeps it), and a crash after the marker write but before the
+ * rename leaves a tombstoned instance dir the runtime's startup reconciliation
+ * finishes archiving. The marker was previously written AFTER the rename,
+ * leaving a window where GC could age the archive by its (post-rename) mtime.
  *
  * Returns the archive dir the agent landed in, or null if the agent dir
  * didn't exist (already archived — retire is idempotent on disk).
@@ -39,9 +59,15 @@ export function archiveAgentDir(layout: Layout, type: string, id: string, now: D
 	let target = base;
 	for (let n = 2; existsSync(target); n++) target = `${base}-${n}`;
 
+	// Tombstone first (into the source), then move atomically — the archived
+	// dir carries its marker the instant it exists.
+	try {
+		writeFileSync(join(source, RETIRED_AT_FILE), `${now.toISOString()}\n`, "utf8");
+	} catch {
+		// Best-effort: a missing marker falls back to the dir mtime in the GC clock.
+	}
 	mkdirSync(dirname(target), { recursive: true });
 	renameSync(source, target);
-	writeFileSync(join(target, RETIRED_AT_FILE), `${now.toISOString()}\n`, "utf8");
 	return target;
 }
 
@@ -74,7 +100,16 @@ export function gcArchive(layout: Layout, options: GcOptions = {}): string[] {
 				deleted.push(archiveDir);
 			}
 		}
-		if (readdirSync(typeDir).length === 0) rmSync(typeDir, { recursive: true, force: true });
+		// Non-recursive removal of a supposedly-empty type dir (Finding 13): a
+		// fresh archive (or an in-flight retire's tombstoned move) can land in
+		// this type dir between the readdir check and the remove — rmdirSync
+		// then fails with ENOTEMPTY and we skip it, instead of `rm -rf`
+		// nuking a just-created sibling archive.
+		try {
+			if (readdirSync(typeDir).length === 0) rmdirSync(typeDir);
+		} catch {
+			// Non-empty (raced) or unreadable — leave it; next sweep revisits.
+		}
 	}
 	return deleted;
 }

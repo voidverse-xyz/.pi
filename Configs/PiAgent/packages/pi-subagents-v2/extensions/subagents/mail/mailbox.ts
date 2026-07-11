@@ -106,6 +106,15 @@ export function readPending(mailboxDir: string): PendingEnvelope[] {
 			quarantineEnvelopeFile(mailboxDir, name);
 			continue;
 		}
+		// The filename id and the body id must agree — the id defines processing
+		// order AND is what reconciliation/markDone key off. A mismatch (corrupt
+		// state, a hand-edited file) would otherwise re-deliver forever, since
+		// markDone(<body-id>) never removes the <filename-id>.json file. Quarantine
+		// it like any other invalid envelope.
+		if (envelope.id !== name.slice(0, -".json".length)) {
+			quarantineEnvelopeFile(mailboxDir, name);
+			continue;
+		}
 		pending.push({ envelope, file, redelivered: existsSync(attemptMarkerOf(file)) });
 	}
 	return pending;
@@ -282,6 +291,13 @@ export function reconcileHostDelivery(
 			lines !== null && lines.some((line) => line.includes(id) && line.includes(options.marker));
 		try {
 			if (delivered) {
+				// This envelope is now durably delivered — the finalize point where
+				// a collect request may be retired (finding 8). Read the parked
+				// envelope BEFORE the move; a report carrying a correlationId whose
+				// collect request is still on record has now delivered its verdict,
+				// so pop the schema. Best-effort — a parse failure never blocks
+				// finalization.
+				retireCollectRequestOf(mailboxDir, parked);
 				const doneDir = mailboxDoneDirOf(mailboxDir);
 				mkdirSync(doneDir, { recursive: true });
 				renameSync(parked, join(doneDir, name));
@@ -365,8 +381,23 @@ export function recordCollectRequest(mailboxDir: string, envelopeId: string, sch
 }
 
 /**
- * Pop the schema of an outstanding collect request matching a report's
- * correlationId, or undefined if the report isn't a collect result.
+ * The schema of an outstanding collect request matching a report's
+ * correlationId, WITHOUT removing it (finding 8), or undefined if the report
+ * isn't a collect result. Used while COMPOSING the wake digest: the schema must
+ * survive until the report is DURABLY delivered, so a crash-then-requeue still
+ * carries the verdict. The record is deleted only at the finalize point
+ * (takeCollectRequest, called when the envelope moves to .done/).
+ */
+export function peekCollectRequest(mailboxDir: string, correlationId: string): unknown {
+	const index = readIndex(collectRequestsFileOf(mailboxDir));
+	return correlationId in index ? index[correlationId] : undefined;
+}
+
+/**
+ * Pop (read + delete) the schema of an outstanding collect request matching a
+ * report's correlationId, or undefined if none. Call ONLY at the finalize point
+ * — once the report is durably delivered — never during compose (finding 8): a
+ * report requeued after a crash must still find its schema.
  */
 export function takeCollectRequest(mailboxDir: string, correlationId: string): unknown {
 	const file = collectRequestsFileOf(mailboxDir);
@@ -376,4 +407,22 @@ export function takeCollectRequest(mailboxDir: string, correlationId: string): u
 	delete index[correlationId];
 	atomicWriteJson(file, index);
 	return schema;
+}
+
+/**
+ * At an envelope's finalize point, retire the collect request it fulfilled (if
+ * any): a durably-delivered `report` whose correlationId matches a recorded
+ * collect request has delivered its verdict, so pop the schema (finding 8).
+ * Best-effort — a missing/unparsable envelope file is simply ignored.
+ */
+function retireCollectRequestOf(mailboxDir: string, envelopeFile: string): void {
+	let envelope: Envelope;
+	try {
+		envelope = JSON.parse(readFileSync(envelopeFile, "utf8")) as Envelope;
+	} catch {
+		return;
+	}
+	if (envelope.type === "report" && typeof envelope.correlationId === "string") {
+		takeCollectRequest(mailboxDir, envelope.correlationId);
+	}
 }

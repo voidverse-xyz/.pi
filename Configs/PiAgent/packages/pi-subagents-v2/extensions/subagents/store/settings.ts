@@ -27,6 +27,14 @@
  * skipped with a human-readable warning, never thrown — a typo in a config
  * file must not take the extension down. `null` on an optional ceiling field
  * explicitly clears it back to "unlimited".
+ *
+ * FAIL-CLOSED on a WHOLE-FILE read/parse failure (Finding 12): a temporarily
+ * malformed file (mid-edit save, transient unreadable) must NOT collapse to an
+ * empty layer — that would silently replace restrictive live values with the
+ * doc defaults and drop optional ceilings. Instead the LAST-KNOWN-GOOD parse of
+ * that exact file (cached per absolute path) is retained until the file becomes
+ * readable/valid again; only an intentionally MISSING file (ENOENT) removes the
+ * layer. The degraded read still returns a warning so the host can surface it.
  */
 
 import { readFileSync } from "node:fs";
@@ -105,25 +113,42 @@ export interface ReadSettingsResult {
 	values: SettingsPatch;
 	/** Human-readable problems (unknown keys, wrong types, unparsable file). */
 	warnings: string[];
+	/**
+	 * True when a WHOLE-FILE read/parse FAILED (unreadable / invalid JSON / not
+	 * an object). `values` is then empty; the live-reload path (applySettingsInto)
+	 * retains that file's last-known-good layer instead of failing open to
+	 * defaults (Finding 12). A missing (ENOENT) file is NOT degraded — it is an
+	 * intentional layer removal. Individual bad FIELDS only warn (not degraded).
+	 */
+	degraded?: boolean;
 }
 
-/** Read + validate one settings file. Missing file = empty patch, no warning. */
+/**
+ * Read + validate one settings file (PURE — no cross-call state). Missing file
+ * = empty patch, no warning. A whole-file failure returns an empty patch with
+ * `degraded: true` so callers can distinguish "temporarily broken" (retain the
+ * last-known-good) from "intentionally empty/absent" (drop the layer).
+ */
 export function readSettingsFile(file: string): ReadSettingsResult {
 	let raw: string;
 	try {
 		raw = readFileSync(file, "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { values: {}, warnings: [] };
-		return { values: {}, warnings: [`${file}: unreadable (${String(error)})`] };
+		return { values: {}, warnings: [`${file}: unreadable (${String(error)})`], degraded: true };
 	}
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
 	} catch (error) {
-		return { values: {}, warnings: [`${file}: invalid JSON (${error instanceof Error ? error.message : String(error)})`] };
+		return {
+			values: {},
+			warnings: [`${file}: invalid JSON (${error instanceof Error ? error.message : String(error)})`],
+			degraded: true,
+		};
 	}
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-		return { values: {}, warnings: [`${file}: expected a JSON object`] };
+		return { values: {}, warnings: [`${file}: expected a JSON object`], degraded: true };
 	}
 
 	const values: SettingsPatch = {};
@@ -195,16 +220,46 @@ export function mergePatch(target: SubagentsSettings, patch: SettingsPatch): voi
 }
 
 /**
+ * Last-known-good patch per absolute settings-file path (Finding 12), owned by
+ * the LIVE-RELOAD path only. Keyed by path so distinct projects/homes never
+ * share state. A successful read (including a valid empty file or an ENOENT
+ * removal, both `{}`) overwrites the entry; a degraded read reuses it. Kept for
+ * the process lifetime — exactly the "hold the last valid values while the file
+ * is temporarily broken" window.
+ */
+const lastKnownGoodByFile = new Map<string, SettingsPatch>();
+
+/**
  * Re-read both files INTO an existing live settings object (the one the
  * autonomy budget and ceiling checks read per turn), preserving programmatic
  * overrides given at core creation. Returns warnings.
+ *
+ * Finding 12: a source whose whole-file read/parse FAILED (`degraded`) does NOT
+ * collapse to an empty layer — its last-known-good patch is reused, so a
+ * mid-edit malformed save cannot silently drop restrictive live values back to
+ * the defaults. Only a successful read (a valid file, or an intentional ENOENT
+ * removal) updates the retained layer. readSettingsFile stays pure; the
+ * retention lives here, at the one place that reloads live.
  */
 export function applySettingsInto(
 	target: SubagentsSettings,
 	layout: Pick<Layout, "globalSettingsFile" | "projectSettingsFile">,
 	programmaticOverrides: SettingsPatch = {},
 ): string[] {
-	const { settings: fresh, warnings } = loadSettings(layout);
+	const fresh = defaultSettings();
+	const warnings: string[] = [];
+	for (const file of [layout.globalSettingsFile, layout.projectSettingsFile]) {
+		const read = readSettingsFile(file);
+		warnings.push(...read.warnings);
+		let patch: SettingsPatch;
+		if (read.degraded) {
+			patch = lastKnownGoodByFile.get(file) ?? {}; // retain last valid (or empty if none yet)
+		} else {
+			patch = read.values;
+			lastKnownGoodByFile.set(file, read.values); // success / ENOENT updates (or clears) the layer
+		}
+		mergePatch(fresh, patch);
+	}
 	mergePatch(fresh, programmaticOverrides);
 	// Mutate in place: replace every field, drop optionals absent in fresh.
 	for (const key of Object.keys(FIELDS) as Array<keyof SubagentsSettings>) {

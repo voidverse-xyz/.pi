@@ -117,6 +117,8 @@ export default function (pi: ExtensionAPI) {
 	let escalationsDeferred = false;
 	/** The widget's refresh loop (rebuilt per session / core). */
 	let widget: WidgetController | undefined;
+	/** Last settings warning surfaced to the user — de-dupes the notify (Finding 12). */
+	let lastSettingsWarning = "";
 
 	const getCore = (ctx: ExtensionContext): SubagentsCore => {
 		if (!core) {
@@ -133,6 +135,21 @@ export default function (pi: ExtensionAPI) {
 					if (mainBusy) return;
 					triggerWake();
 				},
+			});
+			// Finding 7: gate project-local subagent types on host project-trust.
+			// createCore builds the runtime without a trust source (core.ts is not
+			// editable in this change — see the coordination note in the fix
+			// report), so wire the live getter onto the concrete runtime here. The
+			// structural cast keeps index free of the runtime impl type; direct
+			// InProcessRuntime construction (harnesses) passes isProjectTrusted via
+			// its constructor option instead. Absent isProjectTrusted (stub ctx) or
+			// any throw defaults to trusted — no behavior change for trusted hosts.
+			(core.runtime as unknown as { setProjectTrust?(fn: () => boolean): void }).setProjectTrust?.(() => {
+				try {
+					return ctx.isProjectTrusted?.() ?? true;
+				} catch {
+					return true;
+				}
 			});
 			// D22 escalation prompt: surface immediately when the user is
 			// present (a live TUI); otherwise it queues behind the widget's ⚠
@@ -481,7 +498,18 @@ export default function (pi: ExtensionAPI) {
 		// Phase 7: settings files are re-read at every real user turn — edits
 		// to ~/.pi/agent/subagents.json / <project>/.pi/subagents.json apply
 		// live (the budget and ceiling checks read the same mutable object).
-		core.reloadSettings();
+		// Finding 12: a malformed file now RETAINS its last-known-good layer
+		// (store/settings.ts) instead of failing open to defaults; surface the
+		// warning so the user learns why an edit didn't take. De-duplicated so a
+		// persistently-broken file warns once, not every turn.
+		const settingsWarnings = core.reloadSettings();
+		const joinedWarnings = settingsWarnings.join("\n");
+		if (joinedWarnings !== lastSettingsWarning) {
+			if (joinedWarnings.length > 0 && ctx?.hasUI) {
+				ctx.ui.notify(`Subagent settings problem — using last valid values:\n${joinedWarnings}`, "warning");
+			}
+			lastSettingsWarning = joinedWarnings;
+		}
 		// D21 user-input reset: before_agent_start only fires on the real user
 		// prompt path (never for sendMessage/triggerTurn auto-wakes — see the
 		// module header), so this refills the pool and, if paused, resumes +

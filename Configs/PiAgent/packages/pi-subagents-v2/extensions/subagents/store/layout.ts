@@ -10,7 +10,7 @@
  *
  *   ~/.pi/agent/sessions/<cwd-slug>/          # Pi's own per-project session dir
  *     <timestamp>_<uuid>.jsonl                # main agent sessions (untouched)
- *     subagents/
+ *     subagents-<cwd-digest>/                 # OUR state root (digest = slug-collision guard)
  *       registry.json                         # roster (store/registry.ts)
  *       teams.json                            # membership (store/teams.ts)
  *       .main/mailbox/                        # main agent's mailbox (+ .done/)
@@ -32,8 +32,9 @@
  * Pure module: no fs access, no side effects — path math only.
  */
 
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 // ---------------------------------------------------------------------------
 // Pure helpers (Pi-compatible naming)
@@ -46,6 +47,24 @@ import { join } from "node:path";
  */
 export function cwdSlug(cwd: string): string {
 	return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+}
+
+/**
+ * A short, collision-free tag for OUR state root (finding 6). `cwdSlug` is
+ * lossy — it maps `/` `\` `:` all to `-`, so distinct projects collide
+ * (`cwdSlug('/a-b/c') === cwdSlug('/a/b-c')`), which would let registry, teams,
+ * mailboxes, archives and persistent memory LEAK between projects that happen
+ * to share a slug. Pi's own session dir (projectSessionDir) must keep using the
+ * lossy slug — we do not control Pi's files — so we disambiguate only OUR
+ * subtree by suffixing it with the first 8 hex of sha256 over the CANONICAL
+ * (lexically resolved) absolute cwd. The canonical string is the collision-free
+ * identity: `/a-b/c` and `/a/b-c` resolve to themselves and hash differently.
+ *
+ * Deterministic and side-effect-free (sha256 of a string) — still a pure
+ * function, so this module keeps its "path math only" contract.
+ */
+export function cwdDigest(cwd: string): string {
+	return createHash("sha256").update(resolve(cwd)).digest("hex").slice(0, 8);
 }
 
 /**
@@ -152,8 +171,20 @@ export interface Layout {
 	readonly sessionsRoot: string;
 	/** ~/.pi/agent/sessions/<cwd-slug> — Pi's own dir for this project. */
 	readonly projectSessionDir: string;
-	/** <projectSessionDir>/subagents — root of everything we own. */
+	/**
+	 * <projectSessionDir>/subagents-<cwd-digest> — root of everything we own.
+	 * The digest suffix disambiguates projects whose lossy cwdSlug collides
+	 * (finding 6): sharing this dir would leak state between them.
+	 */
 	readonly subagentsRoot: string;
+	/**
+	 * <projectSessionDir>/subagents — the PRE-digest (legacy) state root. A real
+	 * user's existing state lives here; core.ts adopts it into subagentsRoot on
+	 * first run when the digest dir is still absent (see migrateStateRootIfNeeded).
+	 * Non-colliding projects migrate transparently; a genuine collision keeps its
+	 * own digest dir and never touches a foreign project's data.
+	 */
+	readonly legacySubagentsRoot: string;
 	/** <subagentsRoot>/registry.json */
 	readonly registryFile: string;
 	/** <subagentsRoot>/teams.json */
@@ -225,7 +256,8 @@ export function createLayout(cwd: string, options: LayoutOptions = {}): Layout {
 	const agentDir = join(home, ".pi", "agent");
 	const sessionsRoot = join(agentDir, "sessions");
 	const projectSessionDir = join(sessionsRoot, cwdSlug(cwd));
-	const subagentsRoot = join(projectSessionDir, "subagents");
+	const legacySubagentsRoot = join(projectSessionDir, "subagents");
+	const subagentsRoot = join(projectSessionDir, `subagents-${cwdDigest(cwd)}`);
 	const archiveRoot = join(subagentsRoot, ".archive");
 	const mainMailboxDir = join(subagentsRoot, ".main", "mailbox");
 	const escalationsDir = join(subagentsRoot, ".main", "escalations");
@@ -239,6 +271,7 @@ export function createLayout(cwd: string, options: LayoutOptions = {}): Layout {
 		sessionsRoot,
 		projectSessionDir,
 		subagentsRoot,
+		legacySubagentsRoot,
 		registryFile: join(subagentsRoot, "registry.json"),
 		teamsFile: join(subagentsRoot, "teams.json"),
 		mainMailboxDir,

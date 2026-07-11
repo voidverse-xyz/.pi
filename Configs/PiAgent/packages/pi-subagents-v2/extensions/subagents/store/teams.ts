@@ -17,10 +17,56 @@
  */
 
 import { readFileSync } from "node:fs";
+import { parseAddress } from "../mail/envelope.ts";
 import { atomicWriteJson } from "./registry.ts";
 
 /** team name → member addresses (`<type>/<id>`), insertion-ordered, no dupes. */
 export type Teams = Record<string, string[]>;
+
+/**
+ * Team-name grammar: a filesystem-safe slug (matching the address-segment
+ * charset), NOT a reserved prototype-pollution key or empty. Enforced at the
+ * spawn boundary (core.spawn) BEFORE any state mutation so a bad name can never
+ * commit a partial registry record, and again here as defense-in-depth when
+ * reading persisted teams.json.
+ */
+const TEAM_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/i;
+const RESERVED_TEAM_NAMES = new Set(["__proto__", "prototype", "constructor"]);
+
+/** True if `name` is a safe, non-reserved team slug. */
+export function isValidTeamName(name: unknown): name is string {
+	return (
+		typeof name === "string" &&
+		name.length > 0 &&
+		!RESERVED_TEAM_NAMES.has(name) &&
+		!name.startsWith(".") &&
+		TEAM_NAME_RE.test(name)
+	);
+}
+
+/**
+ * Coerce a parsed teams.json value into a trustworthy Teams map (finding 11):
+ * a NULL-PROTOTYPE object (so a persisted `__proto__`/`constructor` key can't
+ * poison lookups), keeping only valid team names mapped to arrays of valid
+ * `<type>/<id>` address strings. A member that is a bare STRING (not an array),
+ * or an array element that isn't a valid address, is dropped — otherwise a
+ * malformed value would let membership checks match by substring (`.includes`
+ * on a raw string) and wrongly authorize peers. Emptied teams vanish.
+ */
+function normalizeTeams(parsed: Record<string, unknown>): Teams {
+	const teams: Teams = Object.create(null) as Teams;
+	for (const [name, members] of Object.entries(parsed)) {
+		if (!isValidTeamName(name) || !Array.isArray(members)) continue;
+		const clean: string[] = [];
+		for (const member of members) {
+			if (typeof member === "string" && parseAddress(member) !== null && !clean.includes(member)) {
+				clean.push(member);
+			}
+		}
+		if (clean.length > 0) teams[name] = clean;
+	}
+	return teams;
+}
 
 // ---------------------------------------------------------------------------
 // File I/O
@@ -35,11 +81,11 @@ export function readTeams(file: string): Teams {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
 		throw error;
 	}
-	const parsed = JSON.parse(raw) as Teams;
+	const parsed = JSON.parse(raw) as Record<string, unknown>;
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
 		throw new Error(`Unrecognized teams format in ${file}`);
 	}
-	return parsed;
+	return normalizeTeams(parsed);
 }
 
 /** Write teams.json atomically. */
@@ -59,8 +105,14 @@ export function updateTeams<T>(file: string, mutate: (teams: Teams) => T): T {
 // Membership (pure)
 // ---------------------------------------------------------------------------
 
-/** Add an address to a team, creating the team if new (D12). Idempotent. */
+/**
+ * Add an address to a team, creating the team if new (D12). Idempotent.
+ * Defense-in-depth: an invalid/reserved team name is a no-op here (the spawn
+ * boundary already rejects it before any state mutation — finding 11), so a
+ * `__proto__` name can neither crash nor poison the map.
+ */
 export function addTo(teams: Teams, team: string, address: string): void {
+	if (!isValidTeamName(team)) return;
 	const members = teams[team] ?? (teams[team] = []);
 	if (!members.includes(address)) members.push(address);
 }

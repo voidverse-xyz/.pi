@@ -115,12 +115,79 @@ function readOnlyEscapeHatch(cmd: string, args: Token[]): string | null {
 	}
 }
 
-/** git subcommands that only read (worktree and .git untouched). */
+/**
+ * git subcommands that only read (worktree and .git untouched) REGARDLESS of
+ * their action arguments. Subcommands whose read-only-ness depends on a nested
+ * action (`remote`, `reflog`, `stash`, `worktree`, `notes`, `config`, `tag`,
+ * `gc`, …) are deliberately NOT here — they are classified by action in the
+ * `git` branch of analyzeSegment (a bare `git remote` LISTS but `git remote
+ * add` MUTATES). Anything not proven read-only there escalates (fail-safe).
+ */
 const GIT_READ_ONLY = new Set([
 	"status", "log", "diff", "show", "rev-parse", "ls-files", "ls-remote", "ls-tree",
-	"blame", "describe", "shortlog", "grep", "cat-file", "config--get", "reflog",
-	"remote", "tag--list", "var", "version", "help", "count-objects",
+	"blame", "describe", "shortlog", "grep", "cat-file", "var", "version", "help",
+	"count-objects",
 ]);
+
+/**
+ * Actions of `git remote` that only READ (list/inspect). Every other action —
+ * add/remove/rm/set-url/set-head/set-branches/prune/rename/update — mutates the
+ * repo's remote configuration and must escalate (deny under readOnly).
+ * `undefined` = bare `git remote` (lists remote names) is read-only.
+ */
+const GIT_REMOTE_READ_ONLY_ACTIONS = new Set(["show", "get-url"]);
+
+/**
+ * Actions of `git reflog` that only READ. `expire`/`delete` rewrite the reflog
+ * (and can drop unreachable objects) → mutating. `undefined`/`show` are reads.
+ */
+const GIT_REFLOG_READ_ONLY_ACTIONS = new Set(["show"]);
+
+/**
+ * Environment variables that are DANGEROUS as a leading `VAR=val` assignment on
+ * ANY command: they install execution hooks, alter which binary/loader runs, or
+ * change field splitting — turning an apparently read-only command into
+ * arbitrary execution. Their presence always escalates (never silently
+ * stripped). This is not exhaustive; unknown variables ALSO escalate (only the
+ * small SAFE_ENV_ASSIGNMENTS allowlist below is stripped as benign).
+ */
+const DANGEROUS_ENV_ASSIGNMENTS = new Set([
+	"GIT_EXTERNAL_DIFF", "GIT_PAGER", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR",
+	"GIT_SSH", "GIT_SSH_COMMAND", "GIT_PROXY_COMMAND", "GIT_ASKPASS",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE",
+	"LESSOPEN", "LESSCLOSE", "LESS", "PAGER", "MANPAGER", "EDITOR", "VISUAL",
+	"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "DYLD_INSERT_LIBRARIES",
+	"DYLD_LIBRARY_PATH", "IFS", "PATH", "BASH_ENV", "ENV", "SHELLOPTS",
+	"BASH_FUNC", "PROMPT_COMMAND", "PS1", "PS4", "CDPATH", "GLOBIGNORE",
+	"PERL5OPT", "PERL5LIB", "PYTHONSTARTUP", "PYTHONPATH", "NODE_OPTIONS",
+	"RUBYOPT", "FPATH",
+]);
+
+/**
+ * Environment variables provably HARMLESS as a leading `VAR=val` prefix for the
+ * commands this guard classifies: locale/display knobs that only affect
+ * formatting/collation and cannot select a binary, inject code, or change
+ * resolution. A leading assignment whose name is NOT here escalates (fail-safe:
+ * proving a variable harmless is hard, so unknown escalates). `LC_*` is matched
+ * by prefix in isDangerousOrUnknownEnv.
+ */
+const SAFE_ENV_ASSIGNMENTS = new Set([
+	"LANG", "LANGUAGE", "TZ", "COLUMNS", "LINES",
+]);
+
+/**
+ * Classify a leading (or `env`-consumed) `NAME=value` assignment. Returns null
+ * when the name is provably benign (may be stripped); otherwise a reason to
+ * escalate. Anything dangerous OR unknown escalates — only SAFE_ENV_ASSIGNMENTS
+ * (and `LC_*`) are treated as harmless.
+ */
+function envAssignmentIssue(name: string): string | null {
+	if (DANGEROUS_ENV_ASSIGNMENTS.has(name)) {
+		return `environment assignment ${name}= can install an execution hook or alter command/loader resolution`;
+	}
+	if (SAFE_ENV_ASSIGNMENTS.has(name) || /^LC_[A-Z]+$/.test(name)) return null;
+	return `environment assignment ${name}= is not on the harmless allowlist — its effect on the command is not provable`;
+}
 
 /**
  * Mutators whose targets are their path arguments — provable when every
@@ -334,6 +401,42 @@ function judgeTarget(target: Token, options: BashGuardOptions, what: string): Ba
 	return escalate(`${what} target "${target.text}": ${check.reason}`);
 }
 
+/** Last path segment of a token's text (its basename), trailing slashes trimmed. */
+function tokenBasename(text: string): string {
+	const trimmed = text.replace(/\/+$/, "");
+	const slash = trimmed.lastIndexOf("/");
+	return slash === -1 ? trimmed : trimmed.slice(slash + 1);
+}
+
+/**
+ * cp/mv/ln/install may treat the destination as a DIRECTORY, in which case the
+ * effective write is `dest/basename(source)` — NOT `dest` itself. The guard
+ * can't know statically whether dest is a dir or a rename target, so it also
+ * judges every effective `dest/basename(src)` (fail-safe: a protected/denyPaths
+ * CHILD reachable through an allowed parent must not slip through). In-scope
+ * copies stay allowed because the effective path is still under the allowed
+ * dest; only effective paths that land on a protected/out-of-scope location
+ * add a deny/escalate.
+ */
+function judgeEffectiveDests(dest: Token, sources: Token[], options: BashGuardOptions, what: string): BashVerdict[] {
+	if (dest.hasExpansion || dest.hasGlob) return []; // dest already escalated by judgeTarget
+	const out: BashVerdict[] = [];
+	for (const src of sources) {
+		if (src.hasExpansion || src.hasGlob) {
+			out.push(escalate(`${what} source "${src.text}" is not statically resolvable — effective destination unknown`));
+			continue;
+		}
+		const base = tokenBasename(src.text);
+		if (base === "" || base === "." || base === "..") {
+			out.push(escalate(`${what} source "${src.text}" has no inferable basename — effective destination unknown`));
+			continue;
+		}
+		const effective: Token = { ...dest, text: `${dest.text.replace(/\/+$/, "")}/${base}`, isRedirect: false };
+		out.push(judgeTarget(effective, options, `${what} effective destination`));
+	}
+	return out;
+}
+
 /** Worst-verdict-wins fold: deny > escalate > allow. */
 function worst(verdicts: BashVerdict[]): BashVerdict {
 	let result: BashVerdict = allow();
@@ -395,7 +498,15 @@ function analyzeSegment(segment: string, options: BashGuardOptions): SegmentAnal
 	stripping: for (;;) {
 		const word = words[index];
 		if (!word) break;
-		if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(word.text)) {
+		const assign = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(word.text);
+		if (assign) {
+			// Do NOT blanket-strip: a leading VAR=val can install an execution
+			// hook (GIT_EXTERNAL_DIFF, LESSOPEN, …) or repoint the loader/PATH,
+			// turning a "read-only" command into arbitrary execution. Escalate
+			// unless the name is provably benign; keep classifying so a deny
+			// (system-state target) can still win.
+			const issue = envAssignmentIssue(assign[1]!);
+			if (issue !== null) verdicts.push(escalate(issue));
 			index += 1;
 			continue;
 		}
@@ -413,7 +524,12 @@ function analyzeSegment(segment: string, options: BashGuardOptions): SegmentAnal
 			// tail's meaning — or its relative paths — untrustworthy: escalate.
 			while (index < words.length) {
 				const t = words[index]!.text;
-				if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) {
+				const envAssign = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(t);
+				if (envAssign) {
+					// Same danger as a bare leading assignment — `env LESSOPEN=…
+					// less` is the exact bypass, so vet the name here too.
+					const issue = envAssignmentIssue(envAssign[1]!);
+					if (issue !== null) verdicts.push(escalate(issue));
 					index += 1;
 				} else if (t === "-i" || t === "--ignore-environment" || t === "-0" || t === "--null") {
 					index += 1;
@@ -458,14 +574,36 @@ function analyzeSegment(segment: string, options: BashGuardOptions): SegmentAnal
 	}
 
 	if (cmd === "git") {
-		const sub = args.find((a) => !a.text.startsWith("-"));
-		if (sub && GIT_READ_ONLY.has(sub.text) && !args.some((a) => a.text === "-C")) {
-			return { verdict: worst(verdicts) };
+		// `-C DIR` reroots git at an arbitrary path (escaping the scope check);
+		// treat any git invocation carrying it as unprovable.
+		const hasC = args.some((a) => a.text === "-C");
+		const nonFlags = args.filter((a) => !a.text.startsWith("-"));
+		const sub = nonFlags[0]?.text;
+		const action = nonFlags[1]?.text; // the subcommand's first positional (its action)
+		let readOnlyGit = false;
+		if (sub !== undefined && !hasC) {
+			if (sub === "remote") {
+				// Read-only ONLY for bare `git remote`, `-v`/`--verbose`, `show`,
+				// `get-url`. add/remove/rm/set-url/set-head/prune/rename/update
+				// mutate the remote config → escalate.
+				readOnlyGit =
+					action === undefined ||
+					GIT_REMOTE_READ_ONLY_ACTIONS.has(action) ||
+					args.some((a) => a.text === "-v" || a.text === "--verbose");
+			} else if (sub === "reflog") {
+				// Read-only for bare `git reflog` / `git reflog show`. expire/delete
+				// rewrite the reflog and can drop objects → escalate.
+				readOnlyGit = action === undefined || GIT_REFLOG_READ_ONLY_ACTIONS.has(action);
+			} else if (GIT_READ_ONLY.has(sub)) {
+				readOnlyGit = true;
+			}
 		}
+		if (readOnlyGit) return { verdict: worst(verdicts) };
+		const label = action !== undefined ? `git ${sub} ${action}` : `git ${sub ?? "(unknown)"}`;
 		verdicts.push(
 			options.readOnly
-				? deny(`readOnly type: git ${sub?.text ?? ""} mutates the repository`.trim())
-				: escalate(`git ${sub?.text ?? "(unknown)"} mutates repository state — targets not provable`),
+				? deny(`readOnly type: ${label} mutates the repository`)
+				: escalate(`${label} mutates repository state — targets not provable`),
 		);
 		return { verdict: worst(verdicts) };
 	}
@@ -533,6 +671,8 @@ function analyzeSegment(segment: string, options: BashGuardOptions): SegmentAnal
 			// sources (removal) — judge those too.
 			const targets = mode === "all" ? [targetDir, ...positional] : [targetDir];
 			for (const t of targets) verdicts.push(judgeTarget(t, options, `${cmd} -t`));
+			// -t forces dir semantics: the real writes are targetDir/basename(src).
+			verdicts.push(...judgeEffectiveDests(targetDir, positional, options, `${cmd} -t`));
 			return { verdict: worst(verdicts) };
 		}
 		let targets = positional;
@@ -542,6 +682,15 @@ function analyzeSegment(segment: string, options: BashGuardOptions): SegmentAnal
 			verdicts.push(escalate(`mutating command "${cmd}" with no inferable targets`));
 		}
 		for (const t of targets) verdicts.push(judgeTarget(t, options, cmd));
+		// For cp/mv/ln/install the last positional MAY be a directory — then the
+		// effective writes are dest/basename(src) for the preceding sources. Judge
+		// those too so a protected/deny child reached through an allowed parent
+		// cannot slip through (finding 4).
+		if (takesTargetDir && positional.length >= 2) {
+			const dest = positional[positional.length - 1]!;
+			const sources = positional.slice(0, -1);
+			verdicts.push(...judgeEffectiveDests(dest, sources, options, cmd));
+		}
 		return { verdict: worst(verdicts) };
 	}
 

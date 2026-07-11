@@ -111,7 +111,7 @@ import {
 	readPending,
 } from "../mail/mailbox.ts";
 import type { Layout } from "../store/layout.ts";
-import { archiveAgentDir } from "../store/archive.ts";
+import { archiveAgentDir, hasRetirementTombstone } from "../store/archive.ts";
 import {
 	type AgentRecord,
 	type AgentState,
@@ -204,6 +204,15 @@ export interface InProcessRuntimeOptions {
 	 * turn, so settings edits apply without a rebuild.
 	 */
 	ceilings?: CeilingDefaults;
+	/**
+	 * Live project-trust getter (Finding 7): returns whether the host Pi project
+	 * is trusted. While UNtrusted, project-local (`<cwd>/.pi/subagents`) type
+	 * definitions are NOT loaded or resolved (global types still work). Omitted
+	 * = trusted (the direct-construction / harness default). index.ts wires
+	 * ctx.isProjectTrusted through setProjectTrust(); read live so a mid-session
+	 * trust change applies at the next resolution.
+	 */
+	isProjectTrusted?: () => boolean;
 }
 
 /** Global ceiling defaults (D15) — same fields the frontmatter can pin. */
@@ -317,6 +326,19 @@ export class InProcessRuntime implements SubagentRuntime {
 	private readonly _runtimeId = `rt_${process.pid}_${randomBytes(4).toString("hex")}`;
 	/** dispose() flips this: no new turn ever starts on a disposed runtime. */
 	private _disposed = false;
+	/**
+	 * Live project-trust getter (Finding 7); undefined = trusted. Read at every
+	 * type resolution so an untrusted project never loads project-local types.
+	 */
+	private _isProjectTrusted: (() => boolean) | undefined;
+	/**
+	 * Addresses whose retire() is IN FLIGHT (Finding 13 per-address lifecycle
+	 * lock): while an address is here the agent is treated as not-live
+	 * (_agentLive returns false) so a racing _mailTurn/handle-build stands down,
+	 * and the dir is archived BEFORE the registry/team scrub so a crash can't
+	 * resurrect its memory.
+	 */
+	private readonly _retiring = new Set<string>();
 
 	constructor(options: InProcessRuntimeOptions) {
 		this._layout = options.layout;
@@ -350,6 +372,7 @@ export class InProcessRuntime implements SubagentRuntime {
 				this._emit({ type: "bounce", from: failed.from, to: failed.to, envelopeId: failed.id, reason }),
 		});
 		this._ceilings = options.ceilings ?? {};
+		this._isProjectTrusted = options.isProjectTrusted;
 		// The D10 human gate (Phase 5): pending records under
 		// .main/escalations/, escalation mail to main, waiting-state + slot
 		// hand-off around the paused tool call.
@@ -406,6 +429,16 @@ export class InProcessRuntime implements SubagentRuntime {
 	// -----------------------------------------------------------------------
 	// Escalation resolution surface (core → Phase 6 modal; D10)
 	// -----------------------------------------------------------------------
+
+	/**
+	 * Set/replace the live project-trust getter (Finding 7). index.ts calls this
+	 * post-construction — the core facade builds the runtime without a trust
+	 * source (see the coordination note in the fix report), so the host wires
+	 * ctx.isProjectTrusted here. A getter keeps trust live across the session.
+	 */
+	setProjectTrust(getter: () => boolean): void {
+		this._isProjectTrusted = getter;
+	}
 
 	pendingEscalations(): EscalationRecord[] {
 		return this._escalations.pending();
@@ -525,6 +558,14 @@ export class InProcessRuntime implements SubagentRuntime {
 
 	async sendAsUser(options: SendOptions): Promise<SendResult> {
 		const record = this._requireRecord(options.to);
+		// D21 / Finding 14: a message typed into the subagent VIEWER is a genuine
+		// USER action (D17 superuser row) — it resets the autonomy pool exactly
+		// like a main-session user turn (index.ts's before_agent_start reset). If
+		// the pool was paused this resumes it, and the "resumed" event drains
+		// every queued mailbox (subscribe → _drainAllPendingMail), so this
+		// message doesn't sit queued behind a paused pool. NOT done for send()
+		// (main-agent tool sends are autonomous, never a user reset).
+		this._autonomy?.reset();
 		const outcome = this._deliverer.send({
 			from: USER_ADDRESS,
 			to: options.to,
@@ -584,31 +625,47 @@ export class InProcessRuntime implements SubagentRuntime {
 
 	async retire(to: string): Promise<RetireResult> {
 		const record = this._requireRecord(to);
-		const handle = this._handles.get(to);
-		if (handle) {
-			if (handle.session.isStreaming) {
-				handle.abortedBy = "interrupt";
-				await handle.session.abort();
+		// Finding 13: per-address lifecycle lock. From here the agent counts as
+		// not-live (_agentLive) so a concurrent _mailTurn / handle-build stands
+		// down and never recreates session state under the dir we are moving.
+		this._retiring.add(to);
+		try {
+			const handle = this._handles.get(to);
+			if (handle) {
+				if (handle.session.isStreaming) {
+					handle.abortedBy = "interrupt";
+					await handle.session.abort();
+				}
+				handle.session.dispose();
+				this._handles.delete(to);
 			}
-			handle.session.dispose();
-			this._handles.delete(to);
+			// Defensive: the abort's signal already cancels a paused escalation;
+			// sweep anything left so no promise pends for a dead agent.
+			this._escalations.cancelFor(to, `Agent ${to} was retired while the escalation was pending.`);
+			this._chains.delete(to);
+			// M5: bounce every UNPROCESSED envelope back to its sender before the
+			// mailbox is archived. Senders were told delivery succeeded (held/
+			// queued) — burying their mail in .archive/ would strand an asker in
+			// dormant forever (D13's "funeral loses nothing" covers OUTBOUND
+			// reports; inbound pending mail needs the bounce). Runs BEFORE the
+			// archive move AND the teams scrub so peer error envelopes still pass
+			// the guards.
+			this._bouncePendingMail(to, record);
+			// Finding 13 ordering: ARCHIVE (tombstone + move dir) BEFORE the
+			// registry/team scrub. A crash between the two leaves the dir already
+			// in .archive/ (memory cannot be resurrected by a later get-or-create)
+			// with the registry record still present — the startup reconciliation
+			// finishes the funeral. The OLD order (registry removal FIRST, move
+			// LAST) left a crash window where a deregistered agent's dir stayed at
+			// the live path and the next same-address spawn resurrected its memory.
+			const archiveDir = archiveAgentDir(this._layout, record.type, record.id);
+			updateRegistry(this._layout.registryFile, (registry) => removeAgent(registry, to));
+			updateTeams(this._layout.teamsFile, (teams) => scrubAddress(teams, to));
+			this._emit({ type: "agent-retired", address: to, archiveDir });
+			return { retired: true, archiveDir };
+		} finally {
+			this._retiring.delete(to);
 		}
-		// Defensive: the abort's signal already cancels a paused escalation;
-		// sweep anything left so no promise pends for a dead agent.
-		this._escalations.cancelFor(to, `Agent ${to} was retired while the escalation was pending.`);
-		this._chains.delete(to);
-		// M5: bounce every UNPROCESSED envelope back to its sender before the
-		// mailbox is archived. Senders were told delivery succeeded (held/
-		// queued) — burying their mail in .archive/ would strand an asker in
-		// dormant forever (D13's "funeral loses nothing" covers OUTBOUND
-		// reports; inbound pending mail needs the bounce). Runs BEFORE the
-		// registry/teams scrub so peer error envelopes still pass the guards.
-		this._bouncePendingMail(to, record);
-		updateRegistry(this._layout.registryFile, (registry) => removeAgent(registry, to));
-		updateTeams(this._layout.teamsFile, (teams) => scrubAddress(teams, to));
-		const archiveDir = archiveAgentDir(this._layout, record.type, record.id);
-		this._emit({ type: "agent-retired", address: to, archiveDir });
-		return { retired: true, archiveDir };
 	}
 
 	// -----------------------------------------------------------------------
@@ -751,6 +808,11 @@ export class InProcessRuntime implements SubagentRuntime {
 			if (!existsSync(this._layout.registryFile)) return;
 			const skipForeign = new Set<string>();
 			const resetAddresses = new Set<string>();
+			// Finding 13: agents whose retire() crashed mid-flight — the dir was
+			// already archived (or tombstoned in place) but the registry record
+			// was never removed. Collected here, finished (archive + team scrub)
+			// after the registry mutation closes.
+			const crashedRetire: Array<{ address: string; type: string; id: string }> = [];
 			updateRegistry(this._layout.registryFile, (registry) => {
 				for (const record of listAgents(registry)) {
 					const address = formatAgentAddress(record.type, record.id);
@@ -760,6 +822,17 @@ export class InProcessRuntime implements SubagentRuntime {
 					}
 					// A marker from a DEAD process is stale — clean it up.
 					this._clearRunOwner(record.type, record.id, /*force*/ true);
+					// Finding 13: a crash between archiveAgentDir and removeAgent.
+					// The instance dir is gone (moved to .archive/) or still present
+					// but already tombstoned (crash between the marker write and the
+					// rename). Finish the funeral so a later get-or-create can never
+					// wake a half-retired identity with resurrected memory.
+					const instanceDir = this._layout.agentInstanceDir(record.type, record.id);
+					if (!existsSync(instanceDir) || hasRetirementTombstone(instanceDir)) {
+						crashedRetire.push({ address, type: record.type, id: record.id });
+						removeAgent(registry, address);
+						continue;
+					}
 					if (record.state !== "dormant") {
 						record.state = "dormant";
 						record.updatedAt = new Date().toISOString();
@@ -767,6 +840,12 @@ export class InProcessRuntime implements SubagentRuntime {
 					}
 				}
 			});
+			for (const { address, type, id } of crashedRetire) {
+				// Idempotent: a no-op if the dir was already moved (Window B); it
+				// completes the move if it was only tombstoned (Window A).
+				archiveAgentDir(this._layout, type, id);
+				updateTeams(this._layout.teamsFile, (teams) => scrubAddress(teams, address));
+			}
 			// A crash while `waiting` orphans the agent's pending escalation
 			// record: the reset above already put the agent back to dormant,
 			// its blocked tool call died with the old process, and no code
@@ -894,10 +973,16 @@ export class InProcessRuntime implements SubagentRuntime {
 			return;
 		}
 		this._slots.set(address, slot);
-		// M4: stamp the run-ownership marker for the duration of the turn.
-		this._claimRunOwner(record.type, record.id);
 		let ran = false;
 		let crashed = false;
+		/**
+		 * Findings 1/2/5: leave the triggering mail PENDING and do NOT auto-retry
+		 * it at the turn boundary. Set when the turn did not consume its digest —
+		 * an explicit interrupt / shutdown abort (F1), a paused autonomy pool
+		 * (F2), or a lost run-ownership claim (F5). The mail waits for the next
+		 * real wake / resume-drain / the owner's boundary instead of looping.
+		 */
+		let leavePending = false;
 		let tokensBefore = 0;
 		let turnTimer: { pause(): void; resume(): void; clear(): void } | undefined;
 		let unsubscribe: (() => void) | undefined;
@@ -907,6 +992,41 @@ export class InProcessRuntime implements SubagentRuntime {
 			const pending = readPending(mailboxDir);
 			if (pending.length === 0) return; // duplicate schedule — no-op
 			const ids = pending.map((p) => p.envelope.id);
+
+			// Finding 5: the AUTHORITATIVE, atomic run-ownership claim. The early
+			// _foreignRunOwner check above is only a fast bail; THIS exclusive
+			// create is the claim of record, so two processes racing from the same
+			// "no live owner" observation cannot both win and append one JSONL. If
+			// a live foreign process took it in the race window, stand down and
+			// leave the mail pending (its owner's boundary / the next startup
+			// reconciliation drains it).
+			if (!this._claimRunOwner(record.type, record.id)) {
+				leavePending = true;
+				this._emit({
+					type: "turn-error",
+					address,
+					error: `Lost the run-ownership claim to another live Pi process — mail left queued (${address}).`,
+				});
+				return;
+			}
+
+			// Finding 2: re-check AND atomically consume the autonomy budget now
+			// that we hold a slot + run-ownership, BEFORE any mailbox consumption
+			// or model execution. canStart() was checked before we queued for the
+			// slot, but many waiters clear that gate and then an earlier turn's
+			// noteTurnStart() trips the pause while they wait — each would
+			// otherwise start a turn after the pool paused. The check and the
+			// consume are adjacent (no await between), so consumption is atomic:
+			// a tripped pool leaves the mail pending (dormant) with no double-start
+			// and no double-charge (we consume exactly once, only for a turn that
+			// will actually run).
+			if (this._autonomy) {
+				if (!this._autonomy.canStart()) {
+					leavePending = true;
+					return;
+				}
+				this._autonomy.noteTurnStart();
+			}
 
 			// Roster-change lines (Phase 4, D18): diff the roster this agent
 			// last saw against teams.json now; the digest reports the changes.
@@ -928,10 +1048,10 @@ export class InProcessRuntime implements SubagentRuntime {
 			});
 
 			ran = true;
-			// D21: every subagent turn is autonomous (not caused by user input)
-			// and consumes one pool turn. Consumption may trip the pause, but
-			// this turn already started — it runs to completion (never killed).
-			this._autonomy?.noteTurnStart();
+			// D21 turn consumption (noteTurnStart) was charged ABOVE (Finding 2) —
+			// before mailbox consumption, not here — so a pool that tripped while
+			// this turn queued for its slot cannot start it. The consuming turn
+			// still runs to completion once committed (pause never kills).
 			tokensBefore = handle.session.getSessionStats().tokens.total;
 			handle.trigger = pending.map((p) => p.envelope);
 			handle.abortedBy = null;
@@ -974,6 +1094,23 @@ export class InProcessRuntime implements SubagentRuntime {
 			// state a later spawn resurrects). retire's pending-mail bounce
 			// already told the senders.
 			if (!this._agentLive(address)) return;
+
+			// Finding 1: an explicit interrupt (subagent_interrupt) or host
+			// shutdown aborts the turn — session.abort() resolves prompt() with
+			// stopReason "aborted", so the digest was NOT processed to completion.
+			// Do NOT consume the triggering mail: leave it pending so the next
+			// real wake re-delivers it (the subagent_interrupt contract: the agent
+			// stays alive with its mail still pending; shutdown: the startup
+			// reconciliation re-drains). leavePending also suppresses the
+			// end-of-turn auto-retry — the mail waits for an EXTERNAL wake, not an
+			// immediate re-run that would defeat the interrupt. A ceiling abort is
+			// deliberately NOT here: it consumes the mail (below) and then parks
+			// the agent, which runs no further turns until a human raises the
+			// ceiling — re-delivering an over-budget digest would just re-abort.
+			if (handle.abortedBy === "interrupt") {
+				leavePending = true;
+				return;
+			}
 
 			// The receiving turn is now durably in the session JSONL.
 			markDone(mailboxDir, ids);
@@ -1057,7 +1194,7 @@ export class InProcessRuntime implements SubagentRuntime {
 				// (delivered before the flag was set) — the funeral loses
 				// nothing; retire() bounces any UNPROCESSED pending mail (M5).
 				await this.retire(address).catch(() => {});
-			} else if (live && !crashed && !this._disposed && pendingCount(mailboxDir) > 0) {
+			} else if (live && !crashed && !leavePending && !this._disposed && pendingCount(mailboxDir) > 0) {
 				// Turn-boundary drain (D11): mail held during the turn gets its
 				// own digest turn now. Questions the agent itself asked stay
 				// outstanding — it simply goes dormant until the answer wakes it.
@@ -1065,6 +1202,10 @@ export class InProcessRuntime implements SubagentRuntime {
 				// its own digest pending, and retrying immediately loops: error
 				// envelope + main auto-wake every cycle until the autonomy pool
 				// trips. The mail stays queued for the next EXTERNAL wake.
+				// Findings 1/2/5 (leavePending): an interrupt/shutdown abort, a
+				// paused pool, or a lost run-ownership claim also leave the
+				// triggering mail pending and must NOT auto-retry — the next real
+				// wake / resume-drain / owner boundary picks it up.
 				this._scheduleMailTurn(address);
 			}
 		}
@@ -1107,12 +1248,30 @@ export class InProcessRuntime implements SubagentRuntime {
 	// -----------------------------------------------------------------------
 
 	private _resolveType(typeName: string): { discovered: DiscoveredTypeDef; def: TypeDefinition } {
-		const discovered = resolveTypeDef(this._layout, typeName);
+		// Finding 7: gate project-local types on host project-trust. An untrusted
+		// project's `<cwd>/.pi/subagents/*.md` are neither loaded nor allowed to
+		// shadow a global type — global types still resolve.
+		const projectTrusted = this._isProjectTrusted?.() ?? true;
+		const discovered = resolveTypeDef(this._layout, typeName, { projectTrusted });
 		if (!discovered) {
 			throw new Error(
 				`Unknown subagent type "${typeName}" — no ${typeName}.md in ` +
-					`${this._layout.projectTypeDefsDir} or ${this._layout.globalTypeDefsDir}.`,
+					(projectTrusted
+						? `${this._layout.projectTypeDefsDir} or ${this._layout.globalTypeDefsDir}.`
+						: `${this._layout.globalTypeDefsDir} (project types are disabled: this project is untrusted).`),
 			);
+		}
+		// Finding 7 visibility: a project type silently overriding a trusted
+		// global one is worth flagging (name + both source paths + hashes).
+		if (discovered.shadowsGlobal) {
+			this._emit({
+				type: "turn-error",
+				address: typeName,
+				error:
+					`Type "${typeName}" resolved from the PROJECT library (${discovered.path}, ` +
+					`sha256 ${discovered.hash.slice(0, 12)}…), shadowing the global ` +
+					`${discovered.shadowsGlobal.path} (sha256 ${discovered.shadowsGlobal.hash.slice(0, 12)}…).`,
+			});
 		}
 		const parsed = parseTypeFile(discovered.content, discovered.name);
 		if (!parsed.ok) {
@@ -1325,8 +1484,14 @@ export class InProcessRuntime implements SubagentRuntime {
 		};
 	}
 
-	/** M3 liveness: the registry record still exists (retire removes it). */
+	/**
+	 * M3 liveness: the registry record still exists (retire removes it) AND no
+	 * retire() is in flight for it (Finding 13 — the dir may already be archived
+	 * while the record removal is pending, so a racing turn must treat it as
+	 * gone before the record disappears).
+	 */
 	private _agentLive(address: string): boolean {
+		if (this._retiring.has(address)) return false;
 		return getAgent(readRegistry(this._layout.registryFile), address) !== undefined;
 	}
 
@@ -1408,17 +1573,65 @@ export class InProcessRuntime implements SubagentRuntime {
 		}
 	}
 
-	private _claimRunOwner(type: string, id: string): void {
+	/**
+	 * Finding 5: atomically claim run-ownership. Returns true iff THIS runtime
+	 * now owns the turn. The claim is an exclusive create ("wx"): two processes
+	 * racing from the same "no live owner" observation cannot both win — the
+	 * loser's create fails EEXIST. On EEXIST we read the existing marker: our own
+	 * (same runtimeId, or an earlier core in THIS pid whose dispose cleared real
+	 * ownership) counts as already held; a LIVE foreign pid means we lost the
+	 * race (return false — the caller leaves the mail pending); a DEAD foreign
+	 * pid is a stale marker we sweep before retrying the exclusive create once.
+	 */
+	private _claimRunOwner(type: string, id: string): boolean {
+		const file = this._runOwnerFile(type, id);
+		const payload = `${JSON.stringify({ pid: process.pid, runtimeId: this._runtimeId, claimedAt: new Date().toISOString() })}\n`;
 		try {
 			mkdirSync(this._layout.agentInstanceDir(type, id), { recursive: true });
-			writeFileSync(
-				this._runOwnerFile(type, id),
-				`${JSON.stringify({ pid: process.pid, runtimeId: this._runtimeId, claimedAt: new Date().toISOString() })}\n`,
-				"utf8",
-			);
 		} catch {
-			// Advisory only — a failed claim never blocks the turn.
+			// Best-effort; the exclusive create below fails loudly if the dir truly
+			// cannot exist, and a failed claim degrades to "not owned" (return false).
 		}
+		for (let attempt = 0; attempt < 2; attempt++) {
+			try {
+				writeFileSync(file, payload, { flag: "wx" }); // atomic exclusive create
+				return true;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "EEXIST") return false;
+			}
+			// The marker exists — decide whose it is.
+			let owner: { pid?: unknown; runtimeId?: unknown };
+			try {
+				owner = JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown; runtimeId?: unknown };
+			} catch {
+				// Unreadable/garbage marker: sweep and retry the exclusive create.
+				try {
+					rmSync(file, { force: true });
+				} catch {
+					return false;
+				}
+				continue;
+			}
+			// Already ours (same runtime, or an earlier core in THIS process) —
+			// refresh the marker in place and proceed.
+			if (owner.runtimeId === this._runtimeId || owner.pid === process.pid) {
+				try {
+					writeFileSync(file, payload, "utf8");
+				} catch {
+					// Refresh failed but we still own it — proceed.
+				}
+				return true;
+			}
+			// A LIVE foreign process owns it: we lost the race, do not proceed.
+			if (typeof owner.pid === "number" && pidAlive(owner.pid)) return false;
+			// Dead foreign pid: stale marker — sweep and retry the exclusive create.
+			try {
+				rmSync(file, { force: true });
+			} catch {
+				return false;
+			}
+		}
+		return false;
 	}
 
 	/** Remove the marker if it is ours (or unconditionally with force). */

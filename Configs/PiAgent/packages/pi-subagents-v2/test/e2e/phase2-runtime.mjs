@@ -10,7 +10,7 @@
  * Run: node smoke-phase2.mjs
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
 
@@ -328,7 +328,9 @@ await test("greeter inherits session model, gets project context, joins team", a
 	assert.match(call.systemPrompt, /GREETER_BODY_MARKER/);
 	assert.match(call.systemPrompt, /MARKER_PROJECT_CONTEXT/); // layer 2 ON by default
 	assert.match(call.systemPrompt, /Team `welcome-crew`/);
-	assert.deepEqual(readTeams(layout.teamsFile), { "welcome-crew": ["greeter/hallway"] });
+	// Spread strips the null prototype store/teams.ts now uses (Finding 11,
+	// parallel change) so strict deepEqual compares contents, not prototype.
+	assert.deepEqual({ ...readTeams(layout.teamsFile) }, { "welcome-crew": ["greeter/hallway"] });
 });
 await test("D18 strict layer ORDER: base(1) < project context(2) < type body(3) < identity(4)", async () => {
 	// The greeter turn above ran with projectContext ON — inspect its prompt.
@@ -519,6 +521,52 @@ await test("subagent_spawn / subagent_status tools return spec-shaped JSON", asy
 	const missing = await statusTool.execute("t5", { address: "ghost/x" }, undefined, undefined, ctx);
 	assert.equal(missing.isError, true);
 	await core.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// Type-def project-trust gate + symlink listing (Finding 7)
+// (Runs LAST — it adds a global `researcher.md` and a `linked.md` symlink that
+// would perturb the earlier availableTypes() assertions.)
+// ---------------------------------------------------------------------------
+console.log("type-def trust + symlink (Finding 7):");
+await test("untrusted project types are not resolved; global still resolves; symlinks listed", async () => {
+	const { listTypeDefs, resolveTypeDef } = await jiti.import(join(EXT, "typedefs/discover.ts"));
+
+	// Trusted: project `researcher` and global `greeter` both resolve.
+	assert.equal(resolveTypeDef(layout, "researcher", { projectTrusted: true })?.source, "project");
+	assert.equal(resolveTypeDef(layout, "greeter", { projectTrusted: true })?.source, "global");
+
+	// Untrusted: the project-only `researcher` vanishes; global `greeter` remains.
+	assert.equal(resolveTypeDef(layout, "researcher", { projectTrusted: false }), null, "project type not resolved while untrusted");
+	assert.equal(resolveTypeDef(layout, "greeter", { projectTrusted: false })?.source, "global", "global type still resolves");
+	const untrustedNames = listTypeDefs(layout, { projectTrusted: false }).map((d) => d.name);
+	assert.ok(untrustedNames.includes("greeter"), "global type listed while untrusted");
+	assert.ok(!untrustedNames.includes("researcher"), "project type NOT listed while untrusted");
+
+	// Shadow surfacing: a global `researcher` too — the project one wins (trusted)
+	// and carries the shadowed global's path+hash.
+	writeFileSync(
+		join(home, ".pi", "agent", "subagents", "researcher.md"),
+		["---", "name: researcher", "description: global dup", "---", "GLOBAL_DUP", ""].join("\n"),
+	);
+	const shadowed = resolveTypeDef(layout, "researcher", { projectTrusted: true });
+	assert.equal(shadowed.source, "project", "project shadows global when trusted");
+	assert.ok(shadowed.shadowsGlobal, "shadow surfaced (name + path + hash)");
+	assert.match(shadowed.shadowsGlobal.path, /researcher\.md$/);
+	assert.equal(shadowed.shadowsGlobal.hash.length, 64);
+	// Untrusted: the SAME name now resolves to the GLOBAL file (project ignored).
+	assert.equal(resolveTypeDef(layout, "researcher", { projectTrusted: false })?.source, "global");
+
+	// Symlink listing: a symlinked global type is listed AND resolvable (was
+	// omitted from listing because Dirent.isFile() is false for a symlink).
+	const realDir = join(scratch, "real-types");
+	mkdirSync(realDir, { recursive: true });
+	const realFile = join(realDir, "linked.md");
+	writeFileSync(realFile, ["---", "name: linked", "description: via symlink", "---", "LINKED_BODY", ""].join("\n"));
+	symlinkSync(realFile, join(home, ".pi", "agent", "subagents", "linked.md"));
+	const names = listTypeDefs(layout, {}).map((d) => d.name);
+	assert.ok(names.includes("linked"), "symlinked type def now LISTED (listing/resolution consistent)");
+	assert.ok(resolveTypeDef(layout, "linked", {}), "symlinked type resolves");
 });
 
 await runtime.dispose();
