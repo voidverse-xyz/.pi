@@ -32,9 +32,24 @@ errors immediately instead of showing an empty panel.
   the file content when the preview has focus (`n`/`p` jump matches while a search
   is active; Esc clears it). Enter keeps the query, Esc in the input cancels it.
 - `r` — toggle rendered↔raw for Markdown/HTML previews. These render by default
-  *unless* the spec has regions (regions reference raw line numbers). The HTML
-  rendering is a best-effort dependency-free tag strip — press `r` for the source
-  when fidelity matters.
+  *unless* the spec has regions (regions reference raw line numbers). Press `r` for
+  the source when fidelity matters.
+- **HTML** (`.html` / `.htm`) rendered view is **browser-assisted when possible**.
+  On open it kicks off a **local headless-Chromium snapshot** (Playwright's cached
+  Chromium, or a system Chrome/Chromium — no new dependency; nothing is added if
+  none is present). The render is strictly local: the file loads over `file://`,
+  outbound requests are forced through an unreachable loopback proxy, with DNS
+  resolution and background networking blocked as additional layers; the browser
+  is spawned with an argv array (never a shell). A banner reports the result:
+  - **rendered ok** → `✓ Rendered · o open in browser` plus the snapshot PNG path
+    and pixel dimensions. The snapshot *can't* paint inline (terminal overlay — see
+    Images below), so the pane shows the best-effort text and `o` opens the page in
+    your system browser for full fidelity (CSS, layout, tables, embedded images).
+  - **no browser / render failed** → a clear `⚠ … best-effort text` notice, with
+    `o` still offered to open the page in your browser.
+  Either way you get readable text (a dependency-free tag strip), never a blank
+  pane, and `r` still toggles to raw source. Images embedded in the HTML are only
+  visible in the external/browser render, not the in-terminal text.
 - **Images** (`png`, `jpg`/`jpeg`, `gif`, `webp`) show as an **info card** — path,
   MIME type, pixel dimensions, and file size — headed by **"Terminal image preview
   unavailable."** They are not drawn inline: the panel is a full-screen TUI

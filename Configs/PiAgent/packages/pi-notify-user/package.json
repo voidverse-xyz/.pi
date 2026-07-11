@@ -1,7 +1,7 @@
 {
   "name": "pi-notify-user",
   "version": "1.0.0",
-  "description": "notify_user tool - surface a severity-banded notice (success/info/warning/error, with successes/info/warnings/errors sections) to the user as a padded block at end of turn, with an optional immediate urgent toast.",
+  "description": "notify_user tool for end-of-turn success, warning, and error bands with an optional immediate urgent toast.",
   "keywords": [
     "pi-package"
   ],

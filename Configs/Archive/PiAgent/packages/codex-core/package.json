@@ -1,0 +1,9 @@
+{
+	"name": "codex-core",
+	"version": "0.1.0",
+	"description": "Codex CLI functionality (commands, approvals, subagents, plan, review) as an exportable pi plugin — pair with a look plugin",
+	"type": "module",
+	"pi": {
+		"extensions": ["src/core.ts"]
+	}
+}

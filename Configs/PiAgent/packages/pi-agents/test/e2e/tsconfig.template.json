@@ -1,0 +1,24 @@
+{
+	"//": "Template — run.sh substitutes __PI_PKG__ and __PKG_ROOT__ and runs tsc on the generated file. Matches the development-time strict config.",
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"strict": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noUncheckedIndexedAccess": true,
+		"exactOptionalPropertyTypes": true,
+		"skipLibCheck": true,
+		"noEmit": true,
+		"allowImportingTsExtensions": true,
+		"types": ["node"],
+		"typeRoots": ["__PI_PKG__/node_modules/@types"],
+		"paths": {
+			"typebox": ["__PI_PKG__/node_modules/typebox/build/index.d.mts"],
+			"@earendil-works/pi-tui": ["__PI_PKG__/node_modules/@earendil-works/pi-tui/dist/index.d.ts"],
+			"@earendil-works/pi-coding-agent": ["__PI_PKG__/dist/index.d.ts"]
+		}
+	},
+	"include": ["__PKG_ROOT__/extensions/**/*.ts"]
+}

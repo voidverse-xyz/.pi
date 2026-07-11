@@ -89,8 +89,9 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const label = args.trim() || `bookmark-${Date.now()}`;
 
-			// Find the last assistant message entry
-			const entries = ctx.sessionManager.getEntries();
+			// Only inspect the active branch. getEntries() also includes abandoned
+			// branches, whose newer messages must not steal the bookmark target.
+			const entries = ctx.sessionManager.getBranch();
 			for (let i = entries.length - 1; i >= 0; i--) {
 				const entry = entries[i];
 				if (entry.type === "message" && entry.message.role === "assistant") {
@@ -109,14 +110,17 @@ export default function (pi: ExtensionAPI) {
 		description: "Remove bookmark from last labeled entry",
 		handler: async (_args, ctx) => {
 			const entries = ctx.sessionManager.getEntries();
+			// Label changes are append-only. Walk those changes backwards rather
+			// than walking target entries, so "most recent" means the bookmark
+			// most recently created or renamed.
 			for (let i = entries.length - 1; i >= 0; i--) {
 				const entry = entries[i];
-				const label = ctx.sessionManager.getLabel(entry.id);
-				if (label) {
-					pi.setLabel(entry.id, undefined);
-					ctx.ui.notify(`Removed bookmark: ${label}`, "info");
-					return;
-				}
+				if (entry.type !== "label" || !entry.label) continue;
+				if (ctx.sessionManager.getLabel(entry.targetId) !== entry.label) continue;
+
+				pi.setLabel(entry.targetId, undefined);
+				ctx.ui.notify(`Removed bookmark: ${entry.label}`, "info");
+				return;
 			}
 			ctx.ui.notify("No bookmarked entry found", "warning");
 		},
@@ -137,7 +141,8 @@ export default function (pi: ExtensionAPI) {
 		return ctx.ui.custom<ManagerAction | null>((tui, theme, _kb, done) => {
 			const container = new Container();
 			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
-			container.addChild(new Text(theme.fg("accent", theme.bold(`Bookmarks (${bookmarks.length})`))));
+			const title = new Text("");
+			container.addChild(title);
 			const selectList = new SelectList(items, Math.min(items.length, 10), {
 				selectedPrefix: (t) => theme.fg("accent", t),
 				selectedText: (t) => theme.fg("accent", t),
@@ -148,16 +153,23 @@ export default function (pi: ExtensionAPI) {
 			selectList.onSelect = (item) => done({ type: "jump", id: item.value });
 			selectList.onCancel = () => done(null);
 			container.addChild(selectList);
-			container.addChild(
-				new Text(theme.fg("dim", "↑↓ navigate • enter jump • r rename • d/x delete • esc close")),
-			);
+			const help = new Text("");
+			container.addChild(help);
 			container.addChild(new DynamicBorder((str) => theme.fg("accent", str)));
+
+			const refreshThemedText = () => {
+				title.setText(theme.fg("accent", theme.bold(`Bookmarks (${bookmarks.length})`)));
+				help.setText(theme.fg("dim", "↑↓ navigate • enter jump • r rename • d/x delete • esc close"));
+			};
+			refreshThemedText();
+
 			return {
 				render(width: number) {
 					return container.render(width);
 				},
 				invalidate() {
 					container.invalidate();
+					refreshThemedText();
 				},
 				handleInput(data: string) {
 					const selected = selectList.getSelectedItem();

@@ -1,0 +1,10 @@
+{
+	"name": "codex-pi",
+	"version": "0.1.0",
+	"description": "Codex CLI look & features as exportable pi extensions",
+	"type": "module",
+	"pi": {
+		"extensions": ["src/codex.ts"],
+		"themes": ["themes/codex-dark.json", "themes/codex-light.json"]
+	}
+}

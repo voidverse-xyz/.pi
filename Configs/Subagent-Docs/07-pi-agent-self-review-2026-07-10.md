@@ -1,4 +1,4 @@
-# Pi Agent Self-Review — pi-subagents-v2 (2026-07-10)
+# Pi Agent Self-Review — pi-agents (2026-07-10)
 
 Provenance: produced by the user's Pi coding-agent session DOGFOODING this extension
 — it spawned six pi-reviewer subagents (adversarial/mail/runtime/sandbox/store/tui)

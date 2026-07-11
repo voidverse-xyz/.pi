@@ -1,0 +1,199 @@
+# pi-agents — persistent subagents with mailbox communication
+
+A Pi extension that gives the main agent a roster of **persistent subagents**:
+long-lived identities with durable memory (each one is a REAL Pi session JSONL
+stored beside the project's own sessions, resumable by Pi itself), addressed
+as `<type>/<id>` and connected only through **disk-backed mailboxes** with a
+single envelope contract (`message | question | answer | report | escalation |
+error`). Mail never interrupts a running turn; questions never block (the
+asker goes dormant and the answer wakes it with its question quoted back);
+teams scope which peers may talk; everything destructive escalates to the
+human. Design docs are authoritative:
+`~/Agents/Documents/Configs/Subagent-Docs/` (00-design-log.md D1–D23,
+01-power-matrix, 02-envelope-contract, 03-tool-surface, 04-type-schema,
+05-tui-spec, 06-architecture).
+
+## Install / enable
+
+1. Add this package's **absolute path** to `~/.pi/agent/settings.json` →
+   `packages[]` (kept alphabetical), e.g.
+   `"<shared-config>/PiAgent/packages/pi-agents"`.
+2. `/reload` in a running Pi session (or restart Pi — shortcuts register on
+   start).
+3. Author at least one type definition (below), then ask the main agent to
+   spawn it, or watch it decide to on its own.
+
+## The seven main-agent tools (03-tool-surface)
+
+| Tool | Power |
+|------|-------|
+| `subagent_spawn` | Get-or-create `<type>/<id>` (existing = wake, memory intact; `created:false`). `team` joins/creates a team; `lifetime:"oneshot"` = disposable (auto `tmp-<short>` id — oneshots never take an explicit id); `task` = first message |
+| `subagent_send` | Mail to an agent: send (`when:"now"`), queue (`when:"after-turn"`), answer (`correlationId` = the question's envelope id). Never interrupts a running turn |
+| `subagent_steer` | Inject into a RUNNING turn (main-agent-only; `steered:false` if idle) |
+| `subagent_status` | Roster (state, lifetime, teams, vitals: ctx %, tokens, cost, turns) or per-agent detail + transcript tail. Read-only |
+| `subagent_collect` | Non-blocking: sends a collect request carrying a JSON schema; the result arrives later as a report envelope, validated against the schema on arrival |
+| `subagent_interrupt` | Abort the current turn; agent stays alive, goes dormant |
+| `subagent_retire` | The ONLY destructive tool: deregister, scrub from teams, move the dir to `.archive/` (post-mortem viewable, GC'd after N days) |
+
+**Subagent-side tools** (injected per session, address pinned by the runtime):
+`send_message` (peer send/queue; `expectReply:true` = question,
+`correlationId` = answer), `report` (progress, or `final:true` — a oneshot's
+final report retires it; collect results ride `data` + `correlationId`), and
+`ask` (non-blocking question to main). Plus the type-filtered, sandbox-wrapped
+coding tools (`read/bash/edit/write/grep/find/ls`).
+
+## Type definitions (04-type-schema)
+
+A type is a markdown file with YAML frontmatter; the body is the system-prompt
+role text. Discovery (project wins on name conflict):
+
+```
+<project>/.pi/subagents/<type>.md    # repo-shipped
+~/.pi/agent/subagents/<type>.md      # global personal library
+```
+
+```markdown
+---
+name: refactorer                # required, must equal the filename stem
+description: Refactors code within a defined purview   # required; written for the LLM choosing types
+model: anthropic/claude-opus-4-8   # optional; omit = inherit the session's model
+thinking: medium                # optional; omit = inherit
+projectContext: true            # include AGENTS.md etc. (default true)
+tools: [read, grep, edit, bash] # allowlist; omit = all coding tools
+readOnly: false                 # true strips every mutator (beats tools/writePaths)
+writePaths: ["src/auth/**"]     # mutations outside → escalation to the human
+denyPaths: ["migrations/**"]    # beats writePaths
+maxTokensTotal: 500000          # whole-life budget ceilings (optional)
+maxTurnMinutes: 15
+maxContextCompactions: 3
+---
+
+You are a refactoring specialist. You own a specific purview of the codebase.
+```
+
+Frontmatter is **type-fixed** (D19): spawn carries only instance identity
+(`id`, `team`, `lifetime`, `task`) — need a variant, write another type file.
+Types are live-resolved at wake: editing a `.md` retunes every instance at its
+next wake (memory persists, constitution is live).
+
+## Teams (D12)
+
+Membership lives in `teams.json`, not the path: sub→sub mail is allowed iff
+sender and recipient share ≥1 team (out-of-team mail bounces with an error
+envelope). A teamless agent is a solo worker — reverse channel to main only.
+Spawn with `team:` to create/join; retire scrubs membership; roster changes
+arrive in the affected agents' next wake digest.
+
+## Lifecycle (D13)
+
+Unlimited existence, capped concurrency (`maxConcurrent` turn slots; extra
+turns queue, visibly). `dormant` = asleep with open mailbox and intact
+memory — the normal end-of-turn state. **Persistent** agents are never
+auto-retired. **Oneshots** ("named = persistent, anonymous = disposable")
+auto-retire after their final report, error, or budget ceiling; the dir moves
+to `.archive/<type>/<id>/` and stays viewable until GC (default 7 days).
+
+State on disk (D3/D5), beside Pi's own sessions:
+
+```
+~/.pi/agent/sessions/<cwd-slug>/subagents/
+  registry.json  teams.json
+  .main/mailbox/  .main/escalations/  .archive/
+  <type>/<id>/{<ts>_<uuid>.jsonl, mailbox/, files/}
+```
+
+## Safety model (D10/D20/D21)
+
+- **Approvals never flow downhill.** A guarded tool call outside the type's
+  write scope (or an unclear mutating bash command) blocks the agent in
+  `waiting` and raises an **escalation**: a record for the human (TUI modal)
+  plus an escalation envelope to the main agent. The human can approve-once
+  or deny(+note); the main agent can only DENY — by replying with
+  `correlationId` = the escalation envelope's id (its text becomes the note
+  the failing tool returns). Repeat escalations are fixed by editing
+  frontmatter, never by session-wide grants.
+- **Implicit system denials**: no agent can ever write the subagents state
+  tree or any type-definition dir (self-retuning / mail forging), realpath-
+  anchored against symlink tricks.
+- **Rails** (D21): a shared **autonomy pool** (`autonomousTurns` /
+  `autonomousTokens`) caps everything not caused by user input; **maxHops**
+  (default 8) kills question ping-pong (report/escalation/error to main is
+  the uncapped escape route). Tripping **pauses, never kills**: turns finish,
+  mail queues on disk, a banner shows — your next message or
+  `/subagents resume` refills and drains.
+- **Budget ceilings** (D15): per-type (frontmatter) or global (settings)
+  `maxTokensTotal` / `maxTurnMinutes` / `maxContextCompactions`. Crossing
+  emits an error envelope + interrupt; persistent agents park dormant for the
+  main agent to decide, oneshots get the funeral. Token totals are
+  **whole-life**: cumulative across wakes and session-file rotations
+  (persisted in registry vitals).
+
+## TUI (05-tui-spec)
+
+- Ambient widget below the editor: `⚒ 2 running · 1 waiting · 📬 3 · ⏸ budget
+  21/40` (non-zero segments only; hidden at zero agents). When a rail trips it
+  becomes the paused banner.
+- `/subagents` — roster picker grouped by team (`Enter` view, `x` interrupt,
+  `X` retire with confirm, `Esc`), with a collapsed `.archive (n)` section.
+- `/subagents <type>/<id>` — jump straight into the session viewer.
+- `/subagents resume` — refill the autonomy pool and drain queued mail
+  without sending a message.
+- `alt+j` — cycle main → agent 1 → … → main through the full-screen viewer
+  (Pi-native transcript replay + live tail; envelope traffic as compact 📨
+  entries). The input line is the agent's *user*: `Enter` mails at the turn
+  boundary, `alt+Enter` steers mid-turn, `x` (empty editor) interrupts.
+  Direct user→subagent messages drop an FYI report to the main agent.
+- `alt+e` — review pending escalations: `a` approve once, `d` deny, `D` deny
+  with note, `v` view the session, `Esc` keep queued.
+
+## Settings
+
+Extension settings live in their **own JSON sidecar files** (Pi's
+settings.json schema is closed; this mirrors the pi-plan-commit convention),
+merged field by field:
+
+```
+~/.pi/agent/subagents.json      # global
+<project>/.pi/subagents.json    # per-project overrides
+```
+
+```json
+{
+	"autoWake": true,          // D16: question/escalation/error wake an idle main agent
+	"maxConcurrent": 5,        // D13 running-turn slots (applies at session start / reload)
+	"maxHops": 8,              // D21 chain-depth cap
+	"autonomousTurns": 40,     // D21 pool: autonomous turns since last user input
+	"autonomousTokens": 500000,
+	"archiveGcDays": 7,        // retention for .archive/, mailbox .done/, resolved escalations
+	"maxTokensTotal": null,    // optional global ceiling defaults (frontmatter overrides
+	"maxTurnMinutes": null,    //   per type; null/omitted = unlimited)
+	"maxContextCompactions": null
+}
+```
+
+Files are re-read at every real user turn, so edits apply **live** (only
+`maxConcurrent` waits for the next session//reload). Unknown keys and bad
+values are ignored with warnings, never fatal. Retention GC (archive, `.done`
+mail, resolved escalation records) runs automatically on session start.
+
+## Tests
+
+```
+cd packages/pi-agents
+./test/e2e/run.sh
+```
+
+One command: strict typecheck (tsc — resolved from PATH or installed
+on demand into a temp dir via `npm install typescript`; pin with `TSC=...`),
+then the phase 1–7 harnesses and the Pi extension-loader check. The harnesses
+use the jiti-alias pattern with a scripted mock LLM provider — real
+AgentSession turns, **no network, no real model**. Prereqs: node ≥ 22 and a
+global pi install (set `PI_SDK_DIR=/path/to/@earendil-works/pi-coding-agent`
+if it lives somewhere unusual). Individual files run standalone:
+`node test/e2e/phase7-full-story.mjs`.
+
+## Design docs
+
+`~/Agents/Documents/Configs/Subagent-Docs/` — the design log (D1–D23) and the
+six specs (01–06) are the source of truth; deviations are marked `// DEVIATION:` in
+the source.

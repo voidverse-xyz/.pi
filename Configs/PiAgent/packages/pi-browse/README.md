@@ -81,5 +81,5 @@ This is a Pi package. Enable it by adding its absolute path to
 `~/.pi/agent/settings.json` → `packages[]`, then `/reload`:
 
 ```
-/home/john/Agents/Documents/Configs/PiAgent/packages/pi-browse
+<shared-config>/PiAgent/packages/pi-browse
 ```

@@ -210,21 +210,9 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 			const missing = files.filter((f) => f.kind === "missing").map((f) => f.rel);
 
 			if (files.every((f) => f.kind === "missing")) {
-				const details: ShowFilesDetails = {
-					title: params.title,
-					shown: [],
-					missing,
-					presented: false,
-					opened: [],
-					added: [],
-				};
-				return {
-					content: [
-						{ type: "text", text: `Error: none of the given paths exist: ${missing.join(", ")}. Fix the paths and retry.` },
-					],
-					details,
-					isError: true,
-				};
+				// Tool failures must throw; returning `isError` does not mark a custom
+				// tool result as failed in Pi.
+				throw new Error(`None of the given paths exist: ${missing.join(", ")}. Fix the paths and retry.`);
 			}
 
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
@@ -241,24 +229,9 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 					files: fwdFiles,
 				});
 				if (!res.ok) {
-					const details: ShowFilesDetails = {
-						title: params.title,
-						shown: [],
-						missing,
-						presented: false,
-						opened: [],
-						added: [],
-					};
-					return {
-						content: [
-							{
-								type: "text",
-								text: `Error: show_files needs an interactive UI and none is reachable (${res.error}). Describe the files in prose instead.`,
-							},
-						],
-						details,
-						isError: true,
-					};
+					throw new Error(
+						`show_files needs an interactive UI and none is reachable (${res.error}). Describe the files in prose instead.`,
+					);
 				}
 				const details: ShowFilesDetails = {
 					title: params.title,
@@ -343,8 +316,11 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 		});
 	});
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", (event, ctx) => {
 		currentCtx = ctx;
+		// Module state may survive session replacement through the loader cache.
+		// Never let /show-files reopen another session's presentation.
+		if (event.reason !== "reload") lastPresentation = null;
 	});
 
 	pi.on("session_shutdown", () => {

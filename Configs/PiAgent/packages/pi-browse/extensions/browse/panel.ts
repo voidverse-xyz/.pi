@@ -124,7 +124,7 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 	}
 
 	function panelRows(): number {
-		return Math.max(14, tui.terminal.rows);
+		return Math.max(1, tui.terminal.rows);
 	}
 
 	function rule(width: number): string {
@@ -416,7 +416,12 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 			rerender();
 			return;
 		}
-		if (keys.cancel(data) || data === "q") {
+		if (data === "q") {
+			pendingG = false;
+			onDone();
+			return;
+		}
+		if (keys.cancel(data)) {
 			pendingG = false;
 			if (selAnchor !== null) {
 				selAnchor = null;
@@ -574,15 +579,27 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 		const targetH = panelRows();
 		if (cachedLines && cachedWidth === width && cachedHeight === targetH) return cachedLines;
 
-		const innerW = Math.max(30, width);
-		const leftW = Math.max(20, Math.min(52, Math.floor(innerW * 0.4)));
-		const sep = theme.fg("borderMuted", " │ ");
-		const sepW = 3;
-		const rightW = Math.max(10, innerW - leftW - sepW);
+		// A component must never render wider than the width supplied by TUI.
+		// Degrade to two narrow columns instead of forcing a 30-column panel.
+		const innerW = Math.max(1, width);
+		if (innerW < 10) {
+			const lines = [truncateToWidth(theme.bold("Browse"), innerW, "")];
+			while (lines.length < targetH) lines.push(" ".repeat(innerW));
+			cachedWidth = width;
+			cachedHeight = targetH;
+			cachedLines = lines;
+			return lines;
+		}
+		const sepW = innerW >= 24 ? 3 : 1;
+		const sep = theme.fg("borderMuted", sepW === 3 ? " │ " : "│");
+		const available = Math.max(0, innerW - sepW);
+		const leftW = Math.max(0, Math.min(52, Math.floor(available * 0.4)));
+		const rightW = Math.max(0, available - leftW);
 
 		const header: string[] = [];
 		header.push(rule(innerW));
-		const homeRel = cwd.replace(process.env.HOME ?? "~", "~");
+		const home = process.env.HOME;
+		const homeRel = home && (cwd === home || cwd.startsWith(`${home}/`)) ? `~${cwd.slice(home.length)}` : cwd;
 		const title =
 			theme.bold("Browse") + theme.fg("dim", `  ${homeRel}`);
 		header.push(pad(truncateToWidth(title, innerW, "…"), innerW));
@@ -602,11 +619,15 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 			previewKind === "file" && selAnchor !== null
 				? theme.fg("accent", `  sel ${Math.min(selAnchor, cursorLine) + 1}-${Math.max(selAnchor, cursorLine) + 1}`)
 				: "";
+		const previewTitleWidth = Math.max(1, rightW - 8);
 		const prevLabel =
 			(focus === "preview" ? theme.fg("accent", "▸ ") : theme.fg("dim", "  ")) +
-			(focus === "preview" ? theme.fg("text", truncateToWidth(prevTitle, rightW - 8, "…")) : theme.fg("dim", truncateToWidth(prevTitle, rightW - 8, "…"))) +
+			(focus === "preview" ? theme.fg("text", truncateToWidth(prevTitle, previewTitleWidth, "…")) : theme.fg("dim", truncateToWidth(prevTitle, previewTitleWidth, "…"))) +
 			selInfo;
-		const labelRow = pad(treeLabel, leftW) + sep + pad(prevLabel, rightW);
+		const labelRow =
+			pad(truncateToWidth(treeLabel, leftW, ""), leftW) +
+			sep +
+			pad(truncateToWidth(prevLabel, rightW, ""), rightW);
 
 		// Footer: the hint row, or the filter input block (variable height).
 		const footer: string[] = [rule(innerW)];

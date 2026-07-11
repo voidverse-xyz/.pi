@@ -242,6 +242,8 @@ class ToolMonitorComponent {
 	private mode: "list" | "detail" = "list";
 	private selectedIndex = 0;
 	private selectedId: string | undefined;
+	private detailScroll = 0;
+	private detailLineCount = 0;
 	// Content-line index (within renderList output) of the selected row, or null.
 	private highlightRow: number | null = null;
 	// '/' filter for the list view. The Input stays around (holding its text) even
@@ -274,6 +276,10 @@ class ToolMonitorComponent {
 
 	invalidate(): void {
 		this.filterInput.invalidate();
+	}
+
+	dispose(): void {
+		clearInterval(this.durationTimer);
 	}
 
 	private close(): void {
@@ -340,6 +346,7 @@ class ToolMonitorComponent {
 			const item = items[this.selectedIndex];
 			if (item) {
 				this.selectedId = item.id;
+				this.detailScroll = 0;
 				this.mode = "detail";
 			}
 		} else if (data === "x") {
@@ -360,13 +367,19 @@ class ToolMonitorComponent {
 			this.mode = "list";
 			return;
 		}
-		if (matchesKey(data, "ctrl+c")) {
+		if (matchesKey(data, "ctrl+c") || data === "q") {
 			this.close();
 			return;
 		}
-		if (data === "x") {
-			this.attemptAbort(this.selectedId ? this.runs.get(this.selectedId) : undefined);
-		}
+		const viewport = Math.max(1, this.tui.terminal.rows - OVERLAY_MARGIN * 2 - INNER_PAD_Y * 2);
+		const maxScroll = Math.max(0, this.detailLineCount - viewport);
+		if (matchesKey(data, "up")) this.detailScroll = Math.max(0, this.detailScroll - 1);
+		else if (matchesKey(data, "down")) this.detailScroll = Math.min(maxScroll, this.detailScroll + 1);
+		else if (matchesKey(data, "pageup")) this.detailScroll = Math.max(0, this.detailScroll - viewport);
+		else if (matchesKey(data, "pagedown")) this.detailScroll = Math.min(maxScroll, this.detailScroll + viewport);
+		else if (data === "g") this.detailScroll = 0;
+		else if (data === "G") this.detailScroll = maxScroll;
+		else if (data === "x") this.attemptAbort(this.selectedId ? this.runs.get(this.selectedId) : undefined);
 	}
 
 	render(width: number): string[] {
@@ -383,7 +396,11 @@ class ToolMonitorComponent {
 		const pad = " ".repeat(INNER_PAD_X);
 		const blankRow = applyBackgroundToLine("", width, bgFn);
 		const rows = content.map((line, i) =>
-			applyBackgroundToLine(`${pad}${line}`, width, i === this.highlightRow ? selBgFn : bgFn),
+			applyBackgroundToLine(
+				`${pad}${truncateToWidth(line, contentWidth, "…")}`,
+				width,
+				i === this.highlightRow ? selBgFn : bgFn,
+			),
 		);
 
 		// Top interior padding so the content isn't flush against the box edge.
@@ -458,7 +475,7 @@ class ToolMonitorComponent {
 		const lines: string[] = [
 			this.theme.fg("accent", `Tool: ${run.name}`),
 			this.theme.fg(statusColor(run.status), `Status: ${run.status} · ${duration}${run.status === "running" ? " elapsed" : ""}`),
-			this.theme.fg("dim", "esc/b: back  x: abort (stops whole turn)  ctrl+c: close"),
+			this.theme.fg("dim", "↑↓/PgUp/PgDn: scroll  esc/b: back  x: abort  q/ctrl+c: close"),
 			"",
 		];
 
@@ -487,7 +504,11 @@ class ToolMonitorComponent {
 			this.theme.fg("dim", run.status === "running" ? "Live output:" : "Result:"),
 			...wrapTextWithAnsi(summarize(run.status === "running" ? run.partialResult : run.result), width),
 		);
-		return lines;
+		this.detailLineCount = lines.length;
+		const viewport = Math.max(1, this.tui.terminal.rows - OVERLAY_MARGIN * 2 - INNER_PAD_Y * 2);
+		this.detailScroll = Math.min(this.detailScroll, Math.max(0, lines.length - viewport));
+		return lines.slice(this.detailScroll, this.detailScroll + viewport);
+	}
 	}
 }
 
@@ -598,6 +619,10 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("tools", {
 		description: "Full-screen monitor for running/recent tool executions",
 		handler: async (_args, ctx) => {
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("/tools requires interactive TUI mode", "error");
+				return;
+			}
 			await ctx.ui.custom<void>(
 				(tui, theme, _keybindings, done) => new ToolMonitorComponent(tui, theme, done, ctx, runs, order),
 				{

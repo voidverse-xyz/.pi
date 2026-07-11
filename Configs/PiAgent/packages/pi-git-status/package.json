@@ -1,0 +1,17 @@
+{
+  "name": "pi-git-status",
+  "version": "1.0.0",
+  "description": "Compact above-editor Git status row with branch, worktree, operation, conflict, dirty, ahead, behind, and stash indicators.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

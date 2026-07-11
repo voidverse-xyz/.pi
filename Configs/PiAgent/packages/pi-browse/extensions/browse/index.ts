@@ -27,7 +27,7 @@ export default function browseExtension(pi: ExtensionAPI): void {
 }
 
 async function runBrowse(ctx: ExtensionCommandContext): Promise<void> {
-	if (!ctx.hasUI) {
+	if (ctx.mode !== "tui") {
 		ctx.ui.notify("/browse requires interactive TUI mode", "error");
 		return;
 	}

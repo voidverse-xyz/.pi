@@ -4,9 +4,9 @@ Bookmark session entries with labels (Pi's `setLabel`), and manage them from a p
 
 ## Commands
 
-- **`/bookmark [label]`** — label the last assistant message (default label:
-  `bookmark-<timestamp>`). Labels also show up in Pi's `/tree` view.
-- **`/unbookmark`** — remove the most recent bookmark.
+- **`/bookmark [label]`** — label the last assistant message on the active branch
+  (default label: `bookmark-<timestamp>`). Labels also show up in Pi's `/tree` view.
+- **`/unbookmark`** — remove the bookmark most recently created or renamed.
 - **`/bookmarks`** — open the bookmark manager: a list of every labeled entry in the
   current session showing the label plus a one-line excerpt of the entry.
 
@@ -34,5 +34,5 @@ This is a Pi package. Enable it by adding its absolute path to
 `~/.pi/agent/settings.json` → `packages[]`, then `/reload`:
 
 ```
-/home/john/Agents/Documents/Configs/PiAgent/packages/pi-bookmark
+<shared-config>/PiAgent/packages/pi-bookmark
 ```

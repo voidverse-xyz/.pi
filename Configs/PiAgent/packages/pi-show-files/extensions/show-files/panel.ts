@@ -30,17 +30,21 @@
  * list has focus, substring-searches the file content when the preview has focus
  * (`n`/`p` jump matches while a search is active); `r` toggles rendered↔raw for
  * markdown/HTML previews (rendered by default unless the spec has regions, which
- * reference raw line numbers). Two clipboard keys: `c` copies a *mention* (the
- * selection's range @-mention, else the accumulated added mentions), `y` yanks the
- * actual *text* (selected lines, else the region under the cursor, else the current
- * line). When a headless subagent forwards a presentation here over ipc, a header
+ * reference raw line numbers). For HTML, the rendered view kicks off a local
+ * headless-Chromium snapshot (see browser.ts — file:// only, network blocked) and
+ * `o` opens the page in the system browser; the snapshot can't paint inline in a
+ * terminal overlay, so the rendered view stays best-effort text with a banner that
+ * reports the snapshot and points at `o`. Two clipboard keys: `c` copies a
+ * *mention* (the selection's range @-mention, else the accumulated added mentions),
+ * `y` yanks the actual *text* (selected lines, else the region under the cursor,
+ * else the current line). When a headless subagent forwards a presentation here over ipc, a header
  * names the asking subagent chain (`opts.from`).
  *
  * Layout/scroll/exact-height machinery follows pi-browse's panel (closure state,
  * pull-based render); the note editor follows pi-ask-user's embedded Editor.
  */
 
-import { readFile, readdir, stat } from "node:fs/promises";
+import { open, readFile, readdir, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { copyToClipboard, DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
@@ -57,6 +61,7 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { appendToEditor, dirMention, type EditorUi, fileMention, linesMention } from "./add-to-chat.ts";
+import { findChromium, openExternally, renderHtmlSnapshot, snapshotPathFor } from "./browser.ts";
 import { createNavKeys } from "./keys.ts";
 import type { PresentedFile } from "./files.ts";
 import { htmlToText, renderableKind, type RenderableKind } from "./rendered.ts";
@@ -165,6 +170,21 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	let renderedCache: { width: number; lines: string[] } | null = null; // html path
 	let renderedCount = 0; // display lines at the last rendered paint (for scroll clamp)
 
+	// HTML browser-snapshot state. A rendered HTML preview kicks off a headless
+	// Chromium screenshot (local-only, network blocked) so the user can `o`-open a
+	// faithful render; the snapshot itself can't paint inline (overlay), so the
+	// rendered view stays the best-effort text with a banner about the snapshot.
+	// chromiumProbe: undefined = not looked up yet, null = none found, string = path.
+	let chromiumProbe: string | null | undefined;
+	let snapToken = 0;
+	type HtmlSnap =
+		| { status: "idle" }
+		| { status: "pending" }
+		| { status: "unavailable" }
+		| { status: "failed"; error: string }
+		| { status: "done"; path: string; width?: number; height?: number };
+	let htmlSnap: HtmlSnap = { status: "idle" };
+
 	// Search state — a list filter and an in-file search coexist independently.
 	let viewRows: Row[] = rows; // effective (possibly filtered) list
 	let listFilter = "";
@@ -241,7 +261,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	}
 
 	function panelRows(): number {
-		return Math.max(14, tui.terminal.rows);
+		return Math.max(1, tui.terminal.rows);
 	}
 
 	function rule(width: number): string {
@@ -278,6 +298,8 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		renderedCount = 0;
 		previewSearch = ""; // in-file search is per-file (the list filter persists)
 		matchLines = [];
+		htmlSnap = { status: "idle" };
+		snapToken++; // invalidate any in-flight snapshot for the previous file
 	}
 
 	// Load a curated item (from the left list). Resets the browse context; a
@@ -379,10 +401,25 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		const token = ++loadToken;
 		rerender();
 		try {
-			const buf = await readFile(file.abs);
-			if (token !== loadToken) return;
 			const ext = file.abs.slice(file.abs.lastIndexOf(".") + 1).toLowerCase();
 			const mime = IMAGE_MIME[ext];
+			// Never read an arbitrarily large file merely to decide it is too large.
+			// Images need only their header; text/binary previews need at most the
+			// configured limit plus one byte to detect truncation.
+			const handle = await open(file.abs, "r");
+			let size = 0;
+			let buf: Buffer;
+			try {
+				const info = await handle.stat();
+				size = info.size;
+				const limit = mime ? IMAGE_HEADER_BYTES : MAX_PREVIEW_BYTES + 1;
+				const length = Math.min(size, limit);
+				buf = Buffer.alloc(length);
+				if (length > 0) await handle.read(buf, 0, length, 0);
+			} finally {
+				await handle.close();
+			}
+			if (token !== loadToken) return;
 			if (mime) {
 				// Parse dimensions from the header only (cheap); the card shows path,
 				// type, dimensions, and size — see the image branch in previewColumn.
@@ -390,15 +427,14 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 				// still useful with dims unknown, so it's guarded independently.
 				let dims: { widthPx: number; heightPx: number } | null = null;
 				try {
-					const head = buf.subarray(0, Math.min(buf.byteLength, IMAGE_HEADER_BYTES)).toString("base64");
-					dims = getImageDimensions(head, mime) ?? null;
+					dims = getImageDimensions(buf.toString("base64"), mime) ?? null;
 				} catch {
 					dims = null;
 				}
-				imageInfo = { mime, bytes: buf.byteLength, dims };
+				imageInfo = { mime, bytes: size, dims };
 				previewKind = "image";
-			} else if (buf.byteLength > MAX_PREVIEW_BYTES) {
-				fileLines = [`(file too large to preview — ${(buf.byteLength / 1024).toFixed(0)} KB)`];
+			} else if (size > MAX_PREVIEW_BYTES) {
+				fileLines = [`(file too large to preview — ${(size / 1024).toFixed(0)} KB)`];
 				previewKind = "file";
 			} else if (buf.includes(0)) {
 				previewKind = "binary";
@@ -416,12 +452,76 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 					cursorLine = Math.min(first.start - 1, Math.max(0, fileLines.length - 1));
 					previewScroll = Math.max(0, cursorLine - 3);
 				}
+				// Kick off a headless browser snapshot for HTML (best-effort, async).
+				if (renderableAs === "html") void startHtmlSnapshot(file);
 			}
 		} catch {
 			if (token !== loadToken) return;
 			previewKind = "missing";
 		}
 		rerender();
+	}
+
+	// Render the HTML file to a PNG with a local headless Chromium so the user can
+	// `o`-open a faithful view. Best-effort + cached by mtime (so arrowing back to
+	// the same file doesn't relaunch a browser). The result never paints inline —
+	// it drives the banner in the rendered HTML view. Guarded by snapToken so a
+	// stale in-flight snapshot for a previous file can't overwrite current state.
+	async function startHtmlSnapshot(file: PresentedFile) {
+		const token = ++snapToken;
+		htmlSnap = { status: "pending" };
+		rerender();
+		if (chromiumProbe === undefined) chromiumProbe = await findChromium();
+		if (token !== snapToken) return;
+		if (!chromiumProbe) {
+			htmlSnap = { status: "unavailable" };
+			rerender();
+			return;
+		}
+		const out = snapshotPathFor(file.abs);
+		const finishDone = async () => {
+			let dims: { widthPx: number; heightPx: number } | null = null;
+			try {
+				const buf = await readFile(out);
+				dims = getImageDimensions(buf.subarray(0, IMAGE_HEADER_BYTES).toString("base64"), "image/png") ?? null;
+			} catch {
+				dims = null;
+			}
+			if (token !== snapToken) return;
+			htmlSnap = { status: "done", path: out, width: dims?.widthPx, height: dims?.heightPx };
+			rerender();
+		};
+		// Reuse a fresh cached snapshot (newer than the source) instead of relaunching.
+		try {
+			const [png, src] = await Promise.all([stat(out), stat(file.abs)]);
+			if (png.mtimeMs >= src.mtimeMs) {
+				await finishDone();
+				return;
+			}
+		} catch {
+			// no cached snapshot yet — fall through and render one
+		}
+		if (token !== snapToken) return;
+		const res = await renderHtmlSnapshot(chromiumProbe, file.abs, out);
+		if (token !== snapToken) return;
+		if (!res.ok) {
+			htmlSnap = { status: "failed", error: res.error };
+			rerender();
+			return;
+		}
+		await finishDone();
+	}
+
+	function openInBrowser() {
+		const f = previewFile;
+		if (!f || renderableAs !== "html") {
+			ctx.ui.notify("Open in browser is for HTML files", "info");
+			return;
+		}
+		ctx.ui.notify(`Opening ${f.rel} in your browser…`, "info");
+		openExternally(f.abs).then((r) => {
+			if (!r.ok) ctx.ui.notify(`Couldn't open externally: ${r.error ?? "no opener found"}`, "error");
+		});
 	}
 
 	// The rows shown in a directory preview: a synthetic ".." when we've descended
@@ -743,6 +843,13 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		return descLinesCache.length > 0 ? descLinesCache.length + 1 : 0;
 	}
 
+	// Fixed rows the rendered HTML view spends on its snapshot banner. Derived from
+	// htmlBannerLines() itself (width-independent count) so the two never drift.
+	function renderedBannerRows(): number {
+		if (!(previewKind === "file" && rendered && renderableAs === "html")) return 0;
+		return htmlBannerLines(9999).length;
+	}
+
 	function keepCursorVisible() {
 		const h = previewContentH();
 		if (cursorLine < previewScroll) previewScroll = cursorLine;
@@ -868,6 +975,11 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 				rerender();
 				return;
 			}
+			if (data === "o" || data === "O") {
+				pendingG = false;
+				openInBrowser();
+				return;
+			}
 			if (data === "a" || data === "A") {
 				pendingG = false;
 				if (file) addFileToChat(file);
@@ -894,12 +1006,14 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 				return;
 			}
 			pendingG = false;
-			const maxScroll = Math.max(0, renderedCount - previewContentH());
+			// The HTML banner occupies fixed rows, so the scrollable text area is smaller.
+			const textH = Math.max(1, previewContentH() - renderedBannerRows());
+			const maxScroll = Math.max(0, renderedCount - textH);
 			if (keys.goBottom(data)) previewScroll = maxScroll;
 			else if (keys.up(data)) previewScroll = Math.max(0, previewScroll - 1);
 			else if (keys.down(data)) previewScroll = Math.min(maxScroll, previewScroll + 1);
-			else if (keys.pageUp(data)) previewScroll = Math.max(0, previewScroll - previewContentH());
-			else if (keys.pageDown(data)) previewScroll = Math.min(maxScroll, previewScroll + previewContentH());
+			else if (keys.pageUp(data)) previewScroll = Math.max(0, previewScroll - textH);
+			else if (keys.pageDown(data)) previewScroll = Math.min(maxScroll, previewScroll + textH);
 			else if (keys.halfPageUp(data)) previewScroll = Math.max(0, previewScroll - Math.max(1, Math.floor(previewContentH() / 2)));
 			else if (keys.halfPageDown(data)) previewScroll = Math.min(maxScroll, previewScroll + Math.max(1, Math.floor(previewContentH() / 2)));
 			else return;
@@ -920,6 +1034,11 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 					matchLines = [];
 					rerender();
 				}
+				return;
+			}
+			if (renderableAs === "html" && (data === "o" || data === "O")) {
+				pendingG = false;
+				openInBrowser();
 				return;
 			}
 			if (data === "/") {
@@ -1181,6 +1300,30 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		return lines;
 	}
 
+	// Banner above the best-effort text in the rendered HTML view: reports the
+	// browser-snapshot status and the `o` (open in browser) / `r` (raw) actions.
+	// The snapshot can't paint inline (overlay), so this is how the user learns a
+	// faithful render exists and how to see it.
+	function htmlBannerLines(inner: number): string[] {
+		const lines: string[] = [];
+		const push = (s: string) => lines.push(truncateToWidth(s, inner, "…"));
+		const s = htmlSnap;
+		if (s.status === "pending") {
+			push(` ${theme.fg("muted", "⟳ Rendering browser snapshot…")}`);
+		} else if (s.status === "done") {
+			push(` ${theme.fg("success", "✓ Rendered")}${theme.fg("dim", "  ·  o open in browser  ·  r raw source")}`);
+			const dim = s.width && s.height ? `${s.width}×${s.height}px  ·  ` : "";
+			push(` ${theme.fg("dim", `snapshot (can't show inline): ${dim}${s.path}`)}`);
+		} else if (s.status === "unavailable") {
+			push(` ${theme.fg("warning", "⚠ No headless browser — best-effort text.")}${theme.fg("dim", "  ·  o open in browser")}`);
+		} else if (s.status === "failed") {
+			push(` ${theme.fg("warning", "⚠ Browser render failed — best-effort text.")}${theme.fg("dim", "  ·  o open in browser")}`);
+			push(` ${theme.fg("dim", truncateToWidth(s.error, Math.max(10, inner - 2), "…"))}`);
+		}
+		if (lines.length > 0) push(theme.fg("borderMuted", ` ${"·".repeat(Math.max(1, Math.min(inner - 2, 40)))}`));
+		return lines;
+	}
+
 	// Wrapped description lines for the currently previewed file, recomputed in render.
 	let descLinesCache: string[] = [];
 
@@ -1236,20 +1379,25 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		}
 
 		// rendered markdown/HTML — display lines, no gutter, no cursor/selection.
+		// HTML reserves a fixed banner at the top (snapshot status + o/r actions).
 		if (previewKind === "file" && rendered && renderableAs) {
 			const w = Math.max(8, inner - 2);
 			let all: string[];
+			let banner: string[] = [];
 			if (renderableAs === "md") {
 				mdComp ??= new Markdown(fileText.trim(), 0, 0, getMarkdownTheme());
 				all = mdComp.render(w);
 			} else {
+				banner = htmlBannerLines(inner);
 				if (!renderedCache || renderedCache.width !== w)
 					renderedCache = { width: w, lines: wrapTextWithAnsi(htmlToText(fileText), w) };
 				all = renderedCache.lines;
 			}
+			const avail = Math.max(1, bodyH - banner.length);
 			renderedCount = all.length;
-			previewScroll = Math.max(0, Math.min(previewScroll, all.length - bodyH));
-			return fillBody(all.slice(previewScroll, previewScroll + bodyH).map((l) => ` ${l}`));
+			previewScroll = Math.max(0, Math.min(previewScroll, Math.max(0, all.length - avail)));
+			const text = all.slice(previewScroll, previewScroll + avail).map((l) => ` ${l}`);
+			return fillBody([...banner, ...text]);
 		}
 
 		// file (raw)
@@ -1288,11 +1436,21 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		const targetH = panelRows();
 		if (cachedLines && cachedWidth === width && cachedHeight === targetH) return cachedLines;
 
-		const innerW = Math.max(30, width);
-		const leftW = Math.max(20, Math.min(52, Math.floor(innerW * 0.38)));
-		const sep = theme.fg("borderMuted", " │ ");
-		const sepW = 3;
-		const rightW = Math.max(10, innerW - leftW - sepW);
+		// TUI components must not render beyond the supplied width.
+		const innerW = Math.max(1, width);
+		if (innerW < 10) {
+			const lines = [truncateToWidth(theme.bold("Show files"), innerW, "")];
+			while (lines.length < targetH) lines.push(" ".repeat(innerW));
+			cachedWidth = width;
+			cachedHeight = targetH;
+			cachedLines = lines;
+			return lines;
+		}
+		const sepW = innerW >= 24 ? 3 : 1;
+		const sep = theme.fg("borderMuted", sepW === 3 ? " │ " : "│");
+		const available = Math.max(0, innerW - sepW);
+		const leftW = Math.max(0, Math.min(52, Math.floor(available * 0.38)));
+		const rightW = Math.max(0, available - leftW);
 
 		const fileCount = files.length;
 		const missingCount = files.filter((f) => f.kind === "missing").length;
@@ -1364,7 +1522,10 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			(focus === "preview" ? theme.fg("text", prevLabelText) : theme.fg("dim", prevLabelText)) +
 			selInfo +
 			truncateToWidth(regionInfo, Math.max(0, rightW - visibleWidth(prevLabelText) - visibleWidth(selInfo) - 2), "…");
-		const labelRow = pad(listLabel, leftW) + sep + pad(truncateToWidth(prevLabel, rightW, "…"), rightW);
+		const labelRow =
+			pad(truncateToWidth(listLabel, leftW, ""), leftW) +
+			sep +
+			pad(truncateToWidth(prevLabel, rightW, ""), rightW);
 
 		// Description block for the previewed file (used by previewColumn via cache).
 		descLinesCache =
@@ -1390,13 +1551,14 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			const addLabel = hasSel ? "a add range" : inRegion ? "a add region" : "a add line";
 			// A curated dir adds its `@dir/` mention from either focus — say so.
 			const listAdd = selectedFile()?.kind === "dir" ? "a add @dir/" : "a add mention";
+			const openHtml = renderableAs === "html" ? " · o open browser" : "";
 			const hint =
 				focus === "list"
 					? `↑↓ move · Enter open · / filter · ${listAdd} · c copy mention · m note${noteInfo} · q close`
 					: previewKind === "file" && rendered
-						? `↑↓ scroll · r raw · a add file · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`
+						? `↑↓ scroll · r raw${openHtml} · a add file · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`
 						: previewKind === "file"
-							? `↑↓ line · n/p ${previewSearch ? "match" : "region"} · / search${renderableAs ? " · r rendered" : ""} · s select · ${addLabel} · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`
+							? `↑↓ line · n/p ${previewSearch ? "match" : "region"} · / search${renderableAs ? " · r rendered" : ""}${openHtml} · s select · ${addLabel} · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`
 							: previewKind === "dir"
 								? `↑↓ select · Enter open · h/⌫ up · a add mention · c copy mention · m note${noteInfo} · Esc up · q close`
 								: previewKind === "image"

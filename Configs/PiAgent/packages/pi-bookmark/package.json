@@ -1,6 +1,6 @@
 {
   "name": "pi-bookmark",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Bookmark entries with labels for /tree navigation via setLabel (/bookmark, /unbookmark, /bookmarks manager).",
   "keywords": [
     "pi-package"

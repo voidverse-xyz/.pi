@@ -138,13 +138,9 @@ shared repository using the `Reusable Artifact Capture` rules above.
 
 ## PiAgent Layout
 
-- `Configs/PiAgent/packages/`: source of truth for Pi extension packages
-  (`ask-user`, `bookmark`, `browse`, `changes`, `clear-alias`, `codex-usage`,
-  `command-safety`, `confirm-stop-agent`, `dir-git`, `ipc`, `notify-user`,
-  `plan-commit`, `session-merge`, `session-name`, `show-files`, `status-line`,
-  `steer-queue`, `subagents`, `tool-monitor` — `cursor` was removed
-  2026-07-03). These packages are listed in `~/.pi/agent/settings.json` under
-  `packages`.
+- `Configs/Archive/PiAgent/packages/`: archive for the 19 Pi extension packages
+  moved on 2026-07-09. Pi no longer loads them; `~/.pi/agent/settings.json`
+  has an empty `packages` list. The extension descriptions below are historical.
 - `Configs/PiAgent/.pi/agent/skills/`: source of truth for the `plan-commit`
   skill.
   `clear-alias` (added 2026-07-07) registers `/clear` as a muscle-memory alias
@@ -197,13 +193,10 @@ shared repository using the `Reusable Artifact Capture` rules above.
   changes are out of scope by design.
 - `Configs/PiAgent/.pi/agent/themes/`: source of truth for custom Pi themes
   (`black-white`, a grayscale theme, added 2026-07-03).
-- On this host, `~/.pi/agent/settings.json` loads the package-backed
-  extensions from `Configs/PiAgent/packages/`. `~/.pi/agent/extensions` still
-  points to `Configs/PiAgent/.pi/agent/extensions/` for legacy/global
-  extensions, but the current reusable Pi extensions are package-backed.
-  `~/.pi/agent/themes` is symlinked to `Configs/PiAgent/.pi/agent/themes/`.
-  Re-run `pi`'s `/reload` (or restart) after changing package, skill, or theme
-  files here.
+- `~/.pi/agent/extensions` is a dangling legacy symlink; no legacy extensions
+  are present. `~/.pi/agent/themes` is symlinked to
+  `Configs/PiAgent/.pi/agent/themes/`. Re-run `pi`'s `/reload` (or restart)
+  after changing a skill or theme.
 
 ## Working Style
 

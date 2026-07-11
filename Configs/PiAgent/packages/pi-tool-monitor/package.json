@@ -1,7 +1,7 @@
 {
   "name": "pi-tool-monitor",
-  "version": "1.0.0",
-  "description": "Running-tool indicator with a spinner in the footer, plus a /tools detail panel.",
+  "version": "1.0.1",
+  "description": "Running-tool indicator with a spinner in the footer, plus a scrollable /tools detail panel.",
   "keywords": [
     "pi-package"
   ],
