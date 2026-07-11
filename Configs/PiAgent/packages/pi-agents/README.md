@@ -130,9 +130,9 @@ State on disk (D3/D5), beside Pi's own sessions:
 
 ## TUI (05-tui-spec)
 
-- Ambient widget below the editor: `⚒ 2 running · 1 waiting · 📬 3 · ⏸ budget
-  21/40` (non-zero segments only; hidden at zero agents). When a rail trips it
-  becomes the paused banner.
+- Compact built-in footer status: `⚒ 2 running · 1 waiting · 📬 3 · ⏸ budget
+  21/40` (non-zero segments only; hidden when idle). When a rail trips it
+  becomes a compact paused status.
 - `/subagents` — roster picker grouped by team (`Enter` view, `x` interrupt,
   `X` retire with confirm, `Esc`), with a collapsed `.archive (n)` section.
 - `/subagents <type>/<id>` — jump straight into the session viewer.

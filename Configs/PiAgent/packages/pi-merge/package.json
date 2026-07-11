@@ -1,0 +1,16 @@
+{
+  "name": "pi-merge",
+  "version": "1.0.0",
+  "description": "/merge synthesizes selected session branches into a new continuation session without modifying the source tree.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

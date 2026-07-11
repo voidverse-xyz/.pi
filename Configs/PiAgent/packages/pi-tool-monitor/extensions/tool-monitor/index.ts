@@ -509,7 +509,6 @@ class ToolMonitorComponent {
 		this.detailScroll = Math.min(this.detailScroll, Math.max(0, lines.length - viewport));
 		return lines.slice(this.detailScroll, this.detailScroll + viewport);
 	}
-	}
 }
 
 export default function (pi: ExtensionAPI) {
@@ -530,6 +529,7 @@ export default function (pi: ExtensionAPI) {
 
 	let spinnerFrame = 0;
 	let spinnerTimer: ReturnType<typeof setInterval> | undefined;
+	let agentActive = false;
 	// Latest ctx seen from an event, so the spinner interval (which fires outside any
 	// event) has a live handle to setStatus/theme without a session_start dependency.
 	let lastCtx: ExtensionContext | undefined;
@@ -550,7 +550,10 @@ export default function (pi: ExtensionAPI) {
 
 		if (running.length === 0) {
 			stopSpinner();
-			ctx.ui.setStatus(STATUS_KEY, undefined);
+			ctx.ui.setStatus(
+				STATUS_KEY,
+				agentActive ? ctx.ui.theme.fg("dim", `${WIDGET_ICON} working`) : undefined,
+			);
 			return;
 		}
 
@@ -573,6 +576,16 @@ export default function (pi: ExtensionAPI) {
 		const names = leaves.join(", ");
 		ctx.ui.setStatus(STATUS_KEY, `${spinner} ${theme.fg("dim", `${WIDGET_ICON} ${count}${names}`)}`);
 	};
+
+	pi.on("agent_start", (_event, ctx) => {
+		agentActive = true;
+		publishStatus(ctx);
+	});
+
+	pi.on("agent_settled", (_event, ctx) => {
+		agentActive = false;
+		publishStatus(ctx);
+	});
 
 	pi.on("tool_execution_start", (event, ctx) => {
 		runs.set(event.toolCallId, {
@@ -611,6 +624,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
+		agentActive = false;
 		stopSpinner();
 		lastCtx = undefined;
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);

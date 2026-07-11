@@ -1,0 +1,17 @@
+{
+  "name": "pi-codex-usage",
+  "version": "1.0.1",
+  "description": "Shows Codex subscription usage: a compact 5h status-line segment and full details via /codex-usage.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

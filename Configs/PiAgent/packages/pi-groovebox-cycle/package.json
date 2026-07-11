@@ -1,0 +1,16 @@
+{
+  "name": "pi-groovebox-cycle",
+  "version": "1.0.0",
+  "description": "Animated gradient color cycling for the Groovebox theme with an on/off command.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

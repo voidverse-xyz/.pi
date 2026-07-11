@@ -1,7 +1,7 @@
 {
   "name": "pi-git-status",
-  "version": "1.0.0",
-  "description": "Compact above-editor Git status row with branch, worktree, operation, conflict, dirty, ahead, behind, and stash indicators.",
+  "version": "1.1.0",
+  "description": "Above-editor row with cwd and rich Git state on the left, model and thinking level on the right.",
   "keywords": [
     "pi-package"
   ],

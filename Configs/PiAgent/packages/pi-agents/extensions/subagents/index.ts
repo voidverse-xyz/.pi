@@ -82,7 +82,7 @@ import {
 import { createEscalationModal, type EscalationDecision } from "./tui/escalation-modal.ts";
 import { createPicker, type PickerResult } from "./tui/picker.ts";
 import { createViewer, type ViewerOptions, type ViewerResult } from "./tui/viewer.ts";
-import { createWidgetController, renderWidgetLines, type WidgetController } from "./tui/widget.ts";
+import { createWidgetController, widgetSegments, type WidgetController } from "./tui/widget.ts";
 
 // The digest-message customType prefix ("subagent-mail" / "subagent-mail-wake").
 // Lives in core.ts because reconciliation greps the main session JSONL for it
@@ -207,35 +207,27 @@ export default function (pi: ExtensionAPI) {
 	// All state flows through the core facade; overlays never stack.
 	// -----------------------------------------------------------------------
 
-	/** Ambient widget (spec §1). // DEVIATION: "main session footer" maps to a
-	 * belowEditor widget — ctx.ui.setFooter() would REPLACE Pi's built-in
-	 * footer (and fight the status-line extension), so the ambient segments
-	 * live in the closest footer-area surface the API offers. */
+	/** Publish compact activity into Pi's built-in extension-status footer row.
+	 * Idle state stays silent; no custom footer or below-editor row is needed. */
 	const installWidget = (ctx: ExtensionContext): void => {
-		if (!ctx.hasUI) return;
+		if (ctx.mode !== "tui") return;
 		const current = getCore(ctx);
-		ctx.ui.setWidget(
-			WIDGET_KEY,
-			(tui, theme) => {
-				widget?.dispose();
-				const controller = createWidgetController({
-					core: current,
-					onChange: () => tui.requestRender(),
-				});
-				widget = controller;
-				return {
-					invalidate() {},
-					dispose() {
-						controller.dispose();
-						if (widget === controller) widget = undefined;
-					},
-					render(width: number): string[] {
-						return renderWidgetLines(controller.snapshot(), theme, width);
-					},
-				};
-			},
-			{ placement: "belowEditor" },
-		);
+		widget?.dispose();
+		let controller: WidgetController;
+		const publish = () => {
+			const snap = controller.snapshot();
+			let text: string | undefined;
+			if (snap.agentCount > 0 && snap.paused) {
+				text = `⚒ agents paused · ${snap.queuedMail + snap.unread} queued`;
+			} else if (snap.agentCount > 0) {
+				const segments = widgetSegments(snap);
+				if (segments.length > 0) text = `⚒ ${segments.join(" · ")}`;
+			}
+			ctx.ui.setStatus(WIDGET_KEY, text);
+		};
+		controller = createWidgetController({ core: current, onChange: publish });
+		widget = controller;
+		publish();
 	};
 
 	/** Full-screen viewer (spec §3), looping on alt+j: main → a1 → … → main. */
@@ -604,6 +596,7 @@ export default function (pi: ExtensionAPI) {
 		timer.unref?.();
 	});
 	pi.on("session_shutdown", async () => {
+		uiCtx?.ui.setStatus(WIDGET_KEY, undefined);
 		uiCtx = undefined;
 		await releaseCore();
 	});

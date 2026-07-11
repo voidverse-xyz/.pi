@@ -71,11 +71,11 @@
 		"syntaxPunctuation": "fg2",
 
 		"thinkingOff": "bg3",
-		"thinkingMinimal": "gray",
-		"thinkingLow": "blue",
-		"thinkingMedium": "aqua",
-		"thinkingHigh": "yellow",
-		"thinkingXhigh": "orange",
+		"thinkingMinimal": "bg3",
+		"thinkingLow": "gray",
+		"thinkingMedium": "yellow",
+		"thinkingHigh": "orange",
+		"thinkingXhigh": "red",
 		"thinkingMax": "red",
 
 		"bashMode": "green"

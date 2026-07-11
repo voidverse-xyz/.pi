@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const WIDGET_KEY = "git-status";
 const ICON_GIT_BRANCH = "";
@@ -39,6 +39,17 @@ async function git(pi: ExtensionAPI, cwd: string, args: string[]): Promise<strin
 	const { stdout, code } = await pi.exec("git", args, { cwd, timeout: GIT_TIMEOUT_MS });
 	if (code !== 0) throw new Error(`git ${args[0] ?? ""} exited with code ${code}`);
 	return stdout;
+}
+
+function formatCwd(cwd: string): string {
+	const home = process.env.HOME || process.env.USERPROFILE;
+	if (!home) return cwd;
+	const resolvedCwd = resolve(cwd);
+	const resolvedHome = resolve(home);
+	const rel = relative(resolvedHome, resolvedCwd);
+	const inside = rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+	if (!inside) return cwd;
+	return rel === "" ? "~" : `~${sep}${rel}`;
 }
 
 // Cache successful layouts only. A negative cache would hide a repository created
@@ -164,33 +175,70 @@ function renderGit(state: GitState, theme: ExtensionContext["ui"]["theme"]): str
 	return theme.fg("dim", parts.join(" "));
 }
 
+function renderLeft(ctx: ExtensionContext, state: GitState | null): string {
+	const dir = ctx.ui.theme.fg("dim", formatCwd(ctx.sessionManager.getCwd()));
+	return state ? `${dir}${ctx.ui.theme.fg("dim", " | ")}${renderGit(state, ctx.ui.theme)}` : dir;
+}
+
+function renderModel(pi: ExtensionAPI, ctx: ExtensionContext): string {
+	const model = ctx.ui.theme.fg("dim", ctx.model?.id ?? "no-model");
+	const thinking = pi.getThinkingLevel();
+	if (thinking === "off") return model;
+	const coloredThinking = (() => {
+		switch (thinking) {
+			case "minimal": return ctx.ui.theme.fg("thinkingMinimal", thinking);
+			case "low": return ctx.ui.theme.fg("thinkingLow", thinking);
+			case "medium": return ctx.ui.theme.fg("thinkingMedium", thinking);
+			case "high": return ctx.ui.theme.fg("thinkingHigh", thinking);
+			case "xhigh": return ctx.ui.theme.fg("thinkingXhigh", thinking);
+			case "max": return ctx.ui.theme.fg("thinkingMax", thinking);
+		}
+	})();
+	return `${model}${ctx.ui.theme.fg("dim", " · ")}${coloredThinking}`;
+}
+
+function renderSplitLine(left: string, right: string, width: number): string {
+	if (width <= 0) return "";
+	const rightWidth = visibleWidth(right);
+	if (rightWidth >= width) return truncateToWidth(right, width, "…");
+	const availableLeft = Math.max(0, width - rightWidth - 1);
+	const fittedLeft = truncateToWidth(left, availableLeft, "…");
+	const gap = Math.max(1, width - visibleWidth(fittedLeft) - rightWidth);
+	return `${fittedLeft}${" ".repeat(gap)}${right}`;
+}
+
 export default function (pi: ExtensionAPI) {
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let refresh: (() => void) | undefined;
-	let tui: TUI | undefined;
 	let generation = 0;
+	let tui: TUI | undefined;
 
 	pi.on("turn_end", () => refresh?.());
+	pi.on("model_select", () => tui?.requestRender());
+	pi.on("thinking_level_select", () => tui?.requestRender());
 
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		if (pollTimer) clearInterval(pollTimer);
 		const cwd = ctx.sessionManager.getCwd();
 		let state: GitState | null = null;
-
-		const widgetFactory = (nextTui: TUI) => {
-			tui = nextTui;
-			return {
-				invalidate() {},
-				dispose() {
-					if (tui === nextTui) tui = undefined;
-				},
-				render(width: number): string[] {
-					return state ? [truncateToWidth(renderGit(state, ctx.ui.theme), width, "…")] : [];
-				},
-			};
-		};
-		ctx.ui.setWidget(WIDGET_KEY, widgetFactory, { placement: "aboveEditor" });
+		ctx.ui.setStatus(WIDGET_KEY, undefined);
+		ctx.ui.setWidget(
+			WIDGET_KEY,
+			(nextTui) => {
+				tui = nextTui;
+				return {
+					invalidate() {},
+					dispose() {
+						if (tui === nextTui) tui = undefined;
+					},
+					render(width: number): string[] {
+						return [renderSplitLine(renderLeft(ctx, state), renderModel(pi, ctx), width)];
+					},
+				};
+			},
+			{ placement: "aboveEditor" },
+		);
 
 		refresh = () => {
 			const request = ++generation;
@@ -210,6 +258,9 @@ export default function (pi: ExtensionAPI) {
 		pollTimer = undefined;
 		refresh = undefined;
 		tui = undefined;
-		if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET_KEY, undefined, { placement: "aboveEditor" });
+		if (ctx.mode === "tui") {
+			ctx.ui.setStatus(WIDGET_KEY, undefined);
+			ctx.ui.setWidget(WIDGET_KEY, undefined, { placement: "aboveEditor" });
+		}
 	});
 }
