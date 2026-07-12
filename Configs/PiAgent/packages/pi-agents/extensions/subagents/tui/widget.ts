@@ -10,11 +10,8 @@
  * the queued-mail count); at zero agents the widget renders nothing at all —
  * the extension is silent when unused.
  *
- * Placement: ctx.ui.setWidget(..., { placement: "belowEditor" }) — the
- * closest thing the extension API has to "main session footer area".
- * // DEVIATION: the spec says "footer"; ctx.ui.setFooter() REPLACES Pi's
- * built-in footer wholesale (and would fight the status-line extension), so
- * the spec's ambient-footer-widget maps to a belowEditor widget instead.
+ * The cached snapshot is consumed by index.ts and published through setStatus(),
+ * so activity remains in the shared footer and the extension adds no editor row.
  *
  * Data flow: rendering is synchronous but roster state is behind an async
  * facade call, so the widget renders from a cached snapshot that is refreshed
@@ -156,7 +153,7 @@ export function renderPausedBanner(snap: WidgetSnapshot, theme: WidgetTheme, wid
 			? `tokens ${formatTokens(snap.tokensUsed)}/${formatTokens(snap.tokensBudget)}`
 			: `turns ${snap.turnsUsed}/${snap.turnsBudget}`;
 	const mail = snap.queuedMail + snap.unread;
-	const text = ` ⏸ subagents paused — autonomy budget spent (${by}) · 📬 ${mail} queued · /subagents resume or your next message resumes `;
+	const text = ` ⏸ subagents paused — autonomy budget spent (${by}) · 📬 ${mail} queued · /agents resume or your next message resumes `;
 	// Truncate BEFORE wrapping in the single bg+fg pair: the interior stays
 	// plain text (no nested SGR) and the line can never exceed the terminal.
 	return `${theme.getBgAnsi("toolErrorBg")}${theme.getFgAnsi("warning")}${fitTo(text, width)}\x1b[0m`;

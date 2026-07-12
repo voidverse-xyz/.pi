@@ -324,17 +324,12 @@ await test("picker render: selected marker + hint line", async () => {
 	});
 	await tick();
 	const lines = component.render(90).map(strip);
-	assert.ok(lines.some((line) => line.startsWith("❯   ◐ refactorer/api")), "selected row marked");
-	assert.match(lines[lines.length - 1], /enter view · x interrupt · X retire/);
+	assert.ok(lines.some((line) => line.startsWith("→   ◐ refactorer/api")), "selected row marked");
+	assert.ok(lines.some((line) => /enter view · x interrupt · X retire/.test(line)));
 	component.dispose();
 });
-// The picker now renders into a FULL-SCREEN overlay (index.ts openPicker uses
-// the same overlayOptions as the working viewer: anchor top-left, 100%×100%,
-// margin 0). Verify it reads well full-width and never emits a line wider than
-// the terminal (pi-tui's overlay path is forgiving, but the discipline the
-// widget needs applies here too — and a leading blank line lifts it off the
-// top edge, matching the sibling overlays).
-await test("picker render: full-screen sanity at 80/120 (leading blank, title, hint, width-safe)", async () => {
+// The picker replaces the main editor and renders at a compact natural height.
+await test("picker render: editor-local sanity at 80/120 (title, hint, width-safe)", async () => {
 	const component = picker.createPicker({
 		core: fakePickerCore([]),
 		tui: fakeTui,
@@ -345,17 +340,18 @@ await test("picker render: full-screen sanity at 80/120 (leading blank, title, h
 	for (const width of [80, 120]) {
 		const raw = component.render(width);
 		const lines = raw.map(strip);
-		assert.equal(lines[0], "", "leading blank line for full-screen breathing room");
-		assert.ok(lines.some((line) => line.includes("Subagents")), "title present");
+		assert.match(lines[0], /─/, "top dynamic border");
+		assert.ok(lines[1].includes("Subagents"), "title follows the border");
+		assert.match(lines[lines.length - 1], /─/, "bottom dynamic border");
 		assert.ok(lines.some((line) => line.includes("refactorer/api")), "roster rows present");
-		assert.match(lines[lines.length - 1], /↑↓ move · enter view · x interrupt · X retire · esc/);
+		assert.ok(lines.some((line) => /↑↓ move · enter view · x interrupt · X retire · esc/.test(line)));
 		for (const line of raw) {
 			assert.ok(visibleWidth(line) <= width, `no line exceeds ${width} cols (got ${visibleWidth(line)})`);
 		}
 	}
 	component.dispose();
 });
-await test("picker render: empty roster shows the (no agents) empty state full-screen", async () => {
+await test("picker render: empty roster shows the editor-local empty state", async () => {
 	const core = {
 		status: async () => [],
 		archived: () => [],
@@ -366,8 +362,8 @@ await test("picker render: empty roster shows the (no agents) empty state full-s
 	await tick();
 	for (const width of [80, 120]) {
 		const lines = component.render(width).map(strip);
-		assert.equal(lines[0], "", "leading blank line");
-		assert.ok(lines.some((line) => line.includes("Subagents")), "title still shown when empty");
+		assert.match(lines[0], /─/, "top border");
+		assert.ok(lines[1].includes("Subagents"), "title still shown when empty");
 		assert.ok(lines.some((line) => /no agents/.test(line)), "empty-state hint");
 	}
 	component.dispose();
@@ -719,14 +715,11 @@ await test("D then Esc cancels note mode without resolving", () => {
 await test("queued count renders behind the prompt", () => {
 	const component = modal.createEscalationModal({ record, queuedBehind: 2, tui: fakeTui, theme: plainTheme, onDone: () => {} });
 	const text = component.render(90).map(strip).join("\n");
-	assert.match(text, /\(\+2 more pending\)/);
+	assert.match(text, /\+2 more pending/);
 	assert.match(text, /⚠ refactorer\/auth requests approval/);
 });
-// The modal now renders into a FULL-SCREEN overlay (index.ts surfaceEscalations
-// uses the same overlayOptions as the working viewer: anchor top-left,
-// 100%×100%, margin 0). Verify the approval prompt reads well full-width and
-// stays width-safe, with the leading blank line off the top edge.
-await test("modal render: full-screen sanity at 80/120 (leading blank, spec lines, width-safe)", () => {
+// The modal replaces the main editor so it stays adjacent to the input area.
+await test("modal render: editor-local sanity at 80/120 (spec lines, width-safe)", () => {
 	const component = modal.createEscalationModal({
 		record,
 		queuedBehind: 3,
@@ -737,10 +730,11 @@ await test("modal render: full-screen sanity at 80/120 (leading blank, spec line
 	for (const width of [80, 120]) {
 		const raw = component.render(width);
 		const lines = raw.map(strip);
-		assert.equal(lines[0], "", "leading blank line for full-screen breathing room");
-		assert.ok(lines.some((line) => /⚠ refactorer\/auth requests approval/.test(line)), "prompt header");
-		assert.ok(lines.some((line) => /\[a\]pprove once/.test(line)), "action line");
-		assert.ok(lines.some((line) => /\(\+3 more pending\)/.test(line)), "queued count");
+		assert.match(lines[0], /─/, "top warning divider");
+		assert.ok(/⚠ refactorer\/auth requests approval/.test(lines[1]), "prompt header follows divider");
+		assert.match(lines[lines.length - 1], /─/, "bottom warning divider");
+		assert.ok(lines.some((line) => /a approve once/.test(line)), "action line");
+		assert.ok(lines.some((line) => /\+3 more pending/.test(line)), "queued count");
 		for (const line of raw) {
 			assert.ok(visibleWidth(line) <= width, `no line exceeds ${width} cols (got ${visibleWidth(line)})`);
 		}

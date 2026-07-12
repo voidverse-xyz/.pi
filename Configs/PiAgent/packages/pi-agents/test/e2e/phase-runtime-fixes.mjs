@@ -348,7 +348,7 @@ console.log("(5) main-mail durability (core):");
 // ---------------------------------------------------------------------------
 // (6) Main-mail durability (index.ts wiring): the session file reaches drains
 //     via ctx.sessionManager.getSessionFile(); session_start reconciles and
-//     re-auto-wakes crash-lost wake-worthy mail; no wake loop afterwards.
+//     re-auto-wakes crash-lost mail; no wake loop afterwards.
 // ---------------------------------------------------------------------------
 console.log("(6) main-mail durability (host wiring):");
 {
@@ -380,12 +380,13 @@ console.log("(6) main-mail durability (host wiring):");
 	};
 	extensionFactory(stubPi);
 	// hasUI so session_start builds the core (widget install path) — the
-	// crash-requeued wake-worthy mail must get its D16 auto-wake back.
+	// crash-requeued mail must get its auto-wake back.
 	const ctx = {
 		cwd: projectW,
 		modelRegistry,
 		hasUI: true,
-		ui: { setWidget: () => {}, notify: () => {} },
+		mode: "tui",
+		ui: { setStatus: () => {}, notify: () => {} },
 		sessionManager: { getSessionFile: () => sessionFile },
 	};
 	const fire = async (event) => {
@@ -419,11 +420,11 @@ console.log("(6) main-mail durability (host wiring):");
 	ok("crash-lost escalation is re-delivered AND re-auto-woken on restart (was: lost, subagent stranded)");
 
 	// No wake loop while the new injection is unverified: boundary re-checks
-	// find nothing pending (envelope is in .delivering) → no extra pool charge.
+	// find nothing pending because the envelope is in .delivering.
 	await fire("agent_settled");
 	await fire("agent_settled");
 	assert.equal(sentMessages.length, 1, "no self-wake loop / no repeated pool charge while in flight");
-	ok("unverified re-delivery never re-wakes in-process (D21 pool charged once per actual wake)");
+	ok("unverified re-delivery never re-wakes in-process");
 
 	// The host now durably appends the wake message; the next user turn
 	// finalizes — exactly once, no duplicate digest.

@@ -58,6 +58,14 @@ export interface FileChange {
 	abs: string;
 	rel: string;
 	status: ChangeStatus;
+	/** Data source for labels and action availability. */
+	source?: "session" | "git";
+	/** Short source-specific state such as "staged + unstaged". */
+	sourceLabel?: string;
+	/** Precomputed diff supplied by the Git changes collector. */
+	diffOverride?: string;
+	/** Working directory to use for isolated review helpers. */
+	reviewCwd?: string;
 	/** Captured pre-agent state (undo target). Absent for baseline-unknown files. */
 	baseline?: { existed: boolean; content: string | null; mode?: number; unrestorable: boolean };
 	hasBaseline: boolean;
@@ -171,7 +179,13 @@ export function registerTracker(pi: ExtensionAPI): void {
 			preExisted = false; // new file the agent is about to create
 		}
 
-		pending.set(event.toolCallId, { abs, preExisted, preContent, preMode, unrestorable });
+		pending.set(event.toolCallId, {
+			abs,
+			preExisted,
+			preContent,
+			...(preMode !== undefined ? { preMode } : {}),
+			unrestorable,
+		});
 	});
 
 	// Fires after the tool ran — commit the capture only on success.
@@ -188,7 +202,7 @@ export function registerTracker(pi: ExtensionAPI): void {
 				path: cap.abs,
 				existed: cap.preExisted,
 				content: cap.preContent,
-				mode: cap.preMode,
+				...(cap.preMode !== undefined ? { mode: cap.preMode } : {}),
 			};
 			if (cap.unrestorable) data.unrestorable = true;
 			pi.appendEntry(BASELINE_TYPE, data);
@@ -258,7 +272,12 @@ export function collectChangeset(ctx: ExtensionContext): FileChange[] {
 				const fc = get(d.path);
 				if (!fc.hasBaseline) {
 					fc.hasBaseline = true;
-					fc.baseline = { existed: d.existed, content: d.content, mode: d.mode, unrestorable: !!d.unrestorable };
+					fc.baseline = {
+						existed: d.existed,
+						content: d.content,
+						...(d.mode !== undefined ? { mode: d.mode } : {}),
+						unrestorable: !!d.unrestorable,
+					};
 				}
 			} else if (entry.customType === TOUCH_TYPE) {
 				const d = entry.data as TouchData | undefined;
@@ -354,6 +373,7 @@ export function collectChangeset(ctx: ExtensionContext): FileChange[] {
  * predates the extension.
  */
 export function fileDiffText(fc: FileChange): string {
+	if (fc.diffOverride !== undefined) return fc.diffOverride;
 	if (fc.currentUnreadable) return "";
 	if (fc.hasBaseline && fc.baseline && !fc.baseline.unrestorable) {
 		const oldC = fc.baseline.content ?? "";

@@ -62,7 +62,7 @@ function saveMode(mode: SafetyMode): string | null {
 function updateStatus(ctx: ExtensionContext, mode: SafetyMode): void {
 	if (ctx.mode !== "tui") return;
 	const color = mode === "max" ? "success" : mode === "on" ? "warning" : "error";
-	ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(color, `safety:${mode}`));
+	ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(color, `⛨ ${mode}`));
 }
 
 export default function safetyExtension(pi: ExtensionAPI): void {

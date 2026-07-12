@@ -11,7 +11,7 @@
  *   recipient queued          → nothing extra; its pending turn reads the
  *                               mailbox when it starts ("queued")
  *   recipient main            → .main/mailbox/ + onMainMail() so the host
- *                               extension can apply D16 selective auto-wake
+ *                               extension can apply main-mail auto-wake
  *
  * "when: now|after-turn" never changes any of the above (03-tool-surface:
  * neither interrupts; the distinction only orders a send against the sender's
@@ -152,7 +152,7 @@ export interface DelivererOptions {
 	recipientState: (address: string) => AgentState | undefined;
 	/** Start a mail turn on a dormant agent (fire-and-forget; runtime serializes). */
 	wake: (address: string) => void;
-	/** An envelope just landed in .main/mailbox/ (D16 selective auto-wake hook). */
+	/** An envelope just landed in .main/mailbox/ (host auto-wake hook). */
 	onMainMail?: (envelope: Envelope) => void;
 	/** Every envelope that left the engine (runtime "envelope-sent" events). */
 	onEnvelope?: (envelope: Envelope) => void;

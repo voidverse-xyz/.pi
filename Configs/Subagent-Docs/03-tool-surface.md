@@ -89,14 +89,15 @@ validation); one-tool-per-power (context bloat).
 - Sub→sub send: subagents get a reduced send-only tool pair (send/queue) — same
   envelope, team-checked at delivery (D12). No other subagent tools.
 
-## Main-agent mailbox delivery (D16, option c — selective auto-wake)
+## Main-agent mailbox delivery (D24 — all-mail auto-wake with abort latch)
 The main agent is a Pi session; envelopes reach its LLM via turn mechanics:
-- Mid-turn: mail waits for the turn boundary, then injects digest-style (D14).
-- Idle + type ∈ {question, escalation, error}: AUTO-WAKE — the extension starts a
-  main-agent turn with the wake digest as input. A subagent blocked on its "user"
-  unblocks immediately without human presence.
-- Idle + type = report: queues quietly; TUI widget shows unread count (📬 n);
-  delivered at the start of the next turn (user-initiated or auto-woken).
-- Config toggle: autoWake: true (default) | false → fully-manual queueing (b-mode).
-- escalation additionally surfaces a human approval prompt in the TUI — auto-wake
-  lets the main agent react (deny / re-plan), but only the human can approve (D10).
+- Mid-turn: mail waits for `agent_settled`, then injects digest-style (D14).
+- Idle + any envelope type: AUTO-WAKE — the extension starts a main-agent turn
+  with the wake digest as input.
+- Any aborted main-agent run durably latches auto-wake off across reload/restart.
+  Mail queues visibly (📬 n) until the next interactive/RPC user message clears it and
+  receives the queued digest. Pi reports an abort but not whether Esc caused it.
+- Main wakeups do not consume or obey the subagent autonomy turn/token pool.
+- Config toggle: autoWake: true (default) | false → fully-manual queueing.
+- Escalations additionally surface a human approval prompt in the TUI; only the
+  human can approve (D10).

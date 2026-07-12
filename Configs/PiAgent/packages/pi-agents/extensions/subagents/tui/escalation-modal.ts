@@ -1,5 +1,5 @@
 /**
- * tui/escalation-modal.ts — the D10 human gate's prompt (05-tui-spec §4).
+ * tui/escalation-modal.ts — the D10 human gate's editor-local prompt (05-tui-spec §4).
  *
  *   ⚠ refactorer/auth requests approval
  *     bash: git push origin main
@@ -21,7 +21,7 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import { Input, truncateToWidth } from "@earendil-works/pi-tui";
+import { Input, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { EscalationRecord } from "../sandbox/escalation.ts";
 
 export type EscalationDecision =
@@ -50,6 +50,7 @@ export interface EscalationModalOptions {
 }
 
 interface ModalComponent {
+	focused?: boolean;
 	render(width: number): string[];
 	handleInput(data: string): void;
 	invalidate(): void;
@@ -60,6 +61,7 @@ export function createEscalationModal(options: EscalationModalOptions): ModalCom
 	const { record, tui, theme, onDone } = options;
 	let noteMode = false;
 	let closed = false;
+	let focused = true;
 	const noteInput = new Input();
 
 	const finish = (decision: EscalationDecision): void => {
@@ -79,6 +81,13 @@ export function createEscalationModal(options: EscalationModalOptions): ModalCom
 	};
 
 	return {
+		get focused() {
+			return focused;
+		},
+		set focused(value: boolean) {
+			focused = value;
+			noteInput.focused = value;
+		},
 		invalidate() {},
 		dispose() {
 			closed = true;
@@ -111,22 +120,44 @@ export function createEscalationModal(options: EscalationModalOptions): ModalCom
 			}
 		},
 		render(width: number): string[] {
-			const body = escalationLines(record);
-			// Full-screen overlay (top-left, 100%×100%, like the viewer/siblings):
-			// a leading blank line lifts the approval prompt off the top edge.
-			const lines: string[] = [""];
-			lines.push(theme.fg("warning", truncateToWidth(body[0]!, width)));
-			lines.push(theme.fg("text", truncateToWidth(body[1]!, width)));
-			lines.push(theme.fg("muted", truncateToWidth(body[2]!, width)));
-			lines.push(theme.fg("dim", truncateToWidth(body[3]!, width)));
-			if (options.queuedBehind > 0) {
-				lines.push(theme.fg("dim", truncateToWidth(`  (+${options.queuedBehind} more pending)`, width)));
-			}
+			const renderWidth = Math.max(1, width);
+			const lines: string[] = [];
+			const divider = theme.fg("warning", "─".repeat(renderWidth));
+			const addWrapped = (prefix: string, text: string, color: Parameters<Theme["fg"]>[0] | undefined, maxRows = 4) => {
+				const prefixWidth = visibleWidth(prefix);
+				const usablePrefix = prefixWidth < renderWidth ? prefix : "";
+				const usableWidth = visibleWidth(usablePrefix);
+				const styled = color ? theme.fg(color, text) : text;
+				const wrapped = wrapTextWithAnsi(styled, Math.max(1, renderWidth - usableWidth)).slice(0, maxRows);
+				const pad = " ".repeat(usableWidth);
+				for (const [index, line] of wrapped.entries()) lines.push(`${index === 0 ? usablePrefix : pad}${line}`);
+			};
+
+			// Same visual grammar as pi-safety confirmations: colored divider,
+			// warning header, padded command/reason body, actions, closing divider.
+			lines.push(divider);
+			addWrapped("", `⚠ ${record.agent} requests approval`, "warning", 2);
+			lines.push("");
+			const toolPrefix = record.tool === "bash" ? "  $ " : `  ${record.tool}: `;
+			addWrapped(theme.fg("dim", toolPrefix), record.inputSummary, "text", 6);
+			addWrapped(theme.fg("dim", "  blocked by: "), record.reason, "muted", 4);
+			lines.push("");
+			addWrapped(
+				"  ",
+				theme.fg("success", "a approve once") +
+					theme.fg("dim", "   ") +
+					theme.fg("warning", "d deny   D deny with note") +
+					theme.fg("dim", "   v view session   Esc dismiss"),
+				undefined,
+				3,
+			);
+			if (options.queuedBehind > 0) addWrapped("  ", `+${options.queuedBehind} more pending`, "dim", 1);
 			if (noteMode) {
-				lines.push(theme.fg("text", truncateToWidth("  deny note (enter to send, esc to cancel):", width)));
-				lines.push(...noteInput.render(Math.max(10, width - 4)).map((line) => `  ${line}`));
+				addWrapped("  ", "Deny note (Enter send · Esc cancel)", "text", 2);
+				lines.push(...noteInput.render(Math.max(1, renderWidth - 2)).map((line) => truncateToWidth(`  ${line}`, renderWidth)));
 			}
-			return lines;
+			lines.push(divider);
+			return lines.map((line) => visibleWidth(line) > renderWidth ? truncateToWidth(line, renderWidth) : line);
 		},
 	};
 }

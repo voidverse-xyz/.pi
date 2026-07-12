@@ -51,6 +51,7 @@ ok("all paths derive from the sessions dir", () => {
 	assert.equal(layout.teamsFile, join(root, "teams.json"));
 	assert.equal(layout.mainMailboxDir, join(root, ".main/mailbox"));
 	assert.equal(layout.mainMailboxDoneDir, join(root, ".main/mailbox/.done"));
+	assert.equal(layout.mainAutoWakeLatchFile, join(root, ".main/auto-wake-blocked"));
 	assert.equal(layout.agentInstanceDir("refactorer", "auth"), join(root, "refactorer/auth"));
 	assert.equal(layout.mailboxDir("refactorer", "auth"), join(root, "refactorer/auth/mailbox"));
 	assert.equal(layout.mailboxDoneDir("refactorer", "auth"), join(root, "refactorer/auth/mailbox/.done"));

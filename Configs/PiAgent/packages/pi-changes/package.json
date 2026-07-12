@@ -1,7 +1,8 @@
 {
   "name": "pi-changes",
-  "version": "1.0.1",
-  "description": "/changes (alias: /browse-edits) — a native TUI to browse, diff, question, undo, and export the agent's own file changes this session (git-free).",
+  "version": "1.1.0",
+  "type": "module",
+  "description": "/changes and /git-changes — native TUI browsers for session-tracked edits and repository-wide uncommitted Git changes.",
   "keywords": [
     "pi-package"
   ],

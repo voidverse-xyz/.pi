@@ -6,12 +6,13 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 
 | Package | Main surface |
 |---|---|
-| `pi-agents` | Persistent subagents, mailboxes, teams, collection, rails, and `/subagents` |
+| `pi-agents` | Persistent subagents, mailboxes, teams, collection, rails, and `/agents` |
 | `pi-bookmark` | `/bookmark` and `/unbookmark` session-tree labels |
 | `pi-browse` | `/browse-files` native file browser |
-| `pi-changes` | `/browse-edits` session edit review and undo |
+| `pi-changes` | `/changes` session edit review/undo and read-only `/git-changes` repository diff browser |
 | `pi-clear` | `/clear` alias |
 | `pi-codex-usage` | Codex five-hour usage status and `/codex-usage` |
+| `pi-codex-ui` | Codex-style theme, prompt field, working indicator, and tool-turn separators without replacing tool definitions, status lines, or widgets |
 | `pi-commit` | `/commit [--dry-run]` grouped Git review, lazy model-generated descriptions, and path-scoped commits |
 | `pi-git-status` | Above-editor CWD/Git/model/thinking row |
 | `pi-groovebox-cycle` | `/groovebox-cycle [on\|off]` animated theme colors |
@@ -28,7 +29,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 
 ## Theme
 
-The active theme is `groovebox`, stored at `.pi/agent/themes/groovebox.json`.
+The active theme is `codex`, stored at `.pi/agent/themes/codex.json`. The `pi-groovebox-cycle` package remains installed but is disabled in its local runtime config so it does not replace the selected theme.
 
 ## Layout and activation
 

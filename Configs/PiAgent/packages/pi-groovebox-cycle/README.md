@@ -8,7 +8,7 @@ colors, backgrounds, text contrast, diffs, and thinking-level colors remain stab
 
 - `/groovebox-cycle` — toggle animation on or off.
 - `/groovebox-cycle on` — enable animation.
-- `/groovebox-cycle off` — disable animation and restore the static `groovebox` theme.
+- `/groovebox-cycle off` — disable animation and restore the theme that was active before cycling.
 
 The toggle persists in `groovebox-cycle.json` under Pi's agent configuration directory.
 Animation defaults to on, advances every 250 ms, and completes one cycle every 12 seconds.

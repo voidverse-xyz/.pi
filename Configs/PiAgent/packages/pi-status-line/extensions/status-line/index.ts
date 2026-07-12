@@ -11,7 +11,7 @@
  * Line 1: the subagents agent-chips sit on the left; the context gauge (hard-drive
  * icon + NN%, colored dim -> success -> warning -> error as usage climbs, never a
  * progress bar) plus every other extension's setStatus() text (codex-usage,
- * command-safety) sit on the right.
+ * safety) sit on the right.
  * This extension owns the " | " separators on the right side, so individual
  * extensions emit bare content. When a line is too narrow for both sides, the left
  * side truncates first so the right side stays visible.
@@ -112,9 +112,7 @@ function alignRight(text: string, width: number): string {
 // tool-monitor's setStatus() text renders left-aligned on line 1, with everything
 // else (context gauge + other extensions) right-aligned on the same line.
 const TOOL_MONITOR_STATUS_KEY = "tool-monitor";
-// The subagents extension publishes its agent chips under this key; they render
-// on the left of line 1 (ahead of tool-monitor) so the active agent shares a line
-// with the context/token statuses instead of taking its own row.
+// The subagents extension publishes its activity under this key for line 1 left.
 const SUBAGENT_STATUS_KEY = "subagents";
 
 // `left ...gap... right` across the full width, ANSI-aware. When both don't fit,

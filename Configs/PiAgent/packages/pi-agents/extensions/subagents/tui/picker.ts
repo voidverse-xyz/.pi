@@ -1,5 +1,5 @@
 /**
- * tui/picker.ts — the /subagents overlay (05-tui-spec §2, D17/D22).
+ * tui/picker.ts — the /agents editor-local picker (05-tui-spec §2, D17/D22).
  *
  * Rows grouped by team, then (solo). Per row: state glyph (● running /
  * ◐ queued / ○ dormant / ⚠ waiting), address, ctx%, unread badge. A collapsed
@@ -18,6 +18,7 @@
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { ArchivedAgentInfo, SubagentsCore } from "../core.ts";
@@ -127,7 +128,7 @@ const GLYPH_COLOR: Record<RosterEntry["state"], string> = {
 
 /** One themed row line (fg-only styling — rows are not bg bands). */
 export function renderPickerRow(row: PickerRow, theme: Theme, width: number, selected: boolean): string {
-	const prefix = selected ? "❯ " : "  ";
+	const prefix = selected ? "→ " : "  ";
 	const text = pickerRowText(row);
 	const body = truncateToWidth(`${prefix}${text}`, width);
 	if (selected) return theme.fg("accent", body);
@@ -156,7 +157,7 @@ export interface PickerOptions {
 	tui: TUI;
 	theme: Theme;
 	onDone: (result: PickerResult) => void;
-	/** Overlay height budget (rows of list body). Default 16. */
+	/** Height budget for the list body. Defaults to at most 10 rows. */
 	maxBody?: number;
 }
 
@@ -169,7 +170,7 @@ interface PickerComponent {
 
 export function createPicker(options: PickerOptions): PickerComponent {
 	const { core, tui, theme, onDone } = options;
-	const maxBody = options.maxBody ?? 16;
+	const maxBody = options.maxBody ?? Math.max(3, Math.min(10, tui.terminal.rows - 8));
 
 	let roster: RosterEntry[] = [];
 	let archived: ArchivedAgentInfo[] = [];
@@ -301,30 +302,34 @@ export function createPicker(options: PickerOptions): PickerComponent {
 			}
 		},
 		render(width: number): string[] {
-			// Full-screen overlay (top-left, 100%×100%, like the viewer/siblings):
-			// a leading blank line gives the roster breathing room from the top edge.
-			const lines: string[] = [""];
-			lines.push(theme.fg("accent", truncateToWidth(" Subagents", width)));
+			const renderWidth = Math.max(1, width);
+			const border = new DynamicBorder((text: string) => theme.fg("borderMuted", text));
+			const rule = border.render(renderWidth)[0] ?? "";
+			// Match Pi's editor-local selectors: muted dynamic borders, accent cursor,
+			// compact rows, and a dim key-hint footer.
+			const lines: string[] = [rule];
+			lines.push(theme.fg("accent", truncateToWidth(" Subagents", renderWidth)));
 			if (rows.length === 0) {
 				lines.push(theme.fg("dim", "  (no agents — subagent_spawn creates one)"));
 			} else {
 				const end = Math.min(rows.length, scroll + maxBody);
 				for (let i = scroll; i < end; i++) {
-					lines.push(renderPickerRow(rows[i]!, theme, width, i === selected));
+					lines.push(renderPickerRow(rows[i]!, theme, renderWidth, i === selected));
 				}
 				if (rows.length > maxBody) {
 					lines.push(theme.fg("dim", `  ${selected + 1}/${rows.length}`));
 				}
 			}
 			if (confirmRetire !== null) {
-				lines.push(theme.fg("warning", truncateToWidth(` retire ${confirmRetire}? [y/N]`, width)));
+				lines.push(theme.fg("warning", truncateToWidth(` retire ${confirmRetire}? [y/N]`, renderWidth)));
 			} else {
 				lines.push(
-					theme.fg("dim", truncateToWidth(" ↑↓ move · enter view · x interrupt · X retire · esc", width)),
+					theme.fg("dim", truncateToWidth(" ↑↓ move · enter view · x interrupt · X retire · esc", renderWidth)),
 				);
 			}
-			// Defensive width clamp for the title/hint lines.
-			return lines.map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width) : line));
+			lines.push(rule);
+			// Defensive width clamp for every generated line.
+			return lines.map((line) => (visibleWidth(line) > renderWidth ? truncateToWidth(line, renderWidth) : line));
 		},
 	};
 }

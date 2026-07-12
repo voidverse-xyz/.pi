@@ -6,6 +6,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, getLanguageFromPath, highlightCode } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { countDiffStat } from "./diff.ts";
+import { escapeTerminalControls } from "./display.ts";
 import { type ChangeStatus, type FileChange, fileDiffText } from "./tracker.ts";
 
 function pad(content: string, width: number): string {
@@ -79,10 +80,12 @@ export function buildChangesListLines(
 
 		const dim = fc.status === "reverted";
 		const nameColor = dim ? "dim" : selected ? "text" : "dim";
-		const rel = theme.fg(nameColor as never, fc.rel);
+		const rel = theme.fg(nameColor as never, escapeTerminalControls(fc.rel));
 
 		const stat = statLabel(theme, fc);
-		const count = theme.fg("dim", `${fc.changeCount || 1} change${(fc.changeCount || 1) === 1 ? "" : "s"}`);
+		const count = fc.sourceLabel
+			? theme.fg(fc.sourceLabel === "conflict" ? "error" : "dim", fc.sourceLabel)
+			: theme.fg("dim", `${fc.changeCount || 1} change${(fc.changeCount || 1) === 1 ? "" : "s"}`);
 
 		// Reserve the right side for stat + count; truncate the path to fit.
 		const right = `${stat}  ${count}`;
@@ -100,7 +103,7 @@ export function buildFileContentLines(fc: FileChange, width: number, theme: Them
 	const innerW = Math.max(20, width - 2);
 	const lines: string[] = [];
 
-	const header = theme.bold(fc.rel);
+	const header = theme.bold(escapeTerminalControls(fc.rel));
 	for (const h of wrapTextWithAnsi(header, innerW)) lines.push(pad(` ${h}`, innerW));
 	lines.push(pad(` ${rule(theme, innerW)}`, innerW));
 
@@ -113,11 +116,12 @@ export function buildFileContentLines(fc: FileChange, width: number, theme: Them
 		return lines;
 	}
 
-	const srcLines = fc.current.split("\n");
+	const safeCurrent = escapeTerminalControls(fc.current);
+	const srcLines = safeCurrent.split("\n");
 	let highlighted: string[];
 	try {
 		const lang = getLanguageFromPath(fc.abs);
-		const hl = highlightCode(fc.current, lang);
+		const hl = highlightCode(safeCurrent, lang);
 		highlighted = hl.length === srcLines.length ? hl : srcLines.map((l) => theme.fg("dim", l));
 	} catch {
 		highlighted = srcLines.map((l) => theme.fg("dim", l));

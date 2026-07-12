@@ -48,8 +48,9 @@ const DEFAULT_MAX_CONCURRENT = 5;
 
 export interface SubagentsSettings {
 	/**
-	 * D16 selective auto-wake: question|escalation|error envelopes start a
-	 * main-agent turn when it is idle. false = fully-manual queueing.
+	 * Every pending main-mail envelope starts a main-agent turn when idle.
+	 * false = fully manual queueing. An aborted main run durably overrides true
+	 * across reload/restart until the next interactive/RPC user message.
 	 */
 	autoWake: boolean;
 	/** D13 running-turn slot cap. Default 5. Applied at core creation. */

@@ -5,6 +5,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { diffGutterWidth, type ParsedDiffLine, parseDiff, replaceTabs } from "./diff.ts";
+import { escapeTerminalControls } from "./display.ts";
 
 export type DiffViewMode = "inline" | "split";
 
@@ -107,7 +108,7 @@ export function buildDiffDisplayLines(
 		return [theme.fg("muted", " (no diff — empty, binary, or too large)")];
 	}
 
-	const parsed = parseDiff(raw);
+	const parsed = parseDiff(escapeTerminalControls(raw));
 	const gutterW = diffGutterWidth(parsed);
 
 	if (mode === "inline") {

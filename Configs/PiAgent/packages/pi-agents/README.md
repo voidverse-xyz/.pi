@@ -115,12 +115,11 @@ State on disk (D3/D5), beside Pi's own sessions:
 - **Implicit system denials**: no agent can ever write the subagents state
   tree or any type-definition dir (self-retuning / mail forging), realpath-
   anchored against symlink tricks.
-- **Rails** (D21): a shared **autonomy pool** (`autonomousTurns` /
-  `autonomousTokens`) caps everything not caused by user input; **maxHops**
-  (default 8) kills question ping-pong (report/escalation/error to main is
-  the uncapped escape route). Tripping **pauses, never kills**: turns finish,
-  mail queues on disk, a banner shows — your next message or
-  `/subagents resume` refills and drains.
+- **Rails** (D21): a **subagent autonomy pool** (`autonomousTurns` /
+  `autonomousTokens`) caps autonomous agent turns; **maxHops** (default 8)
+  kills question ping-pong. Main-agent mailbox wakeups do not consume or obey
+  this pool. Tripping **pauses, never kills**: agent turns finish, agent mail
+  queues on disk, and your next message or `/agents resume` refills and drains.
 - **Budget ceilings** (D15): per-type (frontmatter) or global (settings)
   `maxTokensTotal` / `maxTurnMinutes` / `maxContextCompactions`. Crossing
   emits an error envelope + interrupt; persistent agents park dormant for the
@@ -130,21 +129,23 @@ State on disk (D3/D5), beside Pi's own sessions:
 
 ## TUI (05-tui-spec)
 
-- Compact built-in footer status: `⚒ 2 running · 1 waiting · 📬 3 · ⏸ budget
+- Compact footer status: `⚒ 2 running · 1 waiting · 📬 3 · ⏸ budget
   21/40` (non-zero segments only; hidden when idle). When a rail trips it
   becomes a compact paused status.
-- `/subagents` — roster picker grouped by team (`Enter` view, `x` interrupt,
-  `X` retire with confirm, `Esc`), with a collapsed `.archive (n)` section.
-- `/subagents <type>/<id>` — jump straight into the session viewer.
-- `/subagents resume` — refill the autonomy pool and drain queued mail
+- `/agents` — compact roster picker shown in the main input area, grouped by
+  team (`Enter` view, `x` interrupt, `X` retire with confirm, `Esc`), with a
+  collapsed `.archive (n)` section. Selecting an agent opens its full-screen viewer.
+- `/agents <type>/<id>` — jump straight into the session viewer.
+- `/agents resume` — refill the autonomy pool and drain queued mail
   without sending a message.
 - `alt+j` — cycle main → agent 1 → … → main through the full-screen viewer
   (Pi-native transcript replay + live tail; envelope traffic as compact 📨
   entries). The input line is the agent's *user*: `Enter` mails at the turn
   boundary, `alt+Enter` steers mid-turn, `x` (empty editor) interrupts.
   Direct user→subagent messages drop an FYI report to the main agent.
-- `alt+e` — review pending escalations: `a` approve once, `d` deny, `D` deny
-  with note, `v` view the session, `Esc` keep queued.
+- `alt+e` — review pending escalations in a compact prompt at the main input:
+  `a` approve once, `d` deny, `D` deny with note, `v` view the session,
+  `Esc` keep queued.
 
 ## Settings
 
@@ -159,7 +160,7 @@ merged field by field:
 
 ```json
 {
-	"autoWake": true,          // D16: question/escalation/error wake an idle main agent
+	"autoWake": true,          // every main-mail type wakes; abort pauses until user input
 	"maxConcurrent": 5,        // D13 running-turn slots (applies at session start / reload)
 	"maxHops": 8,              // D21 chain-depth cap
 	"autonomousTurns": 40,     // D21 pool: autonomous turns since last user input
@@ -170,6 +171,11 @@ merged field by field:
 	"maxContextCompactions": null
 }
 ```
+
+With `autoWake: true`, every envelope type wakes an idle main agent. Aborting
+any main-agent run durably suppresses mailbox wakeups across `/reload` and process
+restart; the next interactive or RPC user message re-enables them. Pi exposes the
+aborted result, not whether Esc or another abort source caused it.
 
 Files are re-read at every real user turn, so edits apply **live** (only
 `maxConcurrent` waits for the next session//reload). Unknown keys and bad

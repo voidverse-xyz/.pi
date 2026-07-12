@@ -138,11 +138,13 @@ export default function grooveboxCycle(pi: ExtensionAPI): void {
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let activeCtx: ExtensionContext | undefined;
 	let palette: ResolvedPalette | null = null;
+	let restoreTheme: Theme | undefined;
 
 	const stop = (restore: boolean): void => {
 		if (timer) clearInterval(timer);
 		timer = undefined;
-		if (restore && activeCtx?.mode === "tui") activeCtx.ui.setTheme(THEME_NAME);
+		if (restore && activeCtx?.mode === "tui") activeCtx.ui.setTheme(restoreTheme ?? THEME_NAME);
+		if (restore) restoreTheme = undefined;
 	};
 
 	const paint = (): void => {
@@ -154,9 +156,11 @@ export default function grooveboxCycle(pi: ExtensionAPI): void {
 	const start = (ctx: ExtensionContext): boolean => {
 		stop(false);
 		activeCtx = ctx;
+		restoreTheme = ctx.ui.theme;
 		palette = loadPalette(ctx);
 		if (!palette) {
 			ctx.ui.notify("Groovebox cycle could not load the groovebox theme palette", "error");
+			restoreTheme = undefined;
 			return false;
 		}
 		paint();
@@ -171,7 +175,9 @@ export default function grooveboxCycle(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", () => {
-		stop(true);
+		// A disabled cycle never replaced the active theme, so do not force
+		// Groovebox back over a separately selected theme during shutdown.
+		stop(enabled);
 		activeCtx = undefined;
 		palette = null;
 	});

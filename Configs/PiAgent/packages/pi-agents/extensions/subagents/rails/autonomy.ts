@@ -1,14 +1,14 @@
 /**
  * rails/autonomy.ts — the D21 autonomy budget: the master, shape-agnostic
- * runaway rail. ONE shared pool per main session, consumed by every turn NOT
- * caused by user input (all subagent turns + auto-woken main turns):
+ * runaway rail. ONE pool per main session, consumed by autonomous subagent
+ * turns. Main-agent mailbox wakeups are intentionally outside this pool:
  *
  *   autonomousTurns  (default 40)   — counted when an autonomous turn starts
  *   autonomousTokens (default 500k) — per-turn SessionStats deltas, fed by the
  *                                     runtime after each turn
  *
- * User input resets the pool (index.ts wires the reset to before_agent_start —
- * the SDK emits that event only on the real user-prompt path).
+ * Interactive/RPC input resets the pool (index.ts uses the source-aware input
+ * event so extension-generated turns cannot refill it).
  *
  * PAUSE, NEVER KILL (D21 rule 3): tripping destroys nothing. Consumers check
  * `paused` before STARTING work — running turns finish (and may keep counting

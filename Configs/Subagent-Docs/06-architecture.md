@@ -31,7 +31,7 @@ packages/pi-subagents/
       deliver.ts              # turn-boundary injection, team check, bounce, hops
       digest.ts               # wake-digest composer (D14) — pure
     rails/
-      autonomy.ts             # shared turn/token pool, pause state (D21)
+      autonomy.ts             # subagent turn/token pool, pause state (D21/D24)
       hops.ts                 # chain-depth check — pure
     sandbox/
       tools-filter.ts         # type allowlist → Pi tool set

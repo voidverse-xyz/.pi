@@ -19,7 +19,7 @@
  *       MAIL with a note → the blocked tool errors and the agent reacts.
  *    7. Settings live-reload: project subagents.json edit applies at the
  *       next user turn; tiny pool → budget pause (mail queues, no turns);
- *       `/subagents resume` refills and drains.
+ *       `/agents resume` refills and drains.
  *    8. Cumulative vitals: tokens grow across a dormant→wake cycle, and
  *       survive a host restart + session-file rotation (registry baseline).
  *    9. End-state consistency: registry ⋈ teams ⋈ disk with no orphans.
@@ -337,7 +337,10 @@ const ctx = {
 	model: modelRegistry.find("mock", "mock-1"),
 	isProjectTrusted: () => true,
 	hasUI: false,
-	ui: { notify: (text, level) => notifications.push({ text, level }) },
+	ui: {
+		notify: (text, level) => notifications.push({ text, level }),
+		setStatus: () => {},
+	},
 };
 const fire = async (event) => {
 	for (const h of handlers[event] ?? []) await h({}, ctx);
@@ -354,6 +357,9 @@ const fireHostTurn = async (messages = []) => {
 };
 /** Drain the main mailbox the way a real user turn does; returns digest or null. */
 const drainMainViaUserTurn = async () => {
+	for (const h of handlers.input ?? []) {
+		await h({ type: "input", text: "test user turn", source: "interactive" }, ctx);
+	}
 	for (const h of handlers.before_agent_start ?? []) {
 		const out = await h({}, ctx);
 		if (out?.message) return out.message.content;
@@ -429,6 +435,12 @@ await test("2+3. team of 3 (2 persistent + oneshot task) with a peer Q&A round-t
 	runnerAddress = runner.address;
 	assert.match(runnerAddress, /^runner\/tmp-/);
 	assert.equal(readTeams(layout.teamsFile).ship.length, 3, "all three joined the team");
+
+	// RPC has a UI transport but no custom TUI components: /agents must return
+	// the plain roster rather than silently attempting the picker.
+	notifications.length = 0;
+	await commands.get("agents").handler("", { ...ctx, mode: "rpc", hasUI: true });
+	assert.ok(notifications.some((item) => item.text.includes("builder/main")), "/agents returns a roster in RPC mode");
 
 	// Peer round trip lands: builder woken with its question quoted (D14).
 	await waitUntil(() => llmCalls.some((c) => c.agent === "builder/main" && c.lastUserText.includes("PEER_A_MARKER")), "builder answer wake");
@@ -526,7 +538,7 @@ await test("6. out-of-scope write → escalation → main denies BY MAIL with a 
 });
 
 let tokensBeforePause;
-await test("7. settings live-reload → budget pause (queue, no turns) → /subagents resume drains", async () => {
+await test("7. settings live-reload → budget pause (queue, no turns) → /agents resume drains", async () => {
 	const detail = await callTool("subagent_status", { address: "builder/main" });
 	tokensBeforePause = detail.vitals.tokens;
 	assert.ok(tokensBeforePause > 0, "builder consumed tokens so far");
@@ -558,8 +570,18 @@ await test("7. settings live-reload → budget pause (queue, no turns) → /suba
 	assert.equal(llmCalls.length, before, "no turn started while paused");
 	assert.equal(mailbox.pendingCount(layout.mailboxDir("builder", "main")), 1, "mail parked on disk");
 
-	// The Phase-7 affordance: /subagents resume refills the pool and drains.
-	await commands.get("subagents").handler("resume", ctx);
+	// Extension-generated main turns must not impersonate user attention and
+	// refill the paused subagent pool.
+	for (const h of handlers.input ?? []) {
+		await h({ type: "input", text: "synthetic extension turn", source: "extension" }, ctx);
+	}
+	for (const h of handlers.before_agent_start ?? []) await h({}, ctx);
+	await sleep(200);
+	assert.equal(llmCalls.length, before, "extension input did not resume agent work");
+	assert.equal(mailbox.pendingCount(layout.mailboxDir("builder", "main")), 1, "agent mail stayed queued");
+
+	// The Phase-7 affordance: /agents resume refills the pool and drains.
+	await commands.get("agents").handler("resume", ctx);
 	assert.ok(
 		notifications.some((n) => n.text.includes("refilled")),
 		"resume acknowledged via notify",
@@ -574,20 +596,19 @@ await test("7. settings live-reload → budget pause (queue, no turns) → /suba
 	writeFileSync(projectSettingsFile, `${JSON.stringify({ autonomousTurns: 30 })}\n`);
 	await drainMainViaUserTurn();
 	notifications.length = 0;
-	await commands.get("subagents").handler("resume", ctx);
+	await commands.get("agents").handler("resume", ctx);
 	assert.ok(notifications.some((n) => n.text.includes("not paused")));
 });
 
-await test("7b. auto-wake starts a REAL turn (agent_settled semantics) and its agent_end usage charges the pool", async () => {
-	// Flip autoWake on (project overrides the global false) and set a token cap
-	// the auto-woken turn's REAL usage payload will hit exactly.
+await test("7b. main auto-wakes are real turns but do not consume the subagent autonomy pool", async () => {
+	// The main response below is much larger than this agent-only token cap. If
+	// main usage leaked into the pool, /agents resume would report a pause.
 	writeFileSync(
 		projectSettingsFile,
-		`${JSON.stringify({ autonomousTurns: 30, autoWake: true, autonomousTokens: 1_000_000 })}\n`,
+		`${JSON.stringify({ autonomousTurns: 30, autoWake: true, autonomousTokens: 1_000 })}\n`,
 	);
-	await drainMainViaUserTurn(); // live reload + pool reset
+	await drainMainViaUserTurn();
 
-	// builder asks main → main is idle → D16 auto-wake.
 	scripts.push({
 		match: (c) => c.agent === "builder/main" && c.lastUserText.includes("ASK_MAIN_BUDGET"),
 		reply: () => ({ tools: [{ name: "ask", args: { text: "Main, may I spend more? WAKE_CHARGE_MARKER" } }] }),
@@ -599,52 +620,37 @@ await test("7b. auto-wake starts a REAL turn (agent_settled semantics) and its a
 	const beforeWake = sentMessages.length;
 	await callTool("subagent_send", { to: "builder/main", text: "ASK_MAIN_BUDGET: ask the human-side agent" });
 	await waitUntil(() => sentMessages.length > beforeWake, "auto-wake for the builder question");
-	const wake = sentMessages[sentMessages.length - 1];
+	const wake = sentMessages.at(-1);
 	assert.equal(wake.options.triggerTurn, true, "wake requests a turn");
-	assert.equal(wake.mode, "newTurn", "issued while NOT streaming — a real new turn, never a steer");
-	assert.match(wake.message.content, /WAKE_CHARGE_MARKER/, "digest embedded in the trigger message");
-	assert.equal(mailbox.pendingCount(layout.mainMailboxDir), 0, "main mail drained at trigger time");
-	// Let the builder's asking turn finish before counting LLM calls below.
+	assert.equal(wake.mode, "newTurn", "idle mail starts a real main turn");
+	assert.match(wake.message.content, /WAKE_CHARGE_MARKER/);
 	await waitUntil(() => stateOf("builder/main") === "dormant", "builder dormant after asking");
 
-	// The auto-woken main turn ends with a REALISTIC pi-ai usage payload
-	// (input/output/cacheRead/cacheWrite) summing to exactly the 1M cap → the
-	// D21 charge must trip the pause. Decoy usage on a non-assistant message
-	// pins the role check (counting it would just pause too — but dropping any
-	// of the four fields lands under the cap and the paused assertions fail).
-	const usage = {
+	const hugeMainUsage = {
 		input: 550_000, output: 150_000, cacheRead: 200_000, cacheWrite: 100_000,
 		totalTokens: 1_000_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.42 },
 	};
-	await fireHostTurn([
-		{ role: "user", content: [{ type: "text", text: "decoy" }], usage: { ...usage, input: 9_999_999 }, timestamp: Date.now() },
-		{
-			role: "assistant", api: "mock-api", provider: "mock", model: "mock-1",
-			content: [{ type: "text", text: "answered the builder" }],
-			usage, stopReason: "stop", timestamp: Date.now(),
-		},
-	]);
+	await fireHostTurn([{
+		role: "assistant", api: "mock-api", provider: "mock", model: "mock-1",
+		content: [{ type: "text", text: "answered the builder" }],
+		usage: hugeMainUsage, stopReason: "stop", timestamp: Date.now(),
+	}]);
 
-	// Paused (tokens tripped): new subagent work queues on disk, no turn starts.
+	notifications.length = 0;
+	await commands.get("agents").handler("resume", ctx);
+	assert.ok(notifications.some((n) => n.text.includes("not paused")), "main usage did not charge the agent pool");
+
+	// Subagent work still starts normally under its independent budget.
 	scripts.push({
-		match: (c) => c.agent === "helper/main" && c.lastUserText.includes("PAUSED_PING2"),
-		reply: () => ({ text: "processed after the charge-pause resumed." }),
+		match: (c) => c.agent === "helper/main" && c.lastUserText.includes("AGENT_POOL_STILL_ACTIVE"),
+		reply: () => ({ text: "agent pool remained active." }),
 	});
-	const callsBefore = llmCalls.length;
-	await callTool("subagent_send", { to: "helper/main", text: "PAUSED_PING2: are we paused?" });
-	await sleep(400);
-	assert.equal(llmCalls.length, callsBefore, "agent_end charge tripped the pool — no turn while paused");
-	assert.equal(mailbox.pendingCount(layout.mailboxDir("helper", "main")), 1, "mail parked on disk");
-
-	// Restore the story's settings; the user-turn reset resumes and drains.
-	writeFileSync(projectSettingsFile, `${JSON.stringify({ autonomousTurns: 30 })}\n`);
-	await drainMainViaUserTurn();
+	await callTool("subagent_send", { to: "helper/main", text: "AGENT_POOL_STILL_ACTIVE" });
 	await waitUntil(
-		() => llmCalls.some((c) => c.agent === "helper/main" && c.lastUserText.includes("PAUSED_PING2")),
-		"queued mail drained after the reset",
+		() => llmCalls.some((c) => c.agent === "helper/main" && c.lastUserText.includes("AGENT_POOL_STILL_ACTIVE")),
+		"subagent turn started after huge main response",
 	);
 	await waitUntil(() => stateOf("helper/main") === "dormant", "helper dormant again");
-	assert.equal(mailbox.pendingCount(layout.mailboxDir("helper", "main")), 0, "helper mailbox drained");
 });
 
 await test("8. cumulative vitals: grow across wakes AND survive restart + session-file rotation", async () => {

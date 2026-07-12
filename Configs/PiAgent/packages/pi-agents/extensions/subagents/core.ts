@@ -9,8 +9,8 @@
  *
  * Phase-3 surface: the full power-matrix passthroughs (spawn, send, steer,
  * interrupt, retire, collect, status, peek), sendAsUser (D17), and main-mail
- * plumbing for D16 selective auto-wake: onMainMail notification, unread
- * count (📬 widget, Phase 6), and drainMainMail() — compose the wake digest
+ * plumbing for all-mail auto-wake: onMainMail notification, unread count
+ * (📬 status, Phase 6), and drainMainMail() — compose the wake digest
  * over .main/mailbox/ (validating collect results against their recorded
  * schemas on the way) and park the envelopes in .delivering/ until the
  * injected digest is verified in the main session JSONL (reconciliation:
@@ -19,11 +19,10 @@
  *
  * Phase 4 adds the D21 rails: the consolidated settings object (autoWake,
  * maxConcurrent, maxHops, autonomousTurns, autonomousTokens — doc defaults)
- * and the ONE shared AutonomyBudget per core. The budget instance is handed
- * to the runtime (which meters every subagent turn and drains on resume) and
- * exposed here so index.ts can meter auto-woken MAIN turns, reset the pool on
- * user input, and gate auto-wakes while paused. queuedMailCount() +
- * autonomy.status() feed the Phase 6 paused banner.
+ * and the ONE subagent AutonomyBudget per core. The runtime meters subagent
+ * turns and drains on resume; main-agent mailbox wakeups are deliberately not
+ * charged to or gated by this pool. index.ts resets the agent pool on user
+ * input. queuedMailCount() + autonomy.status() feed the paused status.
  *
  * Phase 7: settings come from a REAL source (store/settings.ts —
  * ~/.pi/agent/subagents.json overridden by <project>/.pi/subagents.json;
@@ -36,8 +35,8 @@
  * settings-controlled retention).
  */
 
-import { existsSync, readdirSync, readFileSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { collectResultNote, validateAgainstSchema } from "./mail/collect.ts";
 import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
@@ -85,8 +84,21 @@ import { parseTypeFile } from "./typedefs/parse.ts";
 // Re-exported so tools/tui/harnesses keep one import surface (D23 rule 1).
 export { defaultSettings, type SubagentsSettings } from "./store/settings.ts";
 
-/** Envelope types that auto-wake an idle main agent (D16, option c). */
-export const WAKE_WORTHY_TYPES = ["question", "escalation", "error"] as const;
+/** Read the durable abort latch without instantiating the subagent runtime. */
+export function mainAutoWakeBlockedFor(cwd: string): boolean {
+	return existsSync(createLayout(cwd).mainAutoWakeLatchFile);
+}
+
+/** Persist/clear the abort latch so `/reload` and process restart cannot bypass it. */
+export function setMainAutoWakeBlockedFor(cwd: string, blocked: boolean): void {
+	const file = createLayout(cwd).mainAutoWakeLatchFile;
+	if (!blocked) {
+		rmSync(file, { force: true });
+		return;
+	}
+	mkdirSync(dirname(file), { recursive: true });
+	writeFileSync(file, "blocked\n", { mode: 0o600 });
+}
 
 /**
  * The customType (prefix) index.ts stamps on every main-mail digest message
@@ -159,10 +171,9 @@ export interface SubagentsCore {
 	 */
 	reloadSettings(): string[];
 	/**
-	 * The session's ONE shared D21 autonomy pool. index.ts resets it on user
-	 * input (before_agent_start), meters auto-woken main turns against it, and
-	 * gates auto-wakes on `paused`; the runtime meters subagent turns and
-	 * drains queued mailboxes on resume. `resume()` = the Phase 6 banner key.
+	 * The session's D21 subagent autonomy pool. index.ts resets it on user
+	 * input; the runtime meters subagent turns and drains their queued mail on
+	 * resume. Main-agent mailbox wakeups are independent of this pool.
 	 */
 	readonly autonomy: AutonomyBudget;
 
@@ -209,8 +220,8 @@ export interface SubagentsCore {
 
 	/** Unprocessed envelopes in .main/mailbox/ (📬 widget, Phase 6). */
 	mainUnreadCount(): number;
-	/** True if pending main mail contains a question|escalation|error (D16). */
-	mainHasWakeWorthy(): boolean;
+	/** True when any pending envelope is waiting in the main mailbox. */
+	mainHasPendingMail(): boolean;
 	/**
 	 * Compose the main agent's wake digest over all pending mail; null when
 	 * the mailbox is empty. Collect results are validated against their
@@ -366,10 +377,7 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 		archived: () => listArchived(layout.archiveRoot),
 
 		mainUnreadCount: () => pendingCount(mainMailbox),
-		mainHasWakeWorthy: () =>
-			readPending(mainMailbox).some((p) =>
-				(WAKE_WORTHY_TYPES as readonly string[]).includes(p.envelope.type),
-			),
+		mainHasPendingMail: () => readPending(mainMailbox).length > 0,
 		drainMainMail: (sessionFile) => {
 			// Settle earlier batches first: digests verified in their session
 			// JSONL finalize to .done/ now (the "exactly once" half of the

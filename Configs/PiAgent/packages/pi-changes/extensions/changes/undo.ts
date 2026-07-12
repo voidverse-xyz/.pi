@@ -138,11 +138,8 @@ export async function undoAllFiles(
 		} else if (fc.baseline!.unrestorable) {
 			skipped.push({ fc, reason: "original was binary or too large" });
 		} else if (fc.baseline!.existed) {
-			plan.push({
-				fc,
-				action: "restore",
-				note: hasDrift(fc) ? "changed outside the agent — those changes will be discarded" : undefined,
-			});
+			const note = hasDrift(fc) ? "changed outside the agent — those changes will be discarded" : undefined;
+			plan.push({ fc, action: "restore", ...(note !== undefined ? { note } : {}) });
 		} else if (fc.currentExists) {
 			plan.push({ fc, action: "delete" });
 		} else {

@@ -185,17 +185,14 @@ export interface InProcessRuntimeOptions {
 	authStorage?: AuthStorage;
 	/** Running-turn slot cap (D13). Default 5. */
 	maxConcurrent?: number;
-	/**
-	 * An envelope landed in .main/mailbox/ — the host extension applies D16
-	 * selective auto-wake from here. Delivery already happened (file on disk).
-	 */
+	/** An envelope landed in .main/mailbox/; the host may auto-wake main. */
 	onMainMail?: (envelope: Envelope) => void;
 	/** D21 chain-depth cap. Default 8. A getter keeps it live (Phase 7). */
 	maxHops?: number | (() => number);
 	/**
-	 * The session-shared D21 autonomy pool (core owns it — the same instance
-	 * also meters auto-woken MAIN turns in index.ts). Omitted = unlimited
-	 * (lower-phase harnesses). While paused, no new subagent turn starts; on
+	 * The session's D21 subagent autonomy pool (core owns it). Main-agent
+	 * mailbox wakeups are independent. Omitted = unlimited (lower-phase
+	 * harnesses). While paused, no new subagent turn starts; on
 	 * resume this runtime re-drains every mailbox with pending envelopes.
 	 */
 	autonomy?: AutonomyBudget;
@@ -568,7 +565,7 @@ export class InProcessRuntime implements SubagentRuntime {
 		const record = this._requireRecord(options.to);
 		// D21 / Finding 14: a message typed into the subagent VIEWER is a genuine
 		// USER action (D17 superuser row) — it resets the autonomy pool exactly
-		// like a main-session user turn (index.ts's before_agent_start reset). If
+		// like a main-session user turn (index.ts's source-aware input reset). If
 		// the pool was paused this resumes it, and the "resumed" event drains
 		// every queued mailbox (subscribe → _drainAllPendingMail), so this
 		// message doesn't sit queued behind a paused pool. NOT done for send()
@@ -1216,8 +1213,8 @@ export class InProcessRuntime implements SubagentRuntime {
 				// outstanding — it simply goes dormant until the answer wakes it.
 				// m1: after a CRASHED turn never auto-reschedule — the crash left
 				// its own digest pending, and retrying immediately loops: error
-				// envelope + main auto-wake every cycle until the autonomy pool
-				// trips. The mail stays queued for the next EXTERNAL wake.
+				// envelope + main auto-wake every cycle. The mail stays queued for
+				// the next EXTERNAL wake instead.
 				// Findings 1/2/5 (leavePending): an interrupt/shutdown abort, a
 				// paused pool, or a lost run-ownership claim also leave the
 				// triggering mail pending and must NOT auto-retry — the next real

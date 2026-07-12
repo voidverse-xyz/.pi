@@ -23,6 +23,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AnswerState } from "./ask.ts";
 import { buildDiffDisplayLines, type DiffViewMode, toggleViewMode } from "./diff-view.ts";
+import { escapeTerminalControls } from "./display.ts";
 import { buildChangesListLines, buildFileContentLines, statusMarker } from "./file-view.ts";
 import { createNavKeys } from "./keys.ts";
 import { type FileChange, fileDiffText } from "./tracker.ts";
@@ -45,6 +46,9 @@ const ASK_ITEMS: SelectItem[] = [
 
 export interface ChangesPanelOptions {
 	changes: FileChange[];
+	source?: "session" | "git";
+	allowUndo?: boolean;
+	allowExport?: boolean;
 	tui: TUI;
 	theme: Theme;
 	keybindings: KeybindingsManager;
@@ -56,6 +60,9 @@ export interface ChangesPanelOptions {
 
 export function createChangesPanel(opts: ChangesPanelOptions): Component {
 	const { changes, tui, theme, keybindings, onDone, answer } = opts;
+	const source = opts.source ?? "session";
+	const allowUndo = opts.allowUndo ?? source === "session";
+	const allowExport = opts.allowExport ?? source === "session";
 	const keys = createNavKeys(keybindings);
 
 	let selectedIndex = 0;
@@ -127,8 +134,9 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 	}
 
 	function pad(content: string, width: number): string {
-		const vis = visibleWidth(content);
-		return content + " ".repeat(Math.max(0, width - vis));
+		const clipped = truncateToWidth(content, Math.max(0, width), "…");
+		const vis = visibleWidth(clipped);
+		return clipped + " ".repeat(Math.max(0, width - vis));
 	}
 
 	function setView(next: PanelView) {
@@ -157,16 +165,16 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 		if (!answer) return [pad(theme.fg("muted", " (no answer)"), innerW)];
 
 		const fc = selected();
-		const title = theme.bold(`Subagent · ${answer.rel || fc?.rel || ""}`);
+		const title = theme.bold(`Subagent · ${escapeTerminalControls(answer.rel || fc?.rel || "")}`);
 		for (const h of wrapTextWithAnsi(title, innerW)) out.push(pad(` ${h}`, innerW));
 		out.push(pad(` ${rule(width - 2)}`, innerW));
 
 		if (answer.status === "error") {
-			out.push(pad(` ${theme.fg("toolDiffRemoved", "Error:")} ${theme.fg("muted", answer.error ?? "")}`, innerW));
+			out.push(pad(` ${theme.fg("toolDiffRemoved", "Error:")} ${theme.fg("muted", escapeTerminalControls(answer.error ?? ""))}`, innerW));
 			return out;
 		}
 
-		const body = answer.text || (answer.status === "running" ? "…thinking…" : "(no answer)");
+		const body = escapeTerminalControls(answer.text || (answer.status === "running" ? "…thinking…" : "(no answer)"));
 		for (const raw of body.split("\n")) {
 			for (const wrapped of wrapTextWithAnsi(theme.fg("text", raw), innerW)) {
 				out.push(pad(` ${wrapped}`, innerW));
@@ -240,21 +248,21 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 			openAskTarget();
 			return;
 		}
-		if (matchesKey(data, "u")) {
+		if (allowUndo && matchesKey(data, "u")) {
 			const fc = selected();
 			if (fc) onDone({ type: "undo", abs: fc.abs });
 			return;
 		}
-		if (matchesKey(data, "shift+u")) {
+		if (allowUndo && matchesKey(data, "shift+u")) {
 			onDone({ type: "undoAll" });
 			return;
 		}
-		if (matchesKey(data, "e")) {
+		if (allowExport && matchesKey(data, "e")) {
 			const fc = selected();
 			if (fc) onDone({ type: "exportPatch", abs: fc.abs, all: false });
 			return;
 		}
-		if (matchesKey(data, "shift+e")) {
+		if (allowExport && matchesKey(data, "shift+e")) {
 			onDone({ type: "exportPatch", abs: selected()?.abs ?? "", all: true });
 			return;
 		}
@@ -405,27 +413,35 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 
 	// ── header / footer ─────────────────────────────────────────────────────────
 
-	function headerLine(width: number): string {
+	function headerLine(): string {
 		const fileCount = changes.length;
 		const totalChanges = changes.reduce((n, c) => n + (c.changeCount || 1), 0);
-		const left = theme.bold(`Session changes`) + theme.fg("dim", ` — ${fileCount} file${fileCount === 1 ? "" : "s"} · ${totalChanges} edit${totalChanges === 1 ? "" : "s"}`);
+		const title = source === "git" ? "Git changes" : "Session changes";
+		const summary = source === "git"
+			? ` — ${fileCount} changed file${fileCount === 1 ? "" : "s"}`
+			: ` — ${fileCount} file${fileCount === 1 ? "" : "s"} · ${totalChanges} edit${totalChanges === 1 ? "" : "s"}`;
+		const left = theme.bold(title) + theme.fg("dim", summary);
 
 		const fc = selected();
 		let mid = "";
-		if (view === "diff" && fc) mid = `  ${statusMarker(theme, fc.status)} ${theme.fg("text", fc.rel)} ${theme.fg("dim", diffViewMode)}`;
-		else if (view === "file" && fc) mid = `  ${theme.fg("text", fc.rel)} ${theme.fg("dim", "full file")}`;
-		else if (view === "ask-target" && fc) mid = `  ${theme.fg("dim", "Ask about")} ${theme.fg("text", fc.rel)}`;
-		else if (view === "answer" && fc) mid = `  ${theme.fg("dim", "Subagent answer ·")} ${theme.fg("text", fc.rel)}`;
+		const safeRel = fc ? escapeTerminalControls(fc.rel) : "";
+		if (view === "diff" && fc) mid = `  ${statusMarker(theme, fc.status)} ${theme.fg("text", safeRel)} ${theme.fg("dim", diffViewMode)}`;
+		else if (view === "file" && fc) mid = `  ${theme.fg("text", safeRel)} ${theme.fg("dim", "full file")}`;
+		else if (view === "ask-target" && fc) mid = `  ${theme.fg("dim", "Ask about")} ${theme.fg("text", safeRel)}`;
+		else if (view === "answer" && fc) mid = `  ${theme.fg("dim", "Subagent answer ·")} ${theme.fg("text", safeRel)}`;
 		return left + mid;
 	}
 
 	function footerHint(): string {
 		switch (view) {
 			case "list":
+				if (!allowUndo && !allowExport) return "↑↓ move · Enter diff · o file · a ask · q close";
 				return "↑↓ move · Enter diff · o file · a ask · u undo · U undo all · e/E patch · q close";
 			case "diff":
+				if (!allowUndo && !allowExport) return "↑↓ scroll · v split · o file · a ask · f/Esc back";
 				return "↑↓ scroll · v split · o file · a ask · u undo · e/E patch · f/Esc back";
 			case "file":
+				if (!allowUndo && !allowExport) return "↑↓ scroll · f diff · a ask · Esc back";
 				return "↑↓ scroll · f diff · a ask · u undo · e/E patch · Esc back";
 			case "ask-target":
 				return "↑↓ · Enter choose · Esc cancel";
@@ -440,7 +456,7 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 
 		const innerW = Math.max(1, width);
 		if (innerW < 20) {
-			const lines = [truncateToWidth(theme.bold("Session changes"), innerW, "")];
+			const lines = [truncateToWidth(theme.bold(source === "git" ? "Git changes" : "Session changes"), innerW, "")];
 			while (lines.length < targetH) lines.push(" ".repeat(innerW));
 			cachedWidth = width;
 			cachedHeight = targetH;
@@ -449,7 +465,7 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 		}
 		const header: string[] = [];
 		header.push(rule(innerW));
-		for (const h of wrapTextWithAnsi(headerLine(innerW), innerW)) header.push(pad(h, innerW));
+		for (const h of wrapTextWithAnsi(headerLine(), innerW)) header.push(pad(h, innerW));
 		header.push(rule(innerW));
 
 		const footerRows = 2; // rule + hint

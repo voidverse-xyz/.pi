@@ -298,10 +298,10 @@ Side effects handled:
 Per-agent budgets (D15/D20) cap single agents; these rails cap INTERACTIONS —
 loops of many small legal turns (ping-pong questions; unattended auto-wake
 cascades survive per-agent caps while the system spins).
-1. Autonomy budget (master rail, shape-agnostic): autonomous turn = any turn not
-   caused by user input. One shared session pool since the user's last message:
-   autonomousTurns: 40 and autonomousTokens: 500k across ALL agents; user input
-   resets. Doesn't detect runaway — makes it bounded by construction.
+1. Autonomy budget (master rail, shape-agnostic): autonomous subagent turns use
+   one session pool since the user's last message: autonomousTurns: 40 and
+   autonomousTokens: 500k; user input resets it. D24 later exempts main-agent
+   mailbox wakeups from this pool.
 2. Chain hops (kills ping-pong early): envelope field `hops` = parent.hops + 1
    when a message-triggered turn sends a message; fresh work = 0. maxHops: 8 per
    causal chain; over-cap envelopes bounce with "8 rounds unresolved — report to
@@ -318,7 +318,7 @@ is the actual answer.
 
 ### D22 — TUI spec confirmed (2026-07-09)
 Full spec in 05-tui-spec.md. Four components: ambient footer widget (running/
-waiting/📬/budget segments, non-zero only, hidden at zero agents), /subagents
+waiting/📬/budget segments, non-zero only, hidden at zero agents), /agents
 picker (team-grouped rows + .archive section; Enter/x/X/Esc), full-screen viewer
 (header vitals, Pi-native transcript replay+tail, envelope traffic as distinct 📨
 entries, superuser input line), escalation modal (approve-once/deny/deny-with-note/
@@ -339,6 +339,17 @@ IS the API); store/layout.ts is the single path authority; digest/paths/hops/
 parse/compose stay pure for unit testing, e2e harness (jiti-alias pattern) covers
 wiring. Build order: 1 data layer → 2 one-agent-runs → 3 mail → 4 teams+rails →
 5 sandbox → 6 TUI → 7 polish. Phases 1–3 usable, 4–5 safe, 6 pleasant.
+
+### D24 — All-mail main auto-wake; abort-latched user control (2026-07-12)
+Supersedes D16's selective main-mail wake policy and narrows D21's pool scope.
+Every envelope type sent to main auto-wakes it when idle; mid-turn mail waits for
+`agent_settled`. Any main run ending with `stopReason: aborted` durably latches
+mailbox auto-wake off across reload/restart until the next interactive/RPC user
+input. Pi exposes the aborted
+result but not its source, so Esc and programmatic aborts are intentionally treated
+the same. Main mailbox turns neither consume nor obey the subagent autonomy pool;
+D21 turn/token budgets continue to govern subagent turns. `autoWake: false` remains
+an explicit fully-manual override.
 
 ## Proposed (under discussion)
 

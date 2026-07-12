@@ -1,31 +1,73 @@
-/**
- * /changes (alias: /browse-edits) — a native TUI to browse, diff, question, undo,
- * and export the agent's own file changes this session (git-free).
- *
- * The extension has two halves: a background tracker (registerTracker) that records
- * pre-image baselines as the agent edits, and the /changes command — a command loop
- * that collects the changeset, shows the full-screen panel, and services the actions
- * the panel resolves (ask main agent / ask subagent / undo / undo all / export patch),
- * reopening the panel after each.
- */
-
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { type AnswerState, buildMainAgentMessage, spawnSubagentAnswer } from "./ask.ts";
 import { exportPatch } from "./export.ts";
+import { escapeTerminalControls } from "./display.ts";
+import { collectGitChanges } from "./git.ts";
 import { type ChangesPanelOptions, createChangesPanel, type PanelResult } from "./panel.ts";
 import { collectChangeset, type FileChange, registerTracker } from "./tracker.ts";
 import { undoAllFiles, undoFile } from "./undo.ts";
 
+type BrowserSource = "session" | "git";
+
+interface BrowserOptions {
+	source: BrowserSource;
+	command: string;
+	emptyMessage: string;
+	allowUndo: boolean;
+	allowExport: boolean;
+	collect(): Promise<FileChange[]>;
+}
+
 export default function changesExtension(pi: ExtensionAPI): void {
 	registerTracker(pi);
 
-	const command = {
-		description: "Browse, diff, question, undo, and export the agent's file changes this session",
-		handler: async (_args: string, ctx: ExtensionCommandContext) => runChanges(pi, ctx),
+	const sessionCommand = {
+		description: "Browse, question, undo, and export the main agent's file changes this session",
+		handler: async (args: string, ctx: ExtensionCommandContext) => {
+			if (args.trim()) {
+				ctx.ui.notify("Usage: /changes", "error");
+				return;
+			}
+			await runBrowser(pi, ctx, {
+				source: "session",
+				command: "/changes",
+				emptyMessage: "No agent file changes this session",
+				allowUndo: true,
+				allowExport: true,
+				collect: async () => collectChangeset(ctx),
+			});
+		},
 	};
+	pi.registerCommand("changes", sessionCommand);
+	pi.registerCommand("browse-edits", sessionCommand);
 
-	pi.registerCommand("changes", command);
-	pi.registerCommand("browse-edits", command);
+	pi.registerCommand("git-changes", {
+		description: "Browse staged, unstaged, untracked, and deleted Git changes",
+		handler: async (args, ctx) => {
+			if (args.trim()) {
+				ctx.ui.notify("Usage: /git-changes", "error");
+				return;
+			}
+			const shownWarnings = new Set<string>();
+			await runBrowser(pi, ctx, {
+				source: "git",
+				command: "/git-changes",
+				emptyMessage: "No uncommitted Git changes",
+				allowUndo: false,
+				allowExport: false,
+				collect: async () => {
+					const result = await collectGitChanges(pi, ctx.cwd);
+					for (const warning of result.warnings) {
+						if (!shownWarnings.has(warning)) {
+							shownWarnings.add(warning);
+							ctx.ui.notify(warning, "warning");
+						}
+					}
+					return result.changes;
+				},
+			});
+		},
+	});
 }
 
 function showPanel(
@@ -34,6 +76,9 @@ function showPanel(
 	initialSelectedAbs: string | undefined,
 	initialView: "list" | "answer",
 	answer: AnswerState | undefined,
+	source: BrowserSource,
+	allowUndo: boolean,
+	allowExport: boolean,
 ): Promise<PanelResult> {
 	return ctx.ui.custom<PanelResult>(
 		(tui, theme, keybindings, done) => {
@@ -43,9 +88,12 @@ function showPanel(
 				theme,
 				keybindings,
 				onDone: done,
-				initialSelectedAbs,
+				...(initialSelectedAbs !== undefined ? { initialSelectedAbs } : {}),
 				initialView,
-				answer,
+				...(answer !== undefined ? { answer } : {}),
+				source,
+				allowUndo,
+				allowExport,
 			};
 			return createChangesPanel(options);
 		},
@@ -56,15 +104,21 @@ function showPanel(
 	);
 }
 
-async function runChanges(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<void> {
+async function runBrowser(pi: ExtensionAPI, ctx: ExtensionCommandContext, options: BrowserOptions): Promise<void> {
 	if (ctx.mode !== "tui") {
-		ctx.ui.notify("/changes requires interactive TUI mode", "error");
+		ctx.ui.notify(`${options.command} requires interactive TUI mode`, "error");
 		return;
 	}
 
-	let changes = collectChangeset(ctx);
+	let changes: FileChange[];
+	try {
+		changes = await options.collect();
+	} catch (error) {
+		ctx.ui.notify(`${options.command} failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+		return;
+	}
 	if (changes.length === 0) {
-		ctx.ui.notify("No agent file changes this session", "info");
+		ctx.ui.notify(options.emptyMessage, "info");
 		return;
 	}
 
@@ -72,16 +126,29 @@ async function runChanges(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
 	let nextView: "list" | "answer" = "list";
 	let currentAnswer: AnswerState | undefined;
 
-	const refresh = () => {
-		changes = collectChangeset(ctx);
-		if (changes.length > 0 && !changes.some((c) => c.abs === selectedAbs)) {
-			selectedAbs = changes[0]!.abs;
+	const refresh = async (): Promise<boolean> => {
+		try {
+			changes = await options.collect();
+		} catch (error) {
+			ctx.ui.notify(`Refresh failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			return false;
 		}
+		if (changes.length > 0 && !changes.some((change) => change.abs === selectedAbs)) selectedAbs = changes[0]!.abs;
+		return true;
 	};
 
 	try {
 		while (true) {
-			const result = await showPanel(ctx, changes, selectedAbs, nextView, currentAnswer);
+			const result = await showPanel(
+				ctx,
+				changes,
+				selectedAbs,
+				nextView,
+				currentAnswer,
+				options.source,
+				options.allowUndo,
+				options.allowExport,
+			);
 			nextView = "list";
 
 			if (!result || result.type === "close") break;
@@ -94,63 +161,65 @@ async function runChanges(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promi
 			}
 
 			if (result.type === "undo") {
-				const fc = changes.find((c) => c.abs === result.abs);
-				if (fc) {
-					const outcome = await undoFile(pi, ctx, fc);
+				if (!options.allowUndo) continue;
+				const change = changes.find((candidate) => candidate.abs === result.abs);
+				if (change) {
+					const outcome = await undoFile(pi, ctx, change);
 					ctx.ui.notify(outcome.message, outcome.level);
 				}
-				refresh();
+				if (!(await refresh())) break;
 				if (changes.length === 0) {
-					ctx.ui.notify("No agent file changes remain", "info");
+					ctx.ui.notify(options.emptyMessage, "info");
 					break;
 				}
 				continue;
 			}
 
 			if (result.type === "undoAll") {
+				if (!options.allowUndo) continue;
 				const outcome = await undoAllFiles(pi, ctx, changes);
 				ctx.ui.notify(outcome.message, outcome.level);
-				refresh();
+				if (!(await refresh())) break;
 				if (changes.length === 0) {
-					ctx.ui.notify("No agent file changes remain", "info");
+					ctx.ui.notify(options.emptyMessage, "info");
 					break;
 				}
 				continue;
 			}
 
 			if (result.type === "exportPatch") {
-				const fc = changes.find((c) => c.abs === result.abs);
-				const outcome = await exportPatch(ctx.cwd, changes, fc, result.all);
+				if (!options.allowExport) continue;
+				const change = changes.find((candidate) => candidate.abs === result.abs);
+				const exportRoot = options.source === "git" ? (change?.reviewCwd ?? changes[0]?.reviewCwd ?? ctx.cwd) : ctx.cwd;
+				const outcome = await exportPatch(exportRoot, changes, change, result.all);
 				ctx.ui.notify(outcome.message, outcome.level);
 				continue;
 			}
 
 			if (result.type === "askMain") {
-				const fc = changes.find((c) => c.abs === result.abs);
-				if (fc) {
-					const q = await ctx.ui.input(`Ask about: ${fc.rel}`, "Your question…");
-					if (q?.trim()) {
-						pi.sendUserMessage(buildMainAgentMessage(fc, q), { deliverAs: "followUp" });
+				const change = changes.find((candidate) => candidate.abs === result.abs);
+				if (change) {
+					const question = await ctx.ui.input(`Ask about: ${escapeTerminalControls(change.rel)}`, "Your question…");
+					if (question?.trim()) {
+						pi.sendUserMessage(buildMainAgentMessage(change, question), { deliverAs: "followUp" });
 						await ctx.waitForIdle();
 						ctx.ui.notify("Agent answered — check chat, then continue", "info");
 					}
 				}
-				refresh();
-				if (changes.length === 0) break;
+				if (!(await refresh()) || changes.length === 0) break;
 				continue;
 			}
 
 			if (result.type === "askSub") {
-				const fc = changes.find((c) => c.abs === result.abs);
-				if (fc) {
-					const q = await ctx.ui.input(`Ask subagent about: ${fc.rel}`, "Your question…");
-					if (q?.trim()) {
+				const change = changes.find((candidate) => candidate.abs === result.abs);
+				if (change) {
+					const question = await ctx.ui.input(`Ask subagent about: ${escapeTerminalControls(change.rel)}`, "Your question…");
+					if (question?.trim()) {
 						currentAnswer?.kill();
-						currentAnswer = spawnSubagentAnswer(ctx.cwd, fc, q.trim());
+						currentAnswer = spawnSubagentAnswer(change.reviewCwd ?? ctx.cwd, change, question.trim());
 						nextView = "answer";
 					}
 				}
-				continue;
 			}
 		}
 	} finally {

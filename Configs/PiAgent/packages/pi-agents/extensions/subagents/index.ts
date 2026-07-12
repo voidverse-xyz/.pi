@@ -4,50 +4,22 @@
  *
  * Extension entry. Phase 3 registers the full seven-tool surface
  * (03-tool-surface.md): spawn, send, steer, status, collect, interrupt,
- * retire — and wires the MAIN agent's mailbox into the host session (D16
- * selective auto-wake):
+ * retire — and wires the MAIN agent's mailbox into the host session:
  *
- *  - Every envelope to `main` lands in .main/mailbox/ (runtime side).
- *  - question | escalation | error while the host agent is idle → auto-wake:
- *    `pi.sendMessage(..., { triggerTurn: true })` starts a main-agent turn
- *    with the wake digest EMBEDDED in the trigger message (drained at trigger
- *    time — triggerTurn turns never fire before_agent_start, so a deferred
- *    digest would strand until the next real user turn while agent_end kept
- *    re-triggering). `before_agent_start` still drains quietly-queued reports
- *    into a digest at the start of every REAL user turn, per D16.
- *  - Mid-turn mail waits for the turn boundary (D11): `agent_settled` re-checks
- *    the mailbox and auto-wakes then if warranted. NOT `agent_end`: the SDK
- *    emits agent_end while the run still counts as streaming
- *    (AgentSession._isAgentRunActive is cleared only in _emitAgentSettled,
- *    which runs AFTER agent_end), so a sendMessage(triggerTurn) there would
- *    take sendCustomMessage's streaming branch and STEER into the ending turn
- *    instead of starting a fresh one. At agent_settled isStreaming is false
- *    and triggerTurn genuinely starts a new main-agent turn.
- *  - Plain reports queue silently; core.mainUnreadCount() feeds the Phase 6
- *    widget. settings.autoWake=false drops to fully-manual queueing.
- *  - Main-mail durability (at-least-once): every drain passes the ACTIVE main
- *    session JSONL path (ctx.sessionManager.getSessionFile(), captured into
- *    `sessionMgr` from event contexts) so core parks drained envelopes in
- *    .delivering/ instead of finalizing at compose time; session_start runs
- *    reconcileMainMailFor — digests verified in the recorded JSONL finalize,
- *    injections lost to a crash are requeued (and re-auto-woken in TUI).
+ *  - Every envelope type sent to `main` lands in .main/mailbox/ and wakes an
+ *    idle main agent. Mail arriving mid-turn waits for `agent_settled`, where
+ *    Pi is genuinely idle, then starts a fresh turn with the digest embedded.
+ *  - Aborting any main-agent run durably latches automatic mailbox wakeups
+ *    off across reload/restart. The next interactive/RPC input clears it; queued mail is then
+ *    included in that user's turn and subsequent mail auto-wakes normally.
+ *  - Main auto-wakes are intentionally independent of D21 autonomy budgets.
+ *    Those turn/token rails continue to govern subagent work only.
+ *  - settings.autoWake=false remains an explicit manual-mode override.
+ *  - Main-mail durability (at-least-once): drains are parked in .delivering/
+ *    until their digest is verified in the active main session JSONL. Crash
+ *    recovery requeues unverified injections at session start.
  *
- * D21 rails (Phase 4) — this file owns the MAIN-side half of the shared
- * autonomy pool (core.autonomy; the runtime meters subagent turns itself):
- *  - "Caused by user" detection: the pool resets in `before_agent_start`.
- *    That event is emitted ONLY on AgentSession.prompt() — the real
- *    user-submission path; pi.sendMessage(..., { triggerTurn: true }) (our
- *    auto-wake, customType "subagent-mail-wake") calls the agent loop
- *    directly and never fires it. So auto-woken digest turns can never reset
- *    the pool — no customType inspection needed.
- *  - Auto-woken main turns are autonomous: triggerWake() consumes a pool turn
- *    and agent_end charges that turn's assistant token usage (agent_end is the
- *    only host event that carries the run's messages).
- *  - Paused system starts no auto-wake main turns: onMainMail/agent_settled
- *    skip triggerWake while paused (wake-worthy mail queues on disk; the reset
- *    on the next user turn drains it via the before_agent_start digest).
- *
- * Phase 6 (05-tui-spec): the ambient belowEditor widget, /subagents picker,
+ * Phase 6 (05-tui-spec): ambient status, /agents picker,
  * full-screen session viewer (alt+j quick-switch), and the escalation modal
  * are wired here; all of them talk to the core facade only.
  *
@@ -64,11 +36,12 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createCore,
+	mainAutoWakeBlockedFor,
 	MAIN_MAIL_CUSTOM_TYPE,
 	reconcileMainMailFor,
 	runGcSweepFor,
+	setMainAutoWakeBlockedFor,
 	type SubagentsCore,
-	WAKE_WORTHY_TYPES,
 } from "./core.ts";
 import {
 	createCollectTool,
@@ -88,16 +61,15 @@ import { createWidgetController, widgetSegments, type WidgetController } from ".
 // Lives in core.ts because reconciliation greps the main session JSONL for it
 // to verify a digest actually landed (main-mailbox at-least-once).
 const MAIL_CUSTOM_TYPE = MAIN_MAIL_CUSTOM_TYPE;
-const WAKE_TRIGGER_TEXT =
-	"[subagent mail] Wake-worthy subagent mail (question/escalation/error) arrived — the digest follows.";
+const WAKE_TRIGGER_TEXT = "[subagent mail] New subagent mail arrived — the digest follows.";
 const WIDGET_KEY = "subagents";
 
 export default function (pi: ExtensionAPI) {
 	let core: SubagentsCore | undefined;
-	/** Host-session streaming state (D16 idle detection for auto-wake). */
+	/** Host-session streaming state used to defer mail until a settled boundary. */
 	let mainBusy = false;
-	/** The turn now running was auto-woken — charge its tokens at agent_end (D21). */
-	let autoWokenTurn = false;
+	/** Durable abort latch: only interactive/RPC user input re-enables wakeups. */
+	let autoWakeBlockedByAbort = false;
 	/** Last UI-capable context seen (event handlers get no ctx from runtime events). */
 	let uiCtx: ExtensionContext | undefined;
 	/**
@@ -122,17 +94,14 @@ export default function (pi: ExtensionAPI) {
 
 	const getCore = (ctx: ExtensionContext): SubagentsCore => {
 		if (!core) {
+			autoWakeBlockedByAbort = mainAutoWakeBlockedFor(ctx.cwd);
 			core = createCore({
 				cwd: ctx.cwd,
 				modelRegistry: ctx.modelRegistry,
-				onMainMail: (envelope) => {
-					// D16 selective auto-wake: only question|escalation|error wake an
-					// IDLE main agent; reports queue quietly (📬 widget). Mid-turn
-					// mail always waits for the boundary (agent_end below).
-					if (!core?.settings.autoWake) return;
-					if (core.autonomy.paused) return; // D21: paused = no auto-wakes
-					if (!(WAKE_WORTHY_TYPES as readonly string[]).includes(envelope.type)) return;
-					if (mainBusy) return;
+				onMainMail: (_envelope) => {
+					// Every envelope type wakes an idle main agent unless the user has
+					// aborted a run. Subagent autonomy budgets do not gate main wakeups.
+					if (!core?.settings.autoWake || autoWakeBlockedByAbort || mainBusy) return;
 					triggerWake();
 				},
 			});
@@ -160,30 +129,15 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	/**
-	 * Start an auto-woken main-agent turn with the wake digest EMBEDDED in the
-	 * trigger message. (Carried-forward Phase-4 fix: sendMessage/triggerTurn
-	 * turns never fire before_agent_start, so a digest deferred to that hook
-	 * waited for the next real user turn while agent_end kept re-triggering —
-	 * a rail-bounded self-wake loop. Draining at trigger time closes it.)
-	 *
-	 * // DEVIATION (D21 hops): main's auto-woken answers are sent via the
-	 * normal main-agent tools with no `causedBy`, so a main-mediated
-	 * sub→main→sub cascade restarts at hops 0 each round — the hops rail never
-	 * trips it; only the autonomy pool bounds it. D21 already accepts this
-	 * posture (the pool is the master rail; user input is the true reset).
-	 * Threading trigger envelopes through triggerWake→send would need hops
-	 * plumbing across the whole main tool surface — deliberately not done.
+	 * Start a main-agent turn with the mailbox digest embedded in the trigger.
+	 * Re-check every gate here so a queued callback cannot race an abort latch.
 	 */
 	const triggerWake = (): void => {
 		const current = core;
-		if (!current) return;
+		if (!current || !current.settings.autoWake || autoWakeBlockedByAbort || mainBusy) return;
 		const digest = current.drainMainMail(currentSessionFile());
 		if (digest === null) return; // raced — someone else drained the box
 		mainBusy = true; // suppress double-triggers until agent_start lands
-		// D21: an auto-woken main turn is autonomous — it consumes a pool turn
-		// (its token usage is charged at agent_end).
-		current.autonomy.noteTurnStart();
-		autoWokenTurn = true;
 		pi.sendMessage(
 			{
 				customType: `${MAIL_CUSTOM_TYPE}-wake`,
@@ -207,8 +161,8 @@ export default function (pi: ExtensionAPI) {
 	// All state flows through the core facade; overlays never stack.
 	// -----------------------------------------------------------------------
 
-	/** Publish compact activity into Pi's built-in extension-status footer row.
-	 * Idle state stays silent; no custom footer or below-editor row is needed. */
+	/** Publish compact activity into Pi's extension-status footer row.
+	 * Idle state stays silent; no extra editor-adjacent row is needed. */
 	const installWidget = (ctx: ExtensionContext): void => {
 		if (ctx.mode !== "tui") return;
 		const current = getCore(ctx);
@@ -235,7 +189,7 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		target: Pick<ViewerOptions, "address" | "archived">,
 	): Promise<void> => {
-		if (!ctx.hasUI || overlayOpen) return;
+		if (ctx.mode !== "tui" || overlayOpen) return;
 		const current = getCore(ctx);
 		let cursor: Pick<ViewerOptions, "address" | "archived"> | undefined = target;
 		while (cursor) {
@@ -275,7 +229,7 @@ export default function (pi: ExtensionAPI) {
 
 	/** Escalation prompts (spec §4), oldest first, until none pend or Esc. */
 	const surfaceEscalations = async (ctx: ExtensionContext): Promise<void> => {
-		if (!ctx.hasUI) return;
+		if (ctx.mode !== "tui") return;
 		if (overlayOpen) {
 			// A viewer/picker is up: don't stack — remember to retry when it
 			// closes (previously the escalation was silently dropped until the
@@ -292,19 +246,14 @@ export default function (pi: ExtensionAPI) {
 			overlayOpen = true;
 			let decision: EscalationDecision;
 			try {
-				decision = await ctx.ui.custom<EscalationDecision>(
-					(tui, theme, _keybindings, done) =>
-						createEscalationModal({
-							record,
-							queuedBehind: pending.length - 1,
-							tui,
-							theme,
-							onDone: done,
-						}),
-					{
-						overlay: true,
-						overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 },
-					},
+				decision = await ctx.ui.custom<EscalationDecision>((tui, theme, _keybindings, done) =>
+					createEscalationModal({
+						record,
+						queuedBehind: pending.length - 1,
+						tui,
+						theme,
+						onDone: done,
+					}),
 				);
 			} finally {
 				overlayOpen = false;
@@ -323,19 +272,15 @@ export default function (pi: ExtensionAPI) {
 		}
 	};
 
-	/** Picker overlay (spec §2); Enter chains into the viewer. */
+	/** Editor-local picker (spec §2); Enter chains into the full-screen viewer. */
 	const openPicker = async (ctx: ExtensionContext): Promise<void> => {
-		if (!ctx.hasUI || overlayOpen) return;
+		if (ctx.mode !== "tui" || overlayOpen) return;
 		const current = getCore(ctx);
 		overlayOpen = true;
 		let result: PickerResult;
 		try {
-			result = await ctx.ui.custom<PickerResult>(
-				(tui, theme, _keybindings, done) => createPicker({ core: current, tui, theme, onDone: done }),
-				{
-					overlay: true,
-					overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 },
-				},
+			result = await ctx.ui.custom<PickerResult>((tui, theme, _keybindings, done) =>
+				createPicker({ core: current, tui, theme, onDone: done }),
 			);
 		} finally {
 			overlayOpen = false;
@@ -348,10 +293,9 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	/**
-	 * The D21 autonomy-resume affordance (Phase 7): refill the pool without
-	 * sending a message. Mirrors the user-input reset — the "resumed" event
-	 * makes the runtime drain every queued subagent mailbox, and wake-worthy
-	 * main mail held during the pause gets its auto-wake now.
+	 * The D21 subagent-autonomy resume affordance: refill the agent pool
+	 * without changing the main-agent abort latch. Main wakeups do not consume
+	 * or obey this pool.
 	 */
 	const resumeAutonomy = (ctx: ExtensionCommandContext): void => {
 		const current = getCore(ctx);
@@ -360,15 +304,17 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		current.autonomy.resume();
-		if (current.settings.autoWake && !mainBusy && current.mainHasWakeWorthy()) triggerWake();
-		ctx.ui.notify("Subagent autonomy pool refilled — queued mail is draining.", "info");
+		if (!autoWakeBlockedByAbort && current.settings.autoWake && !mainBusy && current.mainHasPendingMail()) {
+			triggerWake();
+		}
+		ctx.ui.notify("Subagent autonomy pool refilled — queued agent mail is draining.", "info");
 	};
 
-	// /subagents [<type>/<id> | resume] — picker, jump to a viewer, or refill
-	// the D21 pool (Phase 7; the paused banner names this subcommand).
-	pi.registerCommand("subagents", {
+	// /agents [<type>/<id> | resume] — picker, jump to a viewer, or refill
+	// the D21 pool (Phase 7; the paused status names this subcommand).
+	pi.registerCommand("agents", {
 		description:
-			"Subagent roster overlay; /subagents <type>/<id> jumps to that session; /subagents resume refills the autonomy pool",
+			"Agent roster picker; /agents <type>/<id> jumps to that session; /agents resume refills the autonomy pool",
 		getArgumentCompletions: async (prefix) => {
 			const trimmed = prefix.trim();
 			const items: Array<{ value: string; label: string }> = [];
@@ -396,8 +342,8 @@ export default function (pi: ExtensionAPI) {
 				resumeAutonomy(ctx);
 				return;
 			}
-			if (!ctx.hasUI) {
-				// Print-mode fallback: a plain roster dump.
+			if (ctx.mode !== "tui") {
+				// Headless/RPC fallback: a plain roster dump.
 				const roster = await getCore(ctx).status();
 				ctx.ui.notify(
 					roster.length === 0
@@ -422,7 +368,7 @@ export default function (pi: ExtensionAPI) {
 					await openViewer(ctx, { archived });
 					return;
 				}
-				ctx.ui.notify(`Unknown subagent "${arg}" — /subagents lists the roster`, "error");
+				ctx.ui.notify(`Unknown subagent "${arg}" — /agents lists the roster`, "error");
 				return;
 			}
 			await openPicker(ctx);
@@ -440,7 +386,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Subagents: cycle into the session viewer",
 		handler: async (ctx) => {
 			uiCtx = ctx;
-			if (!ctx.hasUI || overlayOpen) return;
+			if (ctx.mode !== "tui" || overlayOpen) return;
 			const roster = (await getCore(ctx).status()).sort((a, b) => a.address.localeCompare(b.address));
 			const first = roster[0];
 			if (!first) {
@@ -458,7 +404,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Subagents: review pending escalations",
 		handler: async (ctx) => {
 			uiCtx = ctx;
-			if (!ctx.hasUI) return;
+			if (ctx.mode !== "tui") return;
 			if (getCore(ctx).escalations.pending().length === 0) {
 				ctx.ui.notify("No pending escalations", "info");
 				return;
@@ -476,10 +422,20 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(createInterruptTool(getCore));
 	pi.registerTool(createRetireTool(getCore));
 
-	// Main-mailbox delivery at REAL user turns: drain pending main mail (the
-	// quietly-queued reports, D16) into one digest injected at turn start.
-	// Auto-woken turns never reach this hook — they carry their digest inline
-	// in the trigger message (see triggerWake).
+	// Only real user input clears an abort latch. Extension-injected input must
+	// not silently restart an autonomous mail cycle the user explicitly stopped.
+	pi.on("input", async (event, ctx) => {
+		if (event.source !== "interactive" && event.source !== "rpc") return;
+		autoWakeBlockedByAbort = false;
+		setMainAutoWakeBlockedFor(ctx.cwd, false);
+		// D21 agent budgets are user-attention rails too. Reset them here, where
+		// the source is known, never in before_agent_start (extension-generated
+		// sendUserMessage turns also fire that later hook).
+		core?.autonomy.reset();
+	});
+
+	// Main-mailbox delivery at real user turns: queued mail joins the next user
+	// prompt. Auto-woken turns carry their digest inline and never use this hook.
 	pi.on("before_agent_start", async (_event, ctx) => {
 		sessionMgr = ctx?.sessionManager ?? sessionMgr;
 		if (!core) return;
@@ -498,12 +454,9 @@ export default function (pi: ExtensionAPI) {
 			}
 			lastSettingsWarning = joinedWarnings;
 		}
-		// D21 user-input reset: before_agent_start only fires on the real user
-		// prompt path (never for sendMessage/triggerTurn auto-wakes — see the
-		// module header), so this refills the pool and, if paused, resumes +
-		// drains the queued mailboxes.
-		autoWokenTurn = false;
-		core.autonomy.reset();
+		// While abort-latched, extension-started turns cannot drain or revive the
+		// main mailbox. The input hook above clears the latch for real user input.
+		if (autoWakeBlockedByAbort) return;
 		const digest = core.drainMainMail(currentSessionFile());
 		if (digest === null) return;
 		return { message: { customType: MAIL_CUSTOM_TYPE, content: digest, display: true } };
@@ -512,38 +465,28 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_start", async () => {
 		mainBusy = true;
 	});
-	// D21 token charging lives at agent_end — the only host event carrying the
-	// run's messages. The boundary wake re-check does NOT: agent_end is emitted
-	// while AgentSession.isStreaming is still true (_isAgentRunActive is only
-	// cleared in _emitAgentSettled, which runs after agent_end), so a
-	// sendMessage(triggerTurn) here would steer into the ending turn instead of
-	// starting a fresh one — see the agent_settled handler below.
-	pi.on("agent_end", async (event) => {
-		// D21: charge an auto-woken main turn's assistant token usage to the pool.
-		if (autoWokenTurn) {
-			autoWokenTurn = false;
-			let tokens = 0;
-			for (const message of event.messages ?? []) {
-				const usage = (message as { usage?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } }).usage;
-				if (message.role === "assistant" && usage) {
-					tokens += (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
-				}
-			}
-			core?.autonomy.noteTokens(tokens);
+	// Pi exposes an aborted stop reason, not the abort's source. Any aborted
+	// main run therefore latches mailbox auto-wake off until real user input.
+	pi.on("agent_end", async (event, ctx) => {
+		const lastAssistant = [...(event.messages ?? [])]
+			.reverse()
+			.find((message) => message.role === "assistant") as { stopReason?: string } | undefined;
+		if (lastAssistant?.stopReason === "aborted") {
+			autoWakeBlockedByAbort = true;
+			setMainAutoWakeBlockedFor(ctx.cwd, true);
 		}
 	});
 	// Turn boundary (D11): mail held during the host turn gets its wake now.
 	// agent_settled fires once per run, after retries/compaction/queued
 	// continuations resolve AND after isStreaming goes false — so triggerWake's
-	// sendMessage(triggerTurn) genuinely starts a new main-agent turn (it never
-	// fires before_agent_start, keeping the D21 pool reset user-input-only).
+	// sendMessage(triggerTurn) genuinely starts a new main-agent turn (it emits
+	// no interactive/RPC input event, keeping the D21 reset user-only).
 	// mainBusy stays true through the agent_end→agent_settled gap so onMainMail
 	// can never steer a wake into a run that is still settling.
-	// A paused system starts no auto-wake turns (D21).
 	pi.on("agent_settled", async (_event, ctx) => {
 		sessionMgr = ctx?.sessionManager ?? sessionMgr;
 		mainBusy = false;
-		if (core?.settings.autoWake && !core.autonomy.paused && core.mainHasWakeWorthy()) triggerWake();
+		if (core?.settings.autoWake && !autoWakeBlockedByAbort && core.mainHasPendingMail()) triggerWake();
 	});
 
 	// New/resumed/forked session → fresh wiring on next tool call (cwd or
@@ -551,7 +494,6 @@ export default function (pi: ExtensionAPI) {
 	// session. Registry/teams/JSONL/mailboxes persist on disk — that's the design.
 	pi.on("session_start", async (_event, ctx) => {
 		mainBusy = false;
-		autoWokenTurn = false;
 		await releaseCore();
 		uiCtx = ctx;
 		sessionMgr = ctx.sessionManager ?? sessionMgr;
@@ -561,9 +503,8 @@ export default function (pi: ExtensionAPI) {
 		// process never appended are requeued as pending — re-composed into a
 		// fresh digest at the next drain (a re-delivered escalation surfaces
 		// again instead of silently stranding its subagent in `waiting`).
-		let requeued = 0;
 		try {
-			requeued = reconcileMainMailFor(ctx.cwd).requeued.length;
+			reconcileMainMailFor(ctx.cwd);
 		} catch {
 			// Reconciliation must never break a session start.
 		}
@@ -571,13 +512,12 @@ export default function (pi: ExtensionAPI) {
 		// mail from PREVIOUS sessions before any tool call re-creates the
 		// core); headless modes stay fully lazy as before.
 		if (ctx.hasUI) installWidget(ctx);
-		// Crash-requeued wake-worthy mail gets its D16 auto-wake back right
-		// away in TUI sessions (installWidget already built the core there;
-		// headless stays lazy — the next real user turn's before_agent_start
-		// digest picks the mail up instead). Normal D21 gates apply.
-		if (requeued > 0 && ctx.hasUI && core) {
+		// Existing and crash-requeued pending mail both wake immediately unless
+		// this extension instance is abort-latched. Headless sessions stay lazy
+		// until real user input creates the core.
+		if (ctx.hasUI && core) {
 			const current = core;
-			if (current.settings.autoWake && !current.autonomy.paused && !mainBusy && current.mainHasWakeWorthy()) {
+			if (current.settings.autoWake && !autoWakeBlockedByAbort && !mainBusy && current.mainHasPendingMail()) {
 				triggerWake();
 			}
 		}

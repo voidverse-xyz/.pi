@@ -195,6 +195,8 @@ export interface Layout {
 	readonly mainMailboxDoneDir: string;
 	/** <subagentsRoot>/.main/mailbox/.delivering — host-append pending verification. */
 	readonly mainMailboxDeliveringDir: string;
+	/** <subagentsRoot>/.main/auto-wake-blocked — durable main abort latch marker. */
+	readonly mainAutoWakeLatchFile: string;
 	/** <subagentsRoot>/.main/escalations — pending/resolved escalation records (Phase 5, D10/D22). */
 	readonly escalationsDir: string;
 	/** <subagentsRoot>/.archive */
@@ -277,6 +279,7 @@ export function createLayout(cwd: string, options: LayoutOptions = {}): Layout {
 		mainMailboxDir,
 		mainMailboxDoneDir: join(mainMailboxDir, ".done"),
 		mainMailboxDeliveringDir: mailboxDeliveringDirOf(mainMailboxDir),
+		mainAutoWakeLatchFile: join(subagentsRoot, ".main", "auto-wake-blocked"),
 		escalationsDir,
 		archiveRoot,
 

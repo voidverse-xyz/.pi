@@ -1,7 +1,7 @@
 /**
  * Definitive registration check: load the extension entry with Pi's OWN
  * extension loader and assert the full surface registered cleanly — the
- * seven subagent_* tools, the /subagents command, and both shortcuts.
+ * seven subagent_* tools, the /agents command, and both shortcuts.
  *
  * Run: node loadcheck.mjs   (exits non-zero on any load error / missing item)
  */
@@ -36,7 +36,7 @@ assert.deepEqual(
 	],
 	"the seven-tool surface",
 );
-assert.deepEqual(keysOf(ext.commands), ["subagents"], "/subagents command");
+assert.deepEqual(keysOf(ext.commands), ["agents"], "/agents command");
 assert.deepEqual(keysOf(ext.shortcuts).sort(), ["alt+e", "alt+j"], "shortcuts");
 
 console.log("loadcheck ok — tools:", keysOf(ext.tools).length, "· commands:", keysOf(ext.commands), "· shortcuts:", keysOf(ext.shortcuts));
