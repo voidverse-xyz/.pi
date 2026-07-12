@@ -7,7 +7,7 @@ shells, safety/sandbox wrappers, mutation previews, diffs, and expansion behavio
 ## UI changes
 
 - borderless, full-width `#373739` prompt field with a bold `›` prompt and one outer row of breathing room above and below
-- a randomly selected animated spinner per agent run (braille, quadrant, bar, bouncing dot, moon, or arrows), plus elapsed time and current-turn output tokens
+- a randomly selected animated spinner and work-related label per agent run (for example `working`, `building`, `analyzing`, or `reviewing`), followed by elapsed time and current-turn output tokens
 - one dim, full-width separator after each completed tool row
 - transparent tool result backgrounds instead of colored cards
 - hidden Pi startup header

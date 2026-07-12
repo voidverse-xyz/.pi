@@ -20,6 +20,11 @@ const RESET = "\x1b[0m";
 const TOOL_PATCH = Symbol.for("pi-codex-ui.tool-render-patch");
 const WORKING_TICK_MS = 200;
 
+const WORKING_LABELS = [
+	"working", "thinking", "processing", "building", "checking", "analyzing",
+	"running", "crafting", "investigating", "computing", "reviewing", "assembling",
+] as const;
+
 const SPINNERS = [
 	{ frames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], intervalMs: 80 },
 	{ frames: ["▖", "▘", "▝", "▗"], intervalMs: 110 },
@@ -182,21 +187,24 @@ export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 	let workingTimer: ReturnType<typeof setInterval> | undefined;
 	let turnOutputTokens = 0;
 	let tokenCountIsExact = false;
+	let workingLabel = "working";
 
 	const renderWorkingMessage = (ctx: ExtensionContext): void => {
 		if (workingStartedAt === undefined || ctx.mode !== "tui") return;
 		const theme = ctx.ui.theme;
+		const label = theme.fg("muted", workingLabel);
 		const elapsed = theme.fg("dim", formatElapsed(Date.now() - workingStartedAt));
 		const separator = theme.fg("borderMuted", "·");
 		const estimateMark = tokenCountIsExact ? "" : "~";
 		const tokens = theme.fg("thinkingText", `${estimateMark}${formatTokenCount(turnOutputTokens)} tok`);
-		ctx.ui.setWorkingMessage(`${elapsed} ${separator} ${tokens}`);
+		ctx.ui.setWorkingMessage(`${label} ${elapsed} ${separator} ${tokens}`);
 	};
 
 	const stopWorkingTimer = (): void => {
 		if (workingTimer) clearInterval(workingTimer);
 		workingTimer = undefined;
 		workingStartedAt = undefined;
+		workingLabel = "working";
 	};
 
 	pi.on("agent_start", (_event, ctx) => {
@@ -205,6 +213,7 @@ export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 		workingStartedAt = Date.now();
 		turnOutputTokens = 0;
 		tokenCountIsExact = false;
+		workingLabel = WORKING_LABELS[Math.floor(Math.random() * WORKING_LABELS.length)]!;
 		const spinner = SPINNERS[Math.floor(Math.random() * SPINNERS.length)]!;
 		ctx.ui.setWorkingIndicator({
 			frames: spinner.frames.map((frame) => ctx.ui.theme.fg("muted", frame)),
