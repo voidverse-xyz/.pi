@@ -192,12 +192,17 @@ export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 	const renderWorkingMessage = (ctx: ExtensionContext): void => {
 		if (workingStartedAt === undefined || ctx.mode !== "tui") return;
 		const theme = ctx.ui.theme;
-		const label = theme.fg("muted", workingLabel);
-		const elapsed = theme.fg("dim", formatElapsed(Date.now() - workingStartedAt));
+		const capitalizedLabel = `${workingLabel.charAt(0).toUpperCase()}${workingLabel.slice(1)}`;
+		const label = theme.fg("muted", capitalizedLabel);
 		const separator = theme.fg("borderMuted", "·");
-		const estimateMark = tokenCountIsExact ? "" : "~";
-		const tokens = theme.fg("thinkingText", `${estimateMark}${formatTokenCount(turnOutputTokens)} tok`);
-		ctx.ui.setWorkingMessage(`${label} ${elapsed} ${separator} ${tokens}`);
+		const elapsed = theme.fg("dim", formatElapsed(Date.now() - workingStartedAt));
+		let tokenSuffix = "";
+		if (turnOutputTokens >= 1) {
+			const estimateMark = tokenCountIsExact ? "" : "~";
+			const tokens = theme.fg("thinkingText", `${estimateMark}${formatTokenCount(turnOutputTokens)} tok`);
+			tokenSuffix = ` ${separator} ${tokens}`;
+		}
+		ctx.ui.setWorkingMessage(`${label} ${separator} ${elapsed}${tokenSuffix}`);
 	};
 
 	const stopWorkingTimer = (): void => {
