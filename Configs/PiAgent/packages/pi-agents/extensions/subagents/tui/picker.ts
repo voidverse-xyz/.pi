@@ -23,6 +23,7 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { ArchivedAgentInfo, SubagentsCore } from "../core.ts";
 import type { RosterEntry } from "../runtime/types.ts";
+import { MAIL_ICON } from "./widget.ts";
 
 // ---------------------------------------------------------------------------
 // Pure row model (harness-testable without a terminal)
@@ -107,7 +108,7 @@ export function pickerRowText(row: PickerRow): string {
 				entry.state,
 				`ctx ${Math.round(entry.vitals.contextPercent)}%`,
 			];
-			if (row.unread > 0) parts.push(`📬 ${row.unread}`);
+			if (row.unread > 0) parts.push(`${MAIL_ICON} ${row.unread}`);
 			return `  ${parts.join("  ·  ")}`;
 		}
 		case "archive-header":

@@ -6,23 +6,26 @@ transcript components where sessions are shown (D7).
 ## 1. Ambient widget (main session footer)
 
 ```
-⚒ 2 running · 1 waiting · 📬 3 · ⏸ budget 12/40
+󰚩 2 running · 1 waiting · 󰇮 3 · 󰔛 budget 12/40
 ```
+- Nerd Font icons: `󰚩` agents, `󰇮` queued mail, and `󰔛` budget consumption. The
+  timer-sand is a pre-limit warning, not a paused state.
 - Segments appear only when non-zero: running count · waiting (agents blocked on a
   human escalation — the needs-eyes state) · unread queued reports (D16 quiet mail)
-  · autonomy budget (shown once >50% consumed; becomes a ⏸ paused banner when a
-  D21 rail trips, with queued-mail count).
+  · autonomy budget (shown once >50% consumed). Once a D21 rail actually trips,
+  the status uses pause-circle: `󰚩  paused · tokens 512k/500k · 󰇮 2 queued ·
+  /agents resume`.
 - Zero agents → widget hidden. The extension is silent when unused.
 - Impl note: no-nested-SGR constraint applies to colored segments.
 
-## 2. Picker — /subagents (overlay)
+## 2. Picker — /agents (overlay)
 
 - Rows grouped by team, then (solo). Per row: state glyph (● running / ◐ queued /
   ○ dormant / ⚠ waiting), address, ctx%, unread badge.
 - Collapsed `▸ .archive (n)` section at bottom — retired oneshots viewable until GC
   (D13 post-mortem promise).
 - Keys: ↑↓ navigate · Enter view · x interrupt · X retire (confirm dialog) · Esc.
-- /subagents <type>/<id> jumps straight to the viewer (D17).
+- /agents <type>/<id> jumps straight to the viewer (D17).
 
 ## 3. Viewer (full-screen session view)
 

@@ -129,9 +129,10 @@ State on disk (D3/D5), beside Pi's own sessions:
 
 ## TUI (05-tui-spec)
 
-- Compact footer status: `⚒ 2 running · 1 waiting · 📬 3 · ⏸ budget
-  21/40` (non-zero segments only; hidden when idle). When a rail trips it
-  becomes a compact paused status.
+- Compact footer status: `󰚩 2 running · 1 waiting · 󰇮 3 · 󰔛 budget
+  21/40` (Nerd Font icons; non-zero segments only; hidden when idle). The
+  timer-sand means budget consumption, not a pause. When a rail actually trips,
+  it becomes `󰚩  paused · tokens 512k/500k · 󰇮 2 queued · /agents resume`.
 - `/agents` — compact roster picker shown in the main input area, grouped by
   team (`Enter` view, `x` interrupt, `X` retire with confirm, `Esc`), with a
   collapsed `.archive (n)` section. Selecting an agent opens its full-screen viewer.

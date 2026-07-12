@@ -55,7 +55,7 @@ import {
 import { createEscalationModal, type EscalationDecision } from "./tui/escalation-modal.ts";
 import { createPicker, type PickerResult } from "./tui/picker.ts";
 import { createViewer, type ViewerOptions, type ViewerResult } from "./tui/viewer.ts";
-import { createWidgetController, widgetSegments, type WidgetController } from "./tui/widget.ts";
+import { createWidgetController, widgetStatusText, type WidgetController } from "./tui/widget.ts";
 
 // The digest-message customType prefix ("subagent-mail" / "subagent-mail-wake").
 // Lives in core.ts because reconciliation greps the main session JSONL for it
@@ -169,15 +169,7 @@ export default function (pi: ExtensionAPI) {
 		widget?.dispose();
 		let controller: WidgetController;
 		const publish = () => {
-			const snap = controller.snapshot();
-			let text: string | undefined;
-			if (snap.agentCount > 0 && snap.paused) {
-				text = `⚒ agents paused · ${snap.queuedMail + snap.unread} queued`;
-			} else if (snap.agentCount > 0) {
-				const segments = widgetSegments(snap);
-				if (segments.length > 0) text = `⚒ ${segments.join(" · ")}`;
-			}
-			ctx.ui.setStatus(WIDGET_KEY, text);
+			ctx.ui.setStatus(WIDGET_KEY, widgetStatusText(controller.snapshot()));
 		};
 		controller = createWidgetController({ core: current, onChange: publish });
 		widget = controller;

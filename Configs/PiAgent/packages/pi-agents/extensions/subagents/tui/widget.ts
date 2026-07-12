@@ -1,7 +1,7 @@
 /**
  * tui/widget.ts — the ambient main-session widget (05-tui-spec §1, D22).
  *
- *   ⚒ 2 running · 1 waiting · 📬 3 · ⏸ budget 12/40
+ *   󰚩 2 running · 1 waiting · 󰇮 3 · 󰔛 budget 12/40
  *
  * Segments appear only when non-zero: running count · waiting (agents blocked
  * on a human escalation) · unread queued main mail (D16 quiet reports) ·
@@ -27,6 +27,12 @@
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { SubagentsCore } from "../core.ts";
+
+/** Nerd Font symbols used consistently across the agent status surfaces. */
+export const AGENTS_ICON = "󰚩"; // nf-md-robot
+export const BUDGET_ICON = "󰔛"; // nf-md-timer_sand — approaching a limit, not paused
+export const PAUSED_ICON = ""; // nf-fa-pause_circle_o — the limit has actually tripped
+export const MAIL_ICON = "󰇮"; // nf-md-email
 
 // Structural slice of the SDK Theme — lets the render fns run under a fake
 // theme in the component harness while accepting the real Theme unchanged.
@@ -90,7 +96,7 @@ export async function takeSnapshot(core: SubagentsCore): Promise<WidgetSnapshot>
 	};
 }
 
-function formatTokens(count: number): string {
+export function formatTokens(count: number): string {
 	if (count < 1000) return `${count}`;
 	if (count < 1_000_000) return `${Math.round(count / 1000)}k`;
 	return `${(count / 1_000_000).toFixed(1)}M`;
@@ -106,8 +112,8 @@ export function budgetSegmentText(snap: WidgetSnapshot): string | null {
 	const tokenFrac = snap.tokensBudget > 0 ? snap.tokensUsed / snap.tokensBudget : 0;
 	if (turnFrac <= 0.5 && tokenFrac <= 0.5) return null;
 	return turnFrac >= tokenFrac
-		? `⏸ budget ${snap.turnsUsed}/${snap.turnsBudget}`
-		: `⏸ budget ${formatTokens(snap.tokensUsed)}/${formatTokens(snap.tokensBudget)}`;
+		? `${BUDGET_ICON} budget ${snap.turnsUsed}/${snap.turnsBudget}`
+		: `${BUDGET_ICON} budget ${formatTokens(snap.tokensUsed)}/${formatTokens(snap.tokensBudget)}`;
 }
 
 /** ANSI-free segment texts, non-zero only (exported for the harness). */
@@ -115,10 +121,30 @@ export function widgetSegments(snap: WidgetSnapshot): string[] {
 	const segments: string[] = [];
 	if (snap.running > 0) segments.push(`${snap.running} running`);
 	if (snap.waiting > 0) segments.push(`${snap.waiting} waiting`);
-	if (snap.unread > 0) segments.push(`📬 ${snap.unread}`);
+	if (snap.unread > 0) segments.push(`${MAIL_ICON} ${snap.unread}`);
 	const budget = budgetSegmentText(snap);
 	if (budget !== null) segments.push(budget);
 	return segments;
+}
+
+/** The limit and usage that caused an actual pause. */
+export function autonomyLimitText(snap: WidgetSnapshot): string {
+	return snap.trippedBy === "tokens"
+		? `tokens ${formatTokens(snap.tokensUsed)}/${formatTokens(snap.tokensBudget)}`
+		: `turns ${snap.turnsUsed}/${snap.turnsBudget}`;
+}
+
+/**
+ * Production shared-footer text. The timer-sand icon means budget consumption;
+ * the pause-circle appears only after the rail has actually tripped.
+ */
+export function widgetStatusText(snap: WidgetSnapshot): string | undefined {
+	if (snap.agentCount === 0) return undefined;
+	if (snap.paused) {
+		return `${AGENTS_ICON} ${PAUSED_ICON} paused · ${autonomyLimitText(snap)} · ${MAIL_ICON} ${snap.queuedMail + snap.unread} queued · /agents resume`;
+	}
+	const segments = widgetSegments(snap);
+	return segments.length > 0 ? `${AGENTS_ICON} ${segments.join(" · ")}` : undefined;
 }
 
 /**
@@ -148,12 +174,9 @@ function fitTo(text: string, width: number): string {
  * bg+fg SGR pair, plain-text interior, one reset at the end.
  */
 export function renderPausedBanner(snap: WidgetSnapshot, theme: WidgetTheme, width: number): string {
-	const by =
-		snap.trippedBy === "tokens"
-			? `tokens ${formatTokens(snap.tokensUsed)}/${formatTokens(snap.tokensBudget)}`
-			: `turns ${snap.turnsUsed}/${snap.turnsBudget}`;
+	const by = autonomyLimitText(snap);
 	const mail = snap.queuedMail + snap.unread;
-	const text = ` ⏸ subagents paused — autonomy budget spent (${by}) · 📬 ${mail} queued · /agents resume or your next message resumes `;
+	const text = ` ${PAUSED_ICON} subagents paused — autonomy budget spent (${by}) · ${MAIL_ICON} ${mail} queued · /agents resume or your next message resumes `;
 	// Truncate BEFORE wrapping in the single bg+fg pair: the interior stays
 	// plain text (no nested SGR) and the line can never exceed the terminal.
 	return `${theme.getBgAnsi("toolErrorBg")}${theme.getFgAnsi("warning")}${fitTo(text, width)}\x1b[0m`;
@@ -168,7 +191,7 @@ export function renderWidgetLines(snap: WidgetSnapshot, theme: WidgetTheme, widt
 	if (snap.paused) return [renderPausedBanner(snap, theme, width)];
 	const segments = widgetSegments(snap);
 	if (segments.length === 0) return [];
-	const line = `⚒ ${segments.join(" · ")}`;
+	const line = `${AGENTS_ICON} ${segments.join(" · ")}`;
 	// One fg wrap around the WHOLE line (single SGR pair, no nesting).
 	return [theme.fg("dim", clipTo(line, width))];
 }

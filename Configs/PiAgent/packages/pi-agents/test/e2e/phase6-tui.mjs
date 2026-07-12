@@ -85,7 +85,7 @@ await test("segments render only when non-zero", () => {
 		80,
 	);
 	assert.equal(lines.length, 1);
-	assert.equal(lines[0], "⚒ 2 running · 1 waiting · 📬 3");
+	assert.equal(lines[0], "󰚩 2 running · 1 waiting · 󰇮 3");
 });
 await test("zero-valued segments are dropped", () => {
 	const lines = widget.renderWidgetLines(
@@ -93,22 +93,28 @@ await test("zero-valued segments are dropped", () => {
 		plainTheme,
 		80,
 	);
-	assert.equal(lines[0], "⚒ 1 running");
+	assert.equal(lines[0], "󰚩 1 running");
 	const hidden = widget.renderWidgetLines(snap({ agentCount: 2, turnsBudget: 40, tokensBudget: 500000 }), plainTheme, 80);
 	assert.deepEqual(hidden, [], "all-zero segments → nothing to say → hidden");
 });
 await test("budget segment only once >50% consumed (turns axis)", () => {
 	const base = { agentCount: 1, running: 1, turnsBudget: 40, tokensBudget: 500000 };
 	assert.equal(widget.budgetSegmentText(snap({ ...base, turnsUsed: 12 })), null, "30% → hidden");
-	assert.equal(widget.budgetSegmentText(snap({ ...base, turnsUsed: 21 })), "⏸ budget 21/40");
+	assert.equal(widget.budgetSegmentText(snap({ ...base, turnsUsed: 21 })), "󰔛 budget 21/40");
 	const line = widget.renderWidgetLines(snap({ ...base, turnsUsed: 21 }), plainTheme, 80)[0];
-	assert.equal(line, "⚒ 1 running · ⏸ budget 21/40");
+	assert.equal(line, "󰚩 1 running · 󰔛 budget 21/40");
 });
 await test("budget segment shows the closer axis (tokens)", () => {
 	const text = widget.budgetSegmentText(
 		snap({ agentCount: 1, turnsUsed: 5, turnsBudget: 40, tokensUsed: 300000, tokensBudget: 500000 }),
 	);
-	assert.equal(text, "⏸ budget 300k/500k");
+	assert.equal(text, "󰔛 budget 300k/500k");
+});
+await test("production status uses pause icon only after tripping and includes the remedy", () => {
+	const active = snap({ agentCount: 1, running: 1, tokensUsed: 300000, tokensBudget: 500000, turnsBudget: 40 });
+	assert.equal(widget.widgetStatusText(active), "󰚩 1 running · 󰔛 budget 300k/500k");
+	const paused = snap({ agentCount: 1, paused: true, trippedBy: "tokens", tokensUsed: 512000, tokensBudget: 500000, queuedMail: 2 });
+	assert.equal(widget.widgetStatusText(paused), "󰚩  paused · tokens 512k/500k · 󰇮 2 queued · /agents resume");
 });
 await test("paused banner: one bg+fg band, plain interior, single trailing reset", () => {
 	const lines = widget.renderWidgetLines(
@@ -122,9 +128,9 @@ await test("paused banner: one bg+fg band, plain interior, single trailing reset
 	assert.ok(banner.endsWith("\x1b[0m"), "band ends with the reset");
 	const interior = banner.slice((BG + FG).length, -"\x1b[0m".length);
 	assert.ok(!interior.includes("\x1b"), "NO nested SGR inside the band (the hard-won constraint)");
-	assert.match(interior, /⏸ subagents paused/);
+	assert.match(interior, / subagents paused/);
 	assert.match(interior, /turns 40\/40/);
-	assert.match(interior, /📬 7 queued/);
+	assert.match(interior, /󰇮 7 queued/);
 });
 await test("paused banner: tokens trip variant", () => {
 	const lines = widget.renderWidgetLines(
@@ -193,7 +199,7 @@ await test("rows grouped by team then (solo); collapsed .archive at the bottom",
 	assert.deepEqual(texts, [
 		"billing",
 		"  ◐ refactorer/api  ·  queued  ·  ctx 10%",
-		"  ● refactorer/auth  ·  running  ·  ctx 61%  ·  📬 2",
+		"  ● refactorer/auth  ·  running  ·  ctx 61%  ·  󰇮 2",
 		"(solo)",
 		"  ○ docs-keeper/main  ·  dormant  ·  ctx 5%",
 		"  ⚠ tester/main  ·  waiting  ·  ctx 30%",
