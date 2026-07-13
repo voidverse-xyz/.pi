@@ -62,7 +62,7 @@ import { createWidgetController, widgetStatusText, type WidgetController } from 
 // to verify a digest actually landed (main-mailbox at-least-once).
 const MAIL_CUSTOM_TYPE = MAIN_MAIL_CUSTOM_TYPE;
 const WAKE_TRIGGER_TEXT = "[subagent mail] New subagent mail arrived — the digest follows.";
-const WIDGET_KEY = "subagents";
+const STATUS_KEY = "subagents";
 
 export default function (pi: ExtensionAPI) {
 	let core: SubagentsCore | undefined;
@@ -161,15 +161,15 @@ export default function (pi: ExtensionAPI) {
 	// All state flows through the core facade; overlays never stack.
 	// -----------------------------------------------------------------------
 
-	/** Publish compact activity into Pi's extension-status footer row.
-	 * Idle state stays silent; no extra editor-adjacent row is needed. */
+	/** Publish plain compact activity through the reserved status key.
+	 * pi-status-line owns styling and footer placement; idle stays silent. */
 	const installWidget = (ctx: ExtensionContext): void => {
 		if (ctx.mode !== "tui") return;
 		const current = getCore(ctx);
 		widget?.dispose();
 		let controller: WidgetController;
 		const publish = () => {
-			ctx.ui.setStatus(WIDGET_KEY, widgetStatusText(controller.snapshot()));
+			ctx.ui.setStatus(STATUS_KEY, widgetStatusText(controller.snapshot()));
 		};
 		controller = createWidgetController({ core: current, onChange: publish });
 		widget = controller;
@@ -528,7 +528,7 @@ export default function (pi: ExtensionAPI) {
 		timer.unref?.();
 	});
 	pi.on("session_shutdown", async () => {
-		uiCtx?.ui.setStatus(WIDGET_KEY, undefined);
+		uiCtx?.ui.setStatus(STATUS_KEY, undefined);
 		uiCtx = undefined;
 		await releaseCore();
 	});

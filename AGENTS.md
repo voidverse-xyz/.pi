@@ -153,21 +153,22 @@ shared repository using the `Reusable Artifact Capture` rules above.
   none. It persists that mode to `~/.pi/agent/command-safety.json` (real home,
   untracked), which is also where the startup default is configured. Only the
   agent's `bash` tool calls are gated, not user-typed `!` commands.
-  `dir-git` (added 2026-07-03; renamed from `git-status`) renders one row above
-  the input editor via a `setWidget` component — cwd + git pinned left, model +
-  thinking pinned right (width-aware; dir/git truncate first when narrow). Git
-  is repo/branch (compact by default) with worktree name, in-progress operation
+  `pi-git-status` publishes cwd + Git state and `pi-model-thinking` publishes
+  the selected model + thinking level through reserved `setStatus` keys.
+  `pi-status-line` owns their shared above-editor row — Git pinned left and
+  model/thinking pinned right, with Git truncated first when narrow — plus its
+  two-line footer. Git includes repo/branch, worktree name, in-progress operation
   (rebase/merge/cherry-pick/revert/bisect), and conflict/dirty/ahead/behind/stash
-  counts shown only when relevant. `status-line` is
-  therefore just a single footer line (token/cost on the left; context gauge +
-  other `setStatus` segments on the right) and no longer draws cwd, git, or the
-  model.
-  `tool-monitor` (added 2026-07-03) tracks tool calls via
-  `tool_execution_start/update/end`: a small bottom-left `belowEditor` widget
-  shows what's currently running, and `/tools` opens a full-screen overlay
-  (evenly inset via `overlayOptions.margin`) to browse running/recent tool
-  calls, drill into one's live output, and send an abort (`ctx.abort()` —
-  whole-turn, Pi has no per-tool-call cancel).
+  counts only when relevant. The active Codex theme grades thinking levels from
+  gray (off) through blue and purple to red (max).
+  `pi-tool-monitor` tracks tool calls via `tool_execution_start/update/end` and
+  publishes plain running-tool text under a reserved status key. `pi-agents`
+  likewise publishes plain subagent activity. `pi-status-line` styles and places
+  both: tool activity uses footer line 1-left when subagent status is absent and
+  moves to line 2-left when subagent status occupies line 1. `/tools` opens a
+  full-screen overlay (inset via `overlayOptions.margin`) to browse running/recent
+  calls, inspect live output, and abort the whole turn with `ctx.abort()` (Pi has
+  no per-tool-call cancel).
   `session-merge` (added 2026-07-05) provides `/merge`, a synthesis merge for
   selected session branches: it summarizes the shared base plus branch deltas
   into a visible custom message in a new session, optionally drafts or runs a

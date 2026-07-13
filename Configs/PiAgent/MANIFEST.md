@@ -6,7 +6,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 
 | Package | Main surface |
 |---|---|
-| `pi-agents` | Persistent subagents, mailboxes, teams, collection, rails, and `/agents` |
+| `pi-agents` | Persistent subagents plus plain activity status for the shared footer |
 | `pi-bookmark` | `/bookmark` and `/unbookmark` session-tree labels |
 | `pi-browse` | `/browse-files` native file browser |
 | `pi-changes` | `/changes` session edit review/undo and read-only `/git-changes` repository diff browser |
@@ -14,9 +14,10 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-codex-usage` | Codex five-hour usage status and `/codex-usage` |
 | `pi-codex-ui` | Codex-style theme, prompt field, working indicator, and tool-turn separators without replacing tool definitions, status lines, or widgets |
 | `pi-commit` | `/commit [--dry-run]` grouped Git review, lazy model-generated descriptions, and path-scoped commits |
-| `pi-git-status` | Above-editor CWD/Git/model/thinking row |
+| `pi-git-status` | CWD and rich Git status producer for the shared status row |
 | `pi-groovebox-cycle` | `/groovebox-cycle [on\|off]` animated theme colors |
 | `pi-merge` | `/merge` current-session branch synthesis |
+| `pi-model-thinking` | Model/thinking producer for the shared status row |
 | `pi-notify-user` | LLM-callable `notify_user` notices |
 | `pi-questions` | LLM-callable `ask_user` TUI questions with defaults and non-selecting recommendations |
 | `pi-queue` | Managed, session-persistent steer/follow-up messages with `/queue` |
@@ -24,8 +25,8 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-safety` | Main-agent Bash confirmation modes and privacy-preserving `/safety-log` |
 | `pi-session-name` | Session naming commands |
 | `pi-show-files` | LLM-callable `show_files` curated file browser |
-| `pi-status-line` | Two-line footer and shared extension statuses |
-| `pi-tool-monitor` | Active-tool footer indicator and `/tools` |
+| `pi-status-line` | Shared above-editor row plus dynamic two-line footer layout |
+| `pi-tool-monitor` | Plain active-tool status producer and `/tools` |
 
 ## Theme
 

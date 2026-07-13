@@ -1,22 +1,18 @@
 /**
- * Status line footer for Pi — two stacked lines:
- *   line 1: the subagents agent-chips on the left; a context-usage gauge + every
- *           other extension's setStatus() text on the right
- *   line 2: tool-monitor's shell/tool-call indicator on the left; token/cost usage
- *           on the right
+ * Shared status layout for Pi:
+ *   above editor: project/Git status on the left; model + thinking on the right
+ *   footer line 1: subagent status on the left when present, otherwise tool activity;
+ *                  context + extension statuses on the right
+ *   footer line 2: tool activity on the left when subagents occupy line 1;
+ *                  token/cost usage on the right
  *
- * The project dir, git segment, and model + thinking all live on their own row
- * above the input editor (the separate dir-git extension), not in this footer.
+ * pi-git-status, pi-model-thinking, pi-agents, and pi-tool-monitor publish plain
+ * status values. This extension owns their positioning and theme presentation.
  *
- * Line 1: the subagents agent-chips sit on the left; the context gauge (hard-drive
- * icon + NN%, colored dim -> success -> warning -> error as usage climbs, never a
- * progress bar) plus every other extension's setStatus() text (codex-usage,
- * safety) sit on the right.
- * This extension owns the " | " separators on the right side, so individual
- * extensions emit bare content. When a line is too narrow for both sides, the left
- * side truncates first so the right side stays visible.
- * Line 2 (bottom): tool-monitor's shell/tool-call indicator on the left, token/cost
- * usage (session + trailing 1h) on the right.
+ * The context gauge and generic extension statuses stay on line 1-right; token/cost
+ * usage stays on line 2-right. Subagents claim line 1-left only while visible, so
+ * tool-monitor can move up from line 2-left when that space is vacant. This extension
+ * owns separators and truncation; left sides yield first so right data stays visible.
  *
  * Configurable via ~/.pi/agent/status-line.json:
  *   { "order": [segment ids], "hidden": [segment ids], "mode": "verbose" | "compact" }
@@ -28,7 +24,7 @@
  * order until both lines fit (never truncates mid-segment into garbage).
  * The /status-line command inspects and persists all of this live.
  *
- * Install: ~/.pi/agent/extensions/status-line/index.ts
+ * Enable the pi-status-line package in settings.json.
  * Reload: /reload
  */
 
@@ -41,6 +37,16 @@ import { dirname, join } from "node:path";
 
 // Nerd Font hard-drive glyph for the context-usage gauge (JetBrainsMono NF).
 const ICON_HDD = ""; // nf-fa-hdd_o (U+F0A0)
+const ICON_INPUT = ""; // nf-fa-long_arrow_up
+const ICON_OUTPUT = ""; // nf-fa-long_arrow_down
+const ICON_ACTIVITY = ""; // nf-oct-cpu — aggregate token activity
+
+const HEADER_WIDGET_KEY = "status-line-header";
+const GIT_STATUS_KEY = "git-status";
+const MODEL_THINKING_STATUS_KEY = "model-thinking";
+const HEADER_STATUS_KEYS = new Set([GIT_STATUS_KEY, MODEL_THINKING_STATUS_KEY]);
+
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 function formatTokens(count: number): string {
 	if (count < 1000) return count.toString();
@@ -85,6 +91,20 @@ function contextColor(percent: number): "dim" | "success" | "warning" | "error" 
 	return "dim";
 }
 
+// Theme exposes the resolved error foreground but has no corresponding dark-red
+// background slot. Derive a muted burgundy so tool activity remains readable.
+function renderToolMonitorStatus(value: string, theme: ExtensionContext["ui"]["theme"]): string {
+	const content = theme.fg("text", ` ${value} `);
+	const foreground = theme.getFgAnsi("error");
+	const match = foreground.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
+	if (!match) return theme.bg("toolErrorBg", content);
+
+	const DARKEN_FACTOR = 0.38;
+	const darken = (channel: string) => Math.round(Number(channel) * DARKEN_FACTOR);
+	const background = `\x1b[48;2;${darken(match[1]!)};${darken(match[2]!)};${darken(match[3]!)}m`;
+	return `${background}${content}\x1b[49m`;
+}
+
 function formatContext(ctx: ExtensionContext, theme: ExtensionContext["ui"]["theme"], mode: FooterMode): string {
 	const usage = ctx.getContextUsage();
 	if (!usage || usage.percent === null) {
@@ -109,10 +129,10 @@ function alignRight(text: string, width: number): string {
 	return `${" ".repeat(width - w)}${text}`;
 }
 
-// tool-monitor's setStatus() text renders left-aligned on line 1, with everything
-// else (context gauge + other extensions) right-aligned on the same line.
+// Reserved plain-text producer keys; buildSegmentTexts styles them and
+// composeSides chooses their footer rows.
 const TOOL_MONITOR_STATUS_KEY = "tool-monitor";
-// The subagents extension publishes its activity under this key for line 1 left.
+// Subagent status takes line 1-left whenever it is visible.
 const SUBAGENT_STATUS_KEY = "subagents";
 
 // `left ...gap... right` across the full width, ANSI-aware. When both don't fit,
@@ -120,6 +140,7 @@ const SUBAGENT_STATUS_KEY = "subagents";
 // With the segment-dropping fallback in render() this is a last-resort safety net;
 // in practice lines arrive here already fitting.
 function splitLine(left: string, right: string, width: number): string {
+	if (width <= 0) return "";
 	if (!left) return alignRight(right, width);
 	if (!right) return truncateToWidth(left, width);
 
@@ -132,6 +153,56 @@ function splitLine(left: string, right: string, width: number): string {
 	return trimmedLeft ? `${trimmedLeft} ${right}` : truncateToWidth(right, width);
 }
 
+// Header-specific split preserves the previous row behavior: keep the complete
+// right side whenever possible, truncate Git first, and use an ellipsis.
+function splitHeaderLine(left: string, right: string, width: number): string {
+	if (width <= 0) return "";
+	const rightWidth = visibleWidth(right);
+	if (rightWidth >= width) return truncateToWidth(right, width, "…");
+	const availableLeft = Math.max(0, width - rightWidth - 1);
+	const fittedLeft = truncateToWidth(left, availableLeft, "…");
+	const gap = Math.max(1, width - visibleWidth(fittedLeft) - rightWidth);
+	return `${fittedLeft}${" ".repeat(gap)}${right}`;
+}
+
+function renderModelThinkingStatus(
+	value: string,
+	theme: ExtensionContext["ui"]["theme"],
+): string {
+	const match = value.match(/^(.*) · (off|minimal|low|medium|high|xhigh|max)$/);
+	if (!match) return theme.fg("dim", value);
+
+	const model = theme.fg("dim", match[1] ?? "no-model");
+	const thinking = match[2] as ThinkingLevel;
+	if (thinking === "off") return model;
+
+	const color = (() => {
+		switch (thinking) {
+			case "minimal": return "thinkingMinimal" as const;
+			case "low": return "thinkingLow" as const;
+			case "medium": return "thinkingMedium" as const;
+			case "high": return "thinkingHigh" as const;
+			case "xhigh": return "thinkingXhigh" as const;
+			case "max": return "thinkingMax" as const;
+		}
+	})();
+	return `${model}${theme.fg("dim", " · ")}${theme.fg(color, thinking)}`;
+}
+
+function renderHeader(
+	extensionStatuses: ReadonlyMap<string, string>,
+	theme: ExtensionContext["ui"]["theme"],
+	width: number,
+): string[] {
+	const leftValue = extensionStatuses.get(GIT_STATUS_KEY) ?? "";
+	const rightValue = extensionStatuses.get(MODEL_THINKING_STATUS_KEY) ?? "";
+	if (!leftValue && !rightValue) return [];
+
+	const left = leftValue ? theme.fg("dim", leftValue) : "";
+	const right = rightValue ? renderModelThinkingStatus(rightValue, theme) : "";
+	return [splitHeaderLine(left, right, width)];
+}
+
 // ---------------------------------------------------------------------------
 // Configuration — ~/.pi/agent/status-line.json (same idiom as command-safety):
 // load on demand with a try/catch fallback to defaults, save best-effort.
@@ -139,9 +210,9 @@ function splitLine(left: string, right: string, width: number): string {
 
 type FooterMode = "verbose" | "compact";
 
-// Stable segment ids, in DEFAULT order. Each renders into a fixed slot (line 1/2,
-// left/right side); `order` reorders segments within their slot and sets the
-// drop priority (segments are dropped from the END of the effective order first).
+// Stable segment ids, in DEFAULT order. Most render into a fixed line/side slot;
+// tool-monitor dynamically uses line 1-left when subagents are absent and line
+// 2-left when subagents occupy line 1. `order` also sets narrow-width drop priority.
 const SEGMENT_IDS = ["subagents", "context", "extensions", "tool-monitor", "tokens", "cost", "hourly"] as const;
 type SegmentId = (typeof SEGMENT_IDS)[number];
 
@@ -150,7 +221,7 @@ const SEGMENT_SLOTS: Record<SegmentId, Slot> = {
 	subagents: "1L",
 	context: "1R",
 	extensions: "1R",
-	"tool-monitor": "2L",
+	"tool-monitor": "2L", // composeSides overrides dynamically
 	tokens: "2R",
 	cost: "2R",
 	hourly: "2R",
@@ -230,9 +301,8 @@ let currentConfig: StatusLineConfig = loadConfig();
 // Segment rendering
 // ---------------------------------------------------------------------------
 
-// Every segment's text for one render pass. Pass-through segments (subagents,
-// extensions, tool-monitor) are owned by other extensions and render identically
-// in both modes; the mode only shapes this extension's own segments.
+// Every segment's styled text for one render pass. Producer extensions publish
+// plain values; this presenter applies their theme treatment.
 function buildSegmentTexts(
 	ctx: ExtensionContext,
 	theme: ExtensionContext["ui"]["theme"],
@@ -242,22 +312,29 @@ function buildSegmentTexts(
 ): Record<SegmentId, string> {
 	const { input, output, cost, lastHour } = collectUsage(ctx);
 	const otherStatuses = Array.from(extensionStatuses.entries())
-		.filter(([key]) => key !== TOOL_MONITOR_STATUS_KEY && key !== SUBAGENT_STATUS_KEY)
+		.filter(([key]) =>
+			key !== TOOL_MONITOR_STATUS_KEY
+			&& key !== SUBAGENT_STATUS_KEY
+			&& !HEADER_STATUS_KEYS.has(key)
+		)
 		.map(([, value]) => value);
 
+	const subagents = extensionStatuses.get(SUBAGENT_STATUS_KEY) ?? "";
+	const toolMonitor = extensionStatuses.get(TOOL_MONITOR_STATUS_KEY) ?? "";
+
 	return {
-		subagents: extensionStatuses.get(SUBAGENT_STATUS_KEY) ?? "",
+		subagents: subagents ? theme.fg("dim", subagents) : "",
 		context: formatContext(ctx, theme, mode),
 		extensions: joinSegments(otherStatuses, separator),
-		"tool-monitor": extensionStatuses.get(TOOL_MONITOR_STATUS_KEY) ?? "",
+		"tool-monitor": toolMonitor ? renderToolMonitorStatus(toolMonitor, theme) : "",
 		tokens:
 			input > 0 || output > 0
-				? theme.fg("dim", `↑${formatTokens(input)} ↓${formatTokens(output)}`)
+				? theme.fg("dim", `${ICON_INPUT} ${formatTokens(input)} ${ICON_OUTPUT} ${formatTokens(output)}`)
 				: "",
 		cost: theme.fg("dim", `$${cost.toFixed(mode === "compact" ? 2 : 3)}`),
 		hourly:
 			lastHour > 0
-				? theme.fg("dim", mode === "compact" ? `1h ${formatTokens(lastHour)}` : `↑/↓ last 1h: ${formatTokens(lastHour)}`)
+				? theme.fg("dim", mode === "compact" ? `${ICON_ACTIVITY} 1h ${formatTokens(lastHour)}` : `${ICON_ACTIVITY} last 1h: ${formatTokens(lastHour)}`)
 				: "",
 	};
 }
@@ -270,9 +347,12 @@ interface FooterSides {
 }
 
 function composeSides(active: SegmentId[], texts: Record<SegmentId, string>, separator: string): FooterSides {
+	const subagentsVisible = active.includes("subagents");
+	const segmentSlot = (id: SegmentId): Slot =>
+		id === "tool-monitor" ? (subagentsVisible ? "2L" : "1L") : SEGMENT_SLOTS[id];
 	const slot = (which: Slot) =>
 		joinSegments(
-			active.filter((id) => SEGMENT_SLOTS[id] === which).map((id) => texts[id]),
+			active.filter((id) => segmentSlot(id) === which).map((id) => texts[id]),
 			separator,
 		);
 	return { l1: slot("1L"), r1: slot("1R"), l2: slot("2L"), r2: slot("2R") };
@@ -291,6 +371,7 @@ function footerFits(sides: FooterSides, width: number): boolean {
 
 export default function (pi: ExtensionAPI) {
 	let activeTui: TUI | undefined;
+	let getExtensionStatuses: (() => ReadonlyMap<string, string>) | undefined;
 
 	const requestRender = () => {
 		activeTui?.requestRender();
@@ -305,7 +386,11 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", (_event, ctx) => {
 		activeTui = undefined;
-		if (ctx.mode === "tui") ctx.ui.setFooter(undefined);
+		getExtensionStatuses = undefined;
+		if (ctx.mode === "tui") {
+			ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined, { placement: "aboveEditor" });
+			ctx.ui.setFooter(undefined);
+		}
 	});
 
 	pi.registerCommand("status-line", {
@@ -401,8 +486,10 @@ export default function (pi: ExtensionAPI) {
 
 		if (ctx.mode !== "tui") return;
 
+		getExtensionStatuses = undefined;
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			activeTui = tui;
+			getExtensionStatuses = () => footerData.getExtensionStatuses();
 
 			return {
 				dispose() {
@@ -440,5 +527,17 @@ export default function (pi: ExtensionAPI) {
 				},
 			};
 		});
+
+		ctx.ui.setWidget(
+			HEADER_WIDGET_KEY,
+			(_tui, theme) => ({
+				invalidate() {},
+				render(width: number): string[] {
+					const extensionStatuses = getExtensionStatuses?.();
+					return extensionStatuses ? renderHeader(extensionStatuses, theme, width) : [];
+				},
+			}),
+			{ placement: "aboveEditor" },
+		);
 	});
 }

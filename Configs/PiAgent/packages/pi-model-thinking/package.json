@@ -1,0 +1,16 @@
+{
+  "name": "pi-model-thinking",
+  "version": "1.0.0",
+  "description": "Publishes Pi's current model and thinking level for the shared status layout.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

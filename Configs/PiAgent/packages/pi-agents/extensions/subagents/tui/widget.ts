@@ -1,5 +1,5 @@
 /**
- * tui/widget.ts — the ambient main-session widget (05-tui-spec §1, D22).
+ * tui/widget.ts — ambient main-session status data (05-tui-spec §1, D22).
  *
  *   󰚩 2 running · 1 waiting · 󰇮 3 · 󰔛 budget 12/40
  *
@@ -10,8 +10,8 @@
  * the queued-mail count); at zero agents the widget renders nothing at all —
  * the extension is silent when unused.
  *
- * The cached snapshot is consumed by index.ts and published through setStatus(),
- * so activity remains in the shared footer and the extension adds no editor row.
+ * The cached snapshot is consumed by index.ts and published as plain text through
+ * setStatus(); pi-status-line owns its styling and dynamic footer position.
  *
  * Data flow: rendering is synchronous but roster state is behind an async
  * facade call, so the widget renders from a cached snapshot that is refreshed
@@ -197,7 +197,7 @@ export function renderWidgetLines(snap: WidgetSnapshot, theme: WidgetTheme, widt
 }
 
 // ---------------------------------------------------------------------------
-// Live widget wiring (index.ts owns setWidget; this owns refresh mechanics)
+// Live status wiring (index.ts publishes setStatus; this owns refresh mechanics)
 // ---------------------------------------------------------------------------
 
 export interface WidgetController {

@@ -3,18 +3,17 @@
  *
  * Tracks every tool call via tool_execution_start/update/end and exposes it two ways:
  *
- * 1. A live "<spinner> >_ <N running:> <names>" indicator published via
- *    ctx.ui.setStatus() - the same generic cross-extension footer-status channel
- *    codex-usage and command-safety use - so status-line joins it onto the same line
- *    as the context gauge and those other segments, rather than it living on its own
- *    separate row. (It used to be its own belowEditor widget; John asked for it
- *    combined onto that line instead.)
+ * 1. A live "<spinner>  <N running:> <names>" indicator published as plain
+ *    text through the reserved `tool-monitor` setStatus key. pi-status-line owns
+ *    its styling and dynamic footer position: line 1-left when subagent status is
+ *    absent, line 2-left when subagent status occupies line 1.
  *
  *    When nothing is running the status is cleared entirely (setStatus(key, undefined))
- *    rather than showing a dead ">_ (none)" - the segment simply disappears so an idle
- *    footer stays clean. While ≥1 tool runs, a braille spinner animates via a ~100ms
- *    interval (SPINNER_INTERVAL_MS) that only ticks while something is running and is
- *    stopped the moment the last tool finishes; each tick re-publishes the status, which
+ *    rather than showing general agent activity or a dead " (none)" - the segment
+ *    only reports actual tool execution. While ≥1 tool runs, a braille spinner animates
+ *    via a ~100ms interval (SPINNER_INTERVAL_MS) that only ticks while something is
+ *    running and stops the moment the last tool finishes; each tick re-publishes the
+ *    status, which
  *    is what drives the footer re-render (same mechanism codex-usage's poll timer relies
  *    on). A leading count ("N running:") appears only when more than one tool runs.
  *
@@ -56,16 +55,16 @@
  * primitive Pi exposes to extensions. It stops the whole current turn, not just the one
  * tool, since there's no per-tool-call cancel in the SDK.
  *
- * Install: ~/.pi/agent/extensions/tool-monitor/index.ts
+ * Enable the pi-tool-monitor package in settings.json.
  * Reload: /reload
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Input, matchesKey, truncateToWidth, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 const STATUS_KEY = "tool-monitor";
 const MAX_FINISHED_HISTORY = 100;
-const WIDGET_ICON = ">_"; // terminal prompt - plain ASCII, not a Nerd Font glyph
+const WIDGET_ICON = ""; // nf-oct-terminal
 
 // Braille spinner animated while ≥1 tool runs. Plain Unicode (not a Nerd Font glyph),
 // so it renders on any terminal. ~100ms per frame is the usual spinner cadence.
@@ -529,9 +528,8 @@ export default function (pi: ExtensionAPI) {
 
 	let spinnerFrame = 0;
 	let spinnerTimer: ReturnType<typeof setInterval> | undefined;
-	let agentActive = false;
 	// Latest ctx seen from an event, so the spinner interval (which fires outside any
-	// event) has a live handle to setStatus/theme without a session_start dependency.
+	// event) has a live handle to setStatus without a session_start dependency.
 	let lastCtx: ExtensionContext | undefined;
 
 	const stopSpinner = () => {
@@ -540,9 +538,8 @@ export default function (pi: ExtensionAPI) {
 		spinnerFrame = 0;
 	};
 
-	// Bare content, no leading/trailing separator of its own - status-line owns the
-	// " | " between footer segments and joins whatever any extension publishes here.
-	// Clears the segment entirely when idle so the footer doesn't carry a dead marker.
+	// Publish plain content only: status-line owns styling, separators, truncation,
+	// and the indicator's dynamic footer row. Clear it entirely while idle.
 	const publishStatus = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
 		lastCtx = ctx;
@@ -550,10 +547,7 @@ export default function (pi: ExtensionAPI) {
 
 		if (running.length === 0) {
 			stopSpinner();
-			ctx.ui.setStatus(
-				STATUS_KEY,
-				agentActive ? ctx.ui.theme.fg("dim", `${WIDGET_ICON} working`) : undefined,
-			);
+			ctx.ui.setStatus(STATUS_KEY, undefined);
 			return;
 		}
 
@@ -570,22 +564,10 @@ export default function (pi: ExtensionAPI) {
 		// (see runningLeafNames), so the footer reflects the real work rather than one
 		// opaque "subagent". Count reflects those leaves too.
 		const leaves = running.flatMap(runningLeafNames);
-		const theme = ctx.ui.theme;
-		const spinner = theme.fg("warning", SPINNER_FRAMES[spinnerFrame]);
 		const count = leaves.length > 1 ? `${leaves.length} running: ` : "";
 		const names = leaves.join(", ");
-		ctx.ui.setStatus(STATUS_KEY, `${spinner} ${theme.fg("dim", `${WIDGET_ICON} ${count}${names}`)}`);
+		ctx.ui.setStatus(STATUS_KEY, `${SPINNER_FRAMES[spinnerFrame]} ${WIDGET_ICON} ${count}${names}`);
 	};
-
-	pi.on("agent_start", (_event, ctx) => {
-		agentActive = true;
-		publishStatus(ctx);
-	});
-
-	pi.on("agent_settled", (_event, ctx) => {
-		agentActive = false;
-		publishStatus(ctx);
-	});
 
 	pi.on("tool_execution_start", (event, ctx) => {
 		runs.set(event.toolCallId, {
@@ -624,7 +606,6 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		agentActive = false;
 		stopSpinner();
 		lastCtx = undefined;
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);

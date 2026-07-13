@@ -1,18 +1,16 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
-const WIDGET_KEY = "git-status";
+const STATUS_KEY = "git-status";
 const ICON_GIT_BRANCH = "";
 const ICON_WORKTREE = "";
 const ICON_DIRTY = "";
 const ICON_CONFLICT = "";
-const ICON_OP = "⇋";
-const ICON_AHEAD = "↑";
-const ICON_BEHIND = "↓";
-const ICON_STASH = "⊟";
+const ICON_OP = ""; // nf-oct-git_merge — an in-progress history operation
+const ICON_AHEAD = ""; // nf-fa-upload — local commits available to push
+const ICON_BEHIND = ""; // nf-fa-download — remote commits available to pull
+const ICON_STASH = ""; // nf-fa-archive
 const POLL_MS = 15_000;
 const GIT_TIMEOUT_MS = 5_000;
 const CONFLICT_CODES = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
@@ -160,7 +158,7 @@ async function readGitState(pi: ExtensionAPI, cwd: string): Promise<GitState | n
 	};
 }
 
-function renderGit(state: GitState, theme: ExtensionContext["ui"]["theme"]): string {
+function renderGit(state: GitState): string {
 	const base = state.repoName
 		? `${ICON_GIT_BRANCH} ${state.repoName} (${state.branch})`
 		: `${ICON_GIT_BRANCH} ${state.branch}`;
@@ -172,80 +170,34 @@ function renderGit(state: GitState, theme: ExtensionContext["ui"]["theme"]): str
 	if (state.ahead > 0) parts.push(`${ICON_AHEAD} (${state.ahead})`);
 	if (state.behind > 0) parts.push(`${ICON_BEHIND} (${state.behind})`);
 	if (state.stashes > 0) parts.push(`${ICON_STASH} (${state.stashes})`);
-	return theme.fg("dim", parts.join(" "));
+	return parts.join(" ");
 }
 
-function renderLeft(ctx: ExtensionContext, state: GitState | null): string {
-	const dir = ctx.ui.theme.fg("dim", formatCwd(ctx.sessionManager.getCwd()));
-	return state ? `${dir}${ctx.ui.theme.fg("dim", " | ")}${renderGit(state, ctx.ui.theme)}` : dir;
-}
-
-function renderModel(pi: ExtensionAPI, ctx: ExtensionContext): string {
-	const model = ctx.ui.theme.fg("dim", ctx.model?.id ?? "no-model");
-	const thinking = pi.getThinkingLevel();
-	if (thinking === "off") return model;
-	const coloredThinking = (() => {
-		switch (thinking) {
-			case "minimal": return ctx.ui.theme.fg("thinkingMinimal", thinking);
-			case "low": return ctx.ui.theme.fg("thinkingLow", thinking);
-			case "medium": return ctx.ui.theme.fg("thinkingMedium", thinking);
-			case "high": return ctx.ui.theme.fg("thinkingHigh", thinking);
-			case "xhigh": return ctx.ui.theme.fg("thinkingXhigh", thinking);
-			case "max": return ctx.ui.theme.fg("thinkingMax", thinking);
-		}
-	})();
-	return `${model}${ctx.ui.theme.fg("dim", " · ")}${coloredThinking}`;
-}
-
-function renderSplitLine(left: string, right: string, width: number): string {
-	if (width <= 0) return "";
-	const rightWidth = visibleWidth(right);
-	if (rightWidth >= width) return truncateToWidth(right, width, "…");
-	const availableLeft = Math.max(0, width - rightWidth - 1);
-	const fittedLeft = truncateToWidth(left, availableLeft, "…");
-	const gap = Math.max(1, width - visibleWidth(fittedLeft) - rightWidth);
-	return `${fittedLeft}${" ".repeat(gap)}${right}`;
+function renderStatus(ctx: ExtensionContext, state: GitState | null): string {
+	const dir = formatCwd(ctx.sessionManager.getCwd());
+	return state ? `${dir} | ${renderGit(state)}` : dir;
 }
 
 export default function (pi: ExtensionAPI) {
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let refresh: (() => void) | undefined;
 	let generation = 0;
-	let tui: TUI | undefined;
 
 	pi.on("turn_end", () => refresh?.());
-	pi.on("model_select", () => tui?.requestRender());
-	pi.on("thinking_level_select", () => tui?.requestRender());
 
 	pi.on("session_start", (_event, ctx) => {
 		if (ctx.mode !== "tui") return;
 		if (pollTimer) clearInterval(pollTimer);
 		const cwd = ctx.sessionManager.getCwd();
 		let state: GitState | null = null;
-		ctx.ui.setStatus(WIDGET_KEY, undefined);
-		ctx.ui.setWidget(
-			WIDGET_KEY,
-			(nextTui) => {
-				tui = nextTui;
-				return {
-					invalidate() {},
-					dispose() {
-						if (tui === nextTui) tui = undefined;
-					},
-					render(width: number): string[] {
-						return [renderSplitLine(renderLeft(ctx, state), renderModel(pi, ctx), width)];
-					},
-				};
-			},
-			{ placement: "aboveEditor" },
-		);
+		ctx.ui.setStatus(STATUS_KEY, renderStatus(ctx, state));
 
 		refresh = () => {
 			const request = ++generation;
 			void readGitState(pi, cwd).then((next) => {
 				if (request !== generation) return;
 				state = next;
-				tui?.requestRender();
+				ctx.ui.setStatus(STATUS_KEY, renderStatus(ctx, state));
 			});
 		};
 		refresh();
@@ -257,10 +209,6 @@ export default function (pi: ExtensionAPI) {
 		if (pollTimer) clearInterval(pollTimer);
 		pollTimer = undefined;
 		refresh = undefined;
-		tui = undefined;
-		if (ctx.mode === "tui") {
-			ctx.ui.setStatus(WIDGET_KEY, undefined);
-			ctx.ui.setWidget(WIDGET_KEY, undefined, { placement: "aboveEditor" });
-		}
+		if (ctx.mode === "tui") ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
 }

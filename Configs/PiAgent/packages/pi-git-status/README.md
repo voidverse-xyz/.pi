@@ -1,9 +1,8 @@
 # pi-git-status
 
-A single status row above Pi's editor:
-
-- left: home-relative current directory, then rich Git state when in a repository
-- right: current model and thinking level
+Publishes a home-relative current directory and rich Git state through the
+reserved `git-status` extension-status key. `pi-status-line` consumes that value
+and positions it on the left side of the shared row above Pi's editor.
 
 It shows the repository and branch, plus indicators when relevant for:
 
@@ -15,5 +14,5 @@ It shows the repository and branch, plus indicators when relevant for:
 
 It never fetches from the network; ahead/behind reflects the most recently fetched
 tracking ref. Git state refreshes after each agent turn and every 15 seconds. Outside
-a repository the row still shows the directory, model, and thinking level. Nerd Font
-glyphs are used for several Git indicators.
+a repository the status still shows the directory. Nerd Font glyphs are used for
+several Git indicators.

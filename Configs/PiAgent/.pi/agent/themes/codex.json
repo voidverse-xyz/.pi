@@ -15,7 +15,13 @@
     "red": "#eba0ac",
     "yellow": "#f6e2b7",
     "mauve": "#cba6f7",
-    "peach": "#fab387"
+    "peach": "#fab387",
+    "thinkingBlue": "#89b4fa",
+    "thinkingBluePurple": "#9e9dec",
+    "thinkingPurple": "#b38be3",
+    "thinkingPurpleRed": "#c978d1",
+    "thinkingRedPurple": "#dc89bf",
+    "thinkingRed": "#eba0ac"
   },
   "colors": {
     "accent": "cyan",
@@ -63,12 +69,12 @@
     "syntaxOperator": "cyan",
     "syntaxPunctuation": "muted",
     "thinkingOff": "dim",
-    "thinkingMinimal": "dim",
-    "thinkingLow": "muted",
-    "thinkingMedium": "blue",
-    "thinkingHigh": "mauve",
-    "thinkingXhigh": "yellow",
-    "thinkingMax": "yellow",
+    "thinkingMinimal": "thinkingBlue",
+    "thinkingLow": "thinkingBluePurple",
+    "thinkingMedium": "thinkingPurple",
+    "thinkingHigh": "thinkingPurpleRed",
+    "thinkingXhigh": "thinkingRedPurple",
+    "thinkingMax": "thinkingRed",
     "bashMode": "green"
   },
   "export": {

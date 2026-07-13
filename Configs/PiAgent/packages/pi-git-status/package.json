@@ -1,7 +1,7 @@
 {
   "name": "pi-git-status",
-  "version": "1.1.0",
-  "description": "Above-editor row with cwd and rich Git state on the left, model and thinking level on the right.",
+  "version": "1.2.0",
+  "description": "Publishes cwd and rich Git state for Pi's shared status layout.",
   "keywords": [
     "pi-package"
   ],
@@ -11,7 +11,6 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": "*"
   }
 }

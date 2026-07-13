@@ -1,7 +1,7 @@
 {
   "name": "pi-status-line",
-  "version": "1.0.1",
-  "description": "Two-line footer status: agent activity, context and extension statuses, tool activity, and token/cost usage.",
+  "version": "1.2.2",
+  "description": "Shared above-editor and footer status layout for Pi.",
   "keywords": [
     "pi-package"
   ],

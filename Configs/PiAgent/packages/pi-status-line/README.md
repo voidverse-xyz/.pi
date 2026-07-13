@@ -1,30 +1,35 @@
 # pi-status-line
 
-A two-line footer for Pi that aggregates every extension's status into one place:
+Owns Pi's shared status layout:
 
-- **Line 1** — `pi-agents` activity on the left; the context-usage gauge plus
-  every other extension's `setStatus()` text on the right.
-- **Line 2** — tool-monitor's shell/tool-call indicator on the left; session
-  token/cost usage (plus trailing 1h) on the right.
+- **Above-editor row** — CWD/Git from `pi-git-status` on the left; model and
+  thinking level from `pi-model-thinking` on the right.
+- **Footer line 1** — `pi-agents` activity on the left when present; otherwise
+  tool-monitor moves up into that space. Context and extension statuses stay right.
+- **Footer line 2** — tool-monitor moves here when subagent status occupies line 1;
+  session token/cost usage (plus trailing 1h) stays right.
 
-This extension owns the separators between right-side segments, so individual
-extensions emit bare content.
+The producer extensions publish plain values. This extension owns positioning,
+ANSI-aware truncation/alignment, producer styling, theme-aware thinking colors,
+and footer separators. Reserved producer keys are excluded from the footer's
+generic extension segment.
 
 ## Segments
 
 Every segment has a stable id used by the config file and the `/status-line`
-command. Each segment renders in a fixed slot (line and side); `order` reorders
-segments *within* their slot and sets the drop priority for narrow terminals.
+command. Most segments render in a fixed slot. Tool-monitor dynamically uses line 1-left
+when subagent status is absent and line 2-left when it is present. `order`
+reorders segments within their effective slot and sets narrow-width drop priority.
 
 | id | slot | verbose | compact |
 |----|------|---------|---------|
-| `subagents` | line 1, left | activity from `pi-agents` (pass-through) | same |
+| `subagents` | line 1, left | activity from `pi-agents`, dimmed | same |
 | `context` | line 1, right | hard-drive icon + `NN%` context usage, colored by fullness | `NN%` (icon dropped) |
 | `extensions` | line 1, right | every other extension's `setStatus()` text, ` \| `-joined | space-joined |
-| `tool-monitor` | line 2, left | shell/tool-call indicator (pass-through) | same |
-| `tokens` | line 2, right | `↑12k ↓3.4k` session tokens | same |
+| `tool-monitor` | line 1-left alone; line 2-left with subagents | running-tool indicator with themed activity band | same |
+| `tokens` | line 2, right | ` 12k  3.4k` session tokens | same |
 | `cost` | line 2, right | `$0.123` session cost | `$0.12` |
-| `hourly` | line 2, right | `↑/↓ last 1h: 42k` | `1h 42k` |
+| `hourly` | line 2, right | ` last 1h: 42k` | ` 1h 42k` |
 
 Default order: `subagents, context, extensions, tool-monitor, tokens, cost, hourly`.
 
