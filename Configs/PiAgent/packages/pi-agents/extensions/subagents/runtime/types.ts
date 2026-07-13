@@ -62,6 +62,8 @@ export interface SpawnResult {
 	created: boolean;
 	state: AgentState;
 	vitals: AgentVitals;
+	/** Envelope id of the optional initial task, usable as a final-report await anchor. */
+	taskEnvelopeId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +99,37 @@ export interface SendResult {
 	recipientState: AgentState;
 	/** The delivered envelope's id (correlation anchor for later answers). */
 	envelopeId: string;
+}
+
+export type AwaitStatus = "completed" | "attention" | "timeout" | "retired";
+
+export interface AwaitEnvelopeView {
+	id: string;
+	type: "question" | "escalation" | "error" | "report";
+	text: string;
+	correlationId: string | null;
+	data?: unknown;
+	final?: boolean;
+}
+
+export interface AwaitResult {
+	status: AwaitStatus;
+	to: string;
+	anchorId: string;
+	deliveryMarker: "subagent_await";
+	report?: AwaitEnvelopeView;
+	attention?: AwaitEnvelopeView;
+	progress?: AwaitEnvelopeView[];
+	validation?: { valid: boolean; errors: string[] };
+}
+
+export interface AwaitOptions {
+	to: string;
+	waitFor: "final" | "collect";
+	anchorId: string;
+	timeoutSeconds?: number;
+	sessionFile?: string | null;
+	signal?: AbortSignal;
 }
 
 export interface CollectResult {

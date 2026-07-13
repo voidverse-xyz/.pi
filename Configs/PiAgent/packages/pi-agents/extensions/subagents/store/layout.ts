@@ -8,18 +8,17 @@
  *
  * On-disk shape (D3/D5/D13, 02-envelope-contract):
  *
- *   ~/.pi/agent/sessions/<cwd-slug>/          # Pi's own per-project session dir
- *     <timestamp>_<uuid>.jsonl                # main agent sessions (untouched)
- *     subagents-<cwd-digest>/                 # OUR state root (digest = slug-collision guard)
- *       registry.json                         # roster (store/registry.ts)
- *       teams.json                            # membership (store/teams.ts)
- *       .main/mailbox/                        # main agent's mailbox (+ .done/)
- *       .archive/<type>/<id>/                 # retired agents, N-day GC
- *       <type>/<id>/                          # one dir per agent instance
- *         <timestamp>_<uuid>.jsonl            # REAL Pi session format (resumable)
- *         mailbox/                            # inbound envelopes, one file each
- *         mailbox/.done/                      # processed mail (audit, GC'd)
- *         files/                              # non-session artifacts
+ *   ~/.pi/agent/sessions/<cwd-slug>/                  # Pi's per-project dir
+ *     <timestamp>_<uuid>.jsonl                        # main sessions (untouched)
+ *     subagents-by-main-session-<cwd-digest>/         # versioned state container
+ *       owners/<main-session-id>/                     # ONE conversation owns this root
+ *         scope.json  autonomy.json
+ *         registry.json  teams.json
+ *         .main/mailbox/  .main/escalations/
+ *         .archive/<type>/<id>/
+ *         <type>/<id>/
+ *           <timestamp>_<uuid>.jsonl                  # REAL Pi session format
+ *           mailbox/  files/
  *
  * Type-definition discovery dirs (D6) also live here — they are paths.
  *
@@ -157,34 +156,42 @@ export function collectRequestsFileOf(mailboxDir: string): string {
 // ---------------------------------------------------------------------------
 
 export interface LayoutOptions {
+	/** Stable owning main Pi session id (`ctx.sessionManager.getSessionId()`). */
+	sessionId: string;
 	/** Override $HOME (tests). Defaults to os.homedir(). */
 	home?: string;
+	/** Override only the mutable state container (ephemeral host sessions). */
+	stateContainerRoot?: string;
 }
 
-/** Every path the extension uses, for one project cwd. */
+/** Every path the extension uses, for one project and owning main session. */
 export interface Layout {
 	/** The project cwd this layout is for (as given). */
 	readonly cwd: string;
+	/** Stable owner of every mutable path in this layout. */
+	readonly ownerSessionId: string;
 	/** ~/.pi/agent */
 	readonly agentDir: string;
 	/** ~/.pi/agent/sessions */
 	readonly sessionsRoot: string;
 	/** ~/.pi/agent/sessions/<cwd-slug> — Pi's own dir for this project. */
 	readonly projectSessionDir: string;
-	/**
-	 * <projectSessionDir>/subagents-<cwd-digest> — root of everything we own.
-	 * The digest suffix disambiguates projects whose lossy cwdSlug collides
-	 * (finding 6): sharing this dir would leak state between them.
-	 */
+	/** Versioned container shared only as a parent; agents cannot access any owner beneath it. */
+	readonly stateContainerRoot: string;
+	/** <stateContainerRoot>/owners. */
+	readonly ownersRoot: string;
+	/** <ownersRoot>/<ownerSessionId> — root of all mutable state for this conversation. */
 	readonly subagentsRoot: string;
-	/**
-	 * <projectSessionDir>/subagents — the PRE-digest (legacy) state root. A real
-	 * user's existing state lives here; core.ts adopts it into subagentsRoot on
-	 * first run when the digest dir is still absent (see migrateStateRootIfNeeded).
-	 * Non-colliding projects migrate transparently; a genuine collision keeps its
-	 * own digest dir and never touches a foreign project's data.
-	 */
+	/** Pre-session cwd-digest root, considered only by explicit human adoption. */
+	readonly legacyDigestSubagentsRoot: string;
+	/** Pre-digest root, considered only by explicit human adoption. */
 	readonly legacySubagentsRoot: string;
+	/** Owner/scope metadata. */
+	readonly scopeManifestFile: string;
+	/** Exclusive live-host owner marker for this main session. */
+	readonly hostOwnerFile: string;
+	/** Persisted autonomy counter snapshot. */
+	readonly autonomyFile: string;
 	/** <subagentsRoot>/registry.json */
 	readonly registryFile: string;
 	/** <subagentsRoot>/teams.json */
@@ -210,6 +217,10 @@ export interface Layout {
 	mailboxDoneDir(type: string, id: string): string;
 	/** <agent>/files */
 	filesDir(type: string, id: string): string;
+	/** Durable current main-assignment anchor for final-report correlation. */
+	assignmentAnchorFile(type: string, id: string): string;
+	/** Durable retirement intent (manual or oneshot final), recovered at startup. */
+	retireRequestedFile(type: string, id: string): string;
 	/** <agent>/<timestamp>_<uuid>.jsonl — Pi-native session file. */
 	sessionFilePath(type: string, id: string, timestamp: Date | string, sessionId: string): string;
 	/** An envelope's file inside a mailbox dir: <mailboxDir>/<msg-id>.json */
@@ -252,14 +263,22 @@ export function settingsFileSiblingOf(typeDefsDir: string): string {
 	return `${typeDefsDir}.json`;
 }
 
-/** Build the full path layout for a project cwd. */
-export function createLayout(cwd: string, options: LayoutOptions = {}): Layout {
+const SESSION_ID_RE = /^[a-z0-9][a-z0-9._-]*$/i;
+
+/** Build the full path layout for a project cwd and owning main session. */
+export function createLayout(cwd: string, options: LayoutOptions): Layout {
+	if (!SESSION_ID_RE.test(options.sessionId) || options.sessionId === "." || options.sessionId === "..") {
+		throw new Error(`Invalid main session id ${JSON.stringify(options.sessionId)}.`);
+	}
 	const home = options.home ?? homedir();
 	const agentDir = join(home, ".pi", "agent");
 	const sessionsRoot = join(agentDir, "sessions");
 	const projectSessionDir = join(sessionsRoot, cwdSlug(cwd));
 	const legacySubagentsRoot = join(projectSessionDir, "subagents");
-	const subagentsRoot = join(projectSessionDir, `subagents-${cwdDigest(cwd)}`);
+	const legacyDigestSubagentsRoot = join(projectSessionDir, `subagents-${cwdDigest(cwd)}`);
+	const stateContainerRoot = options.stateContainerRoot ?? join(projectSessionDir, `subagents-by-main-session-${cwdDigest(cwd)}`);
+	const ownersRoot = join(stateContainerRoot, "owners");
+	const subagentsRoot = join(ownersRoot, options.sessionId);
 	const archiveRoot = join(subagentsRoot, ".archive");
 	const mainMailboxDir = join(subagentsRoot, ".main", "mailbox");
 	const escalationsDir = join(subagentsRoot, ".main", "escalations");
@@ -269,11 +288,18 @@ export function createLayout(cwd: string, options: LayoutOptions = {}): Layout {
 
 	return {
 		cwd,
+		ownerSessionId: options.sessionId,
 		agentDir,
 		sessionsRoot,
 		projectSessionDir,
+		stateContainerRoot,
+		ownersRoot,
 		subagentsRoot,
+		legacyDigestSubagentsRoot,
 		legacySubagentsRoot,
+		scopeManifestFile: join(subagentsRoot, "scope.json"),
+		hostOwnerFile: join(subagentsRoot, ".host-owner.json"),
+		autonomyFile: join(subagentsRoot, "autonomy.json"),
 		registryFile: join(subagentsRoot, "registry.json"),
 		teamsFile: join(subagentsRoot, "teams.json"),
 		mainMailboxDir,
@@ -287,6 +313,8 @@ export function createLayout(cwd: string, options: LayoutOptions = {}): Layout {
 		mailboxDir,
 		mailboxDoneDir: (type, id) => join(mailboxDir(type, id), ".done"),
 		filesDir: (type, id) => join(agentInstanceDir(type, id), "files"),
+		assignmentAnchorFile: (type, id) => join(agentInstanceDir(type, id), ".assignment-anchor"),
+		retireRequestedFile: (type, id) => join(agentInstanceDir(type, id), ".retire-requested"),
 		sessionFilePath: (type, id, timestamp, sessionId) =>
 			join(agentInstanceDir(type, id), sessionFileName(timestamp, sessionId)),
 		envelopeFile: (dir, envelopeId) => join(dir, `${envelopeId}.json`),

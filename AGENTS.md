@@ -203,6 +203,10 @@ shared repository using the `Reusable Artifact Capture` rules above.
 
 - If something I ask for is technically wrong or impossible, say so and propose a
   workable approach.
+- When delegated review findings are expected in the current response, follow
+  `Workflows/reviews/delegated-review-results/delegated-review-results.md`: await
+  the anchored report, do not claim completion on timeout/cancellation, and put
+  verdict/findings before subagent orchestration or cleanup details.
 - When giving me app or server URLs in chat, use this machine's LAN IP instead of
   `localhost`, because I often access local services from other devices.
 - When giving me an app URL for a project with any kind of login, include working

@@ -38,14 +38,14 @@ export interface SubagentMailPort {
 		type: "message" | "question" | "answer" | "report";
 		text: string;
 		data?: unknown;
+		final?: boolean;
 		correlationId?: string;
 		when?: "now" | "after-turn";
 	}): Promise<{ disposition: Disposition; bounceReason?: string }>;
-	/**
-	 * A final report was durably delivered — auto-retire if the sender is a
-	 * oneshot (D13; after the current turn, so the report turn completes).
-	 */
+	/** Persist oneshot final-report retirement intent before routing. */
 	noteFinalReport(from: string): void;
+	/** Clear that intent if routing fails before the report reaches main mail. */
+	cancelFinalReport(from: string): void;
 }
 
 function jsonResult(value: unknown): {
@@ -63,6 +63,9 @@ function errorResult(error: unknown): {
 	const message = error instanceof Error ? error.message : String(error);
 	return { content: [{ type: "text", text: message }], details: undefined, isError: true };
 }
+
+export const MAX_REPORT_TEXT_CHARS = 16_000;
+export const MAX_REPORT_DATA_BYTES = 64_000;
 
 const NON_BLOCKING_NOTE =
 	"Questions are NON-BLOCKING: after asking, finish your turn (leave a one-line " +
@@ -105,7 +108,10 @@ const SendMessageParams = Type.Object({
 // ---------------------------------------------------------------------------
 
 const ReportParams = Type.Object({
-	text: Type.String({ description: "Progress update or final result summary" }),
+	text: Type.String({
+		description: "Progress update or final result summary; concise findings, not raw file dumps",
+		maxLength: MAX_REPORT_TEXT_CHARS,
+	}),
 	final: Type.Optional(
 		Type.Boolean({
 			description:
@@ -192,21 +198,42 @@ export function createSubagentTools(address: string, port: SubagentMailPort): To
 			"request's envelope id as correlationId.",
 		parameters: ReportParams,
 		async execute(_toolCallId, params) {
+			const final = params.final === true;
+			if (final) port.noteFinalReport(address);
 			try {
+				if (params.text.length > MAX_REPORT_TEXT_CHARS) {
+					if (final) port.cancelFinalReport(address);
+					return errorResult(new Error(`Report text exceeds ${MAX_REPORT_TEXT_CHARS} characters; retry with a concise summary.`));
+				}
+				if (params.data !== undefined) {
+					let encoded: string;
+					try {
+						encoded = JSON.stringify(params.data);
+					} catch {
+						if (final) port.cancelFinalReport(address);
+						return errorResult(new Error("Report data must be JSON-serializable."));
+					}
+					if (Buffer.byteLength(encoded, "utf8") > MAX_REPORT_DATA_BYTES) {
+						if (final) port.cancelFinalReport(address);
+						return errorResult(new Error(`Report data exceeds ${MAX_REPORT_DATA_BYTES} bytes; retry with a smaller structured result.`));
+					}
+				}
 				const outcome = await port.sendFromAgent({
 					from: address,
 					to: "main",
 					type: "report",
 					text: params.text,
 					...(params.data !== undefined ? { data: params.data } : {}),
+					final,
 					...(params.correlationId !== undefined ? { correlationId: params.correlationId } : {}),
 				});
 				if (outcome.disposition === "bounced") {
+					if (final) port.cancelFinalReport(address);
 					return errorResult(new Error(`Not delivered: ${outcome.bounceReason ?? "bounced"}`));
 				}
-				if (params.final === true) port.noteFinalReport(address);
-				return jsonResult({ reported: true, final: params.final === true });
+				return jsonResult({ reported: true, final });
 			} catch (error) {
+				if (final) port.cancelFinalReport(address);
 				return errorResult(error);
 			}
 		},

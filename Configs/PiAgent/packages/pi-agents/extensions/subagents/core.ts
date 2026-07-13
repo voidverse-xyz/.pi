@@ -35,22 +35,21 @@
  * settings-controlled retention).
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { collectResultNote, validateAgainstSchema } from "./mail/collect.ts";
 import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
-import type { Envelope } from "./mail/envelope.ts";
+import { ENVELOPE_ID_RE, type Envelope } from "./mail/envelope.ts";
 import {
-	beginDelivery,
-	beginHostDelivery,
+	claimPendingForHost,
 	type HostDeliveryReconcile,
 	lookupSentQuestion,
-	markDone,
 	peekCollectRequest,
 	pendingCount,
 	readPending,
 	reconcileHostDelivery,
+	requeueHostClaim,
 	takeCollectRequest,
 } from "./mail/mailbox.ts";
 import { AutonomyBudget } from "./rails/autonomy.ts";
@@ -58,6 +57,8 @@ import { InProcessRuntime } from "./runtime/in-process.ts";
 import type { EscalationRecord } from "./sandbox/escalation.ts";
 import type {
 	AgentDetail,
+	AwaitOptions,
+	AwaitResult,
 	CollectResult,
 	InterruptResult,
 	RetireResult,
@@ -71,7 +72,8 @@ import type {
 } from "./runtime/types.ts";
 import { gcSweep, type GcSweepResult } from "./store/archive.ts";
 import { createLayout, type Layout } from "./store/layout.ts";
-import { listAgents, readRegistry } from "./store/registry.ts";
+import { claimHostScope, ensureScopeManifest, type HostScopeLease } from "./store/session-scope.ts";
+import { atomicWriteJson, getAgent, listAgents, readRegistry } from "./store/registry.ts";
 import { isValidTeamName } from "./store/teams.ts";
 import {
 	applySettingsInto,
@@ -84,14 +86,28 @@ import { parseTypeFile } from "./typedefs/parse.ts";
 // Re-exported so tools/tui/harnesses keep one import surface (D23 rule 1).
 export { defaultSettings, type SubagentsSettings } from "./store/settings.ts";
 
-/** Read the durable abort latch without instantiating the subagent runtime. */
-export function mainAutoWakeBlockedFor(cwd: string): boolean {
-	return existsSync(createLayout(cwd).mainAutoWakeLatchFile);
+export interface ScopeLocator {
+	sessionId: string;
+	home?: string;
+	stateContainerRoot?: string;
 }
 
-/** Persist/clear the abort latch so `/reload` and process restart cannot bypass it. */
-export function setMainAutoWakeBlockedFor(cwd: string, blocked: boolean): void {
-	const file = createLayout(cwd).mainAutoWakeLatchFile;
+function layoutFor(cwd: string, locator: ScopeLocator): Layout {
+	return createLayout(cwd, {
+		sessionId: locator.sessionId,
+		...(locator.home !== undefined ? { home: locator.home } : {}),
+		...(locator.stateContainerRoot !== undefined ? { stateContainerRoot: locator.stateContainerRoot } : {}),
+	});
+}
+
+/** Read the durable abort latch for one owning main session. */
+export function mainAutoWakeBlockedFor(cwd: string, locator: ScopeLocator): boolean {
+	return existsSync(layoutFor(cwd, locator).mainAutoWakeLatchFile);
+}
+
+/** Persist/clear the abort latch for one owning main session. */
+export function setMainAutoWakeBlockedFor(cwd: string, locator: ScopeLocator, blocked: boolean): void {
+	const file = layoutFor(cwd, locator).mainAutoWakeLatchFile;
 	if (!blocked) {
 		rmSync(file, { force: true });
 		return;
@@ -110,9 +126,11 @@ export function setMainAutoWakeBlockedFor(cwd: string, blocked: boolean): void {
  */
 export const MAIN_MAIL_CUSTOM_TYPE = "subagent-mail";
 
-export interface CreateCoreOptions {
-	/** Project cwd (layout scope, D3). */
+export interface CreateCoreOptions extends ScopeLocator {
+	/** Project cwd; project resources stay shared while mutable state is session-owned. */
 	cwd: string;
+	/** Whether the host session has durable JSONL storage. Default true. */
+	persisted?: boolean;
 	/** Shared with the host session so subagents resolve the same models. */
 	modelRegistry?: ModelRegistry;
 	settingsManager?: SettingsManager;
@@ -184,6 +202,8 @@ export interface SubagentsCore {
 	interrupt(to: string): Promise<InterruptResult>;
 	retire(to: string): Promise<RetireResult>;
 	collect(to: string, schema: unknown): Promise<CollectResult>;
+	/** Cancellable join for an anchored final/collect report in main mail. */
+	awaitResult(options: AwaitOptions): Promise<AwaitResult>;
 	status(): Promise<RosterEntry[]>;
 	peek(address: string, tail?: number): Promise<AgentDetail | null>;
 	/** Merged type libraries (project wins), for spawn UX and errors (D6). */
@@ -245,39 +265,177 @@ export interface SubagentsCore {
 	dispose(): Promise<void>;
 }
 
-/**
- * Adopt a pre-digest (legacy) state root into the digest-suffixed root (finding
- * 6 compat). Before finding 6 our state lived at <projectSessionDir>/subagents;
- * now it lives at <projectSessionDir>/subagents-<cwd-digest> so slug-colliding
- * projects can't share a root. A real user's existing state is under the legacy
- * dir — orphaning it would silently lose every subagent, its memory and mail.
- *
- * Rule: if the new digest root does NOT yet exist but the legacy dir DOES, this
- * cwd is the sole (or first) occupant of that slug, so rename legacy → digest
- * root and the user keeps everything. If the digest root already exists we are
- * past migration (no-op). If neither exists it's a fresh project (no-op). A
- * genuine slug collision (two live projects) resolves cleanly: whichever runs
- * first adopts the legacy dir under ITS digest; the other starts empty under a
- * different digest and never sees the first's data. Best-effort and idempotent
- * — any fs race leaves the legacy dir in place to be retried next run.
- */
-export function migrateStateRootIfNeeded(layout: Layout): void {
-	if (layout.subagentsRoot === layout.legacySubagentsRoot) return; // digest disabled
-	if (existsSync(layout.subagentsRoot)) return; // already migrated / fresh digest root
-	if (!existsSync(layout.legacySubagentsRoot)) return; // fresh project, nothing to adopt
+function readAutonomySnapshot(file: string): {
+	trippedBy: "turns" | "tokens" | null;
+	turnsUsed: number;
+	tokensUsed: number;
+} | undefined {
 	try {
-		renameSync(layout.legacySubagentsRoot, layout.subagentsRoot);
+		const value = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+		if (
+			(value.trippedBy === null || value.trippedBy === "turns" || value.trippedBy === "tokens") &&
+			Number.isInteger(value.turnsUsed) && (value.turnsUsed as number) >= 0 &&
+			typeof value.tokensUsed === "number" && Number.isFinite(value.tokensUsed) && value.tokensUsed >= 0
+		) {
+			return {
+				trippedBy: value.trippedBy,
+				turnsUsed: value.turnsUsed as number,
+				tokensUsed: value.tokensUsed,
+			};
+		}
 	} catch {
-		// Cross-device or race — leave legacy in place; a later run retries. State
-		// is never lost, only unmigrated.
+		// Missing/corrupt snapshots start with a fresh pool.
+	}
+	return undefined;
+}
+
+const AWAIT_DELIVERY_MARKER = "subagent_await" as const;
+
+function awaitEnvelopeView(envelope: Envelope) {
+	return {
+		id: envelope.id,
+		type: envelope.type as "question" | "escalation" | "error" | "report",
+		text: envelope.payload.text.length > 16_000
+			? `${envelope.payload.text.slice(0, 16_000)}\n… [truncated for tool context]`
+			: envelope.payload.text,
+		correlationId: envelope.correlationId,
+		...(envelope.payload.data !== undefined ? { data: envelope.payload.data } : {}),
+		...(envelope.payload.final !== undefined ? { final: envelope.payload.final } : {}),
+	};
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return Promise.reject(new Error("subagent_await cancelled"));
+	return new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(done, ms);
+		const onAbort = (): void => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+			reject(new Error("subagent_await cancelled"));
+		};
+		function done(): void {
+			signal?.removeEventListener("abort", onAbort);
+			resolve();
+		}
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+async function awaitMainResult(
+	layout: Layout,
+	options: AwaitOptions,
+): Promise<AwaitResult> {
+	if (!ENVELOPE_ID_RE.test(options.anchorId)) throw new Error(`Malformed await anchorId ${JSON.stringify(options.anchorId)}.`);
+	const timeoutSeconds = options.timeoutSeconds ?? 300;
+	if (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 900) {
+		throw new Error("timeoutSeconds must be between 1 and 900.");
+	}
+	const deadline = Date.now() + timeoutSeconds * 1000;
+	const mailbox = layout.mainMailboxDir;
+
+	for (;;) {
+		if (options.signal?.aborted) throw new Error("subagent_await cancelled");
+		const relevant = readPending(mailbox)
+			.filter((pending) => pending.envelope.from === options.to && pending.envelope.id > options.anchorId)
+			.sort((a, b) => a.envelope.id.localeCompare(b.envelope.id));
+		const terminalIndex = relevant.findIndex(({ envelope }) => {
+			if (envelope.type === "question" || envelope.type === "escalation" || envelope.type === "error") return true;
+			if (envelope.type !== "report") return false;
+			return options.waitFor === "collect"
+				? envelope.correlationId === options.anchorId
+				: envelope.payload.final === true && envelope.correlationId === options.anchorId;
+		});
+		if (terminalIndex >= 0) {
+			const throughTerminal = relevant.slice(0, terminalIndex + 1);
+			const wantedIds = new Set(
+				throughTerminal
+					.filter(
+						({ envelope }, index) =>
+							index === terminalIndex ||
+							(envelope.type === "report" &&
+								envelope.payload.final !== true &&
+								envelope.correlationId === options.anchorId),
+					)
+					.map(({ envelope }) => envelope.id),
+			);
+			const claimed = claimPendingForHost(
+				mailbox,
+				(pending) => wantedIds.has(pending.envelope.id),
+				options.sessionFile,
+				AWAIT_DELIVERY_MARKER,
+			);
+			const terminalId = relevant[terminalIndex]!.envelope.id;
+			const terminal = claimed.find(({ envelope }) => envelope.id === terminalId)?.envelope;
+			if (!terminal) continue; // a concurrent claim won; re-scan durable state
+			const progress = claimed
+				.map(({ envelope }) => envelope)
+				.filter((envelope) => envelope.type === "report" && envelope.id !== terminal.id)
+				.map(awaitEnvelopeView);
+			if (terminal.type === "question" || terminal.type === "escalation" || terminal.type === "error") {
+				return {
+					status: "attention",
+					to: options.to,
+					anchorId: options.anchorId,
+					deliveryMarker: AWAIT_DELIVERY_MARKER,
+					attention: awaitEnvelopeView(terminal),
+					...(progress.length > 0 ? { progress } : {}),
+				};
+			}
+			let validation: { valid: boolean; errors: string[] } | undefined;
+			if (options.waitFor === "collect") {
+				const schema = peekCollectRequest(mailbox, options.anchorId, options.to);
+				if (schema !== undefined) validation = validateAgainstSchema(terminal.payload.data, schema);
+			}
+			// Non-persisted host delivery finalized at claim time, so this is the
+			// collect-index finalization point for that path.
+			if (!options.sessionFile && options.waitFor === "collect") {
+				takeCollectRequest(mailbox, options.anchorId, options.to);
+			}
+			return {
+				status: "completed",
+				to: options.to,
+				anchorId: options.anchorId,
+				deliveryMarker: AWAIT_DELIVERY_MARKER,
+				report: awaitEnvelopeView(terminal),
+				...(progress.length > 0 ? { progress } : {}),
+				...(validation !== undefined ? { validation } : {}),
+			};
+		}
+
+		if (!getAgent(readRegistry(layout.registryFile), options.to)) {
+			return {
+				status: "retired",
+				to: options.to,
+				anchorId: options.anchorId,
+				deliveryMarker: AWAIT_DELIVERY_MARKER,
+			};
+		}
+		if (Date.now() >= deadline) {
+			return {
+				status: "timeout",
+				to: options.to,
+				anchorId: options.anchorId,
+				deliveryMarker: AWAIT_DELIVERY_MARKER,
+			};
+		}
+		await abortableDelay(Math.min(200, Math.max(1, deadline - Date.now())), options.signal);
 	}
 }
 
 export function createCore(options: CreateCoreOptions): SubagentsCore {
-	const layout = createLayout(options.cwd, options.home !== undefined ? { home: options.home } : {});
-	migrateStateRootIfNeeded(layout);
-	// Phase 7 settings source: files first, programmatic overrides win.
+	const layout = layoutFor(options.cwd, options);
+	const persisted = options.persisted ?? true;
+	// Project settings are shared/read-only and can be loaded before claiming
+	// the mutable owner scope. This avoids stranding a lease on read failure.
 	const loaded = loadSettings(layout);
+	const hostLease: HostScopeLease = claimHostScope(layout);
+	try {
+		ensureScopeManifest(layout, { persisted });
+	} catch (error) {
+		hostLease.release();
+		throw error;
+	}
+	// Phase 7 settings source: files first, programmatic overrides win.
 	const settings: SubagentsSettings = { ...loaded.settings, ...options.settings };
 	if (options.maxConcurrent !== undefined) settings.maxConcurrent = options.maxConcurrent;
 	const settingsWarnings: string[] = [...loaded.warnings];
@@ -285,20 +443,29 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 		...options.settings,
 		...(options.maxConcurrent !== undefined ? { maxConcurrent: options.maxConcurrent } : {}),
 	};
-	// The one shared D21 pool — limits read live off the settings object.
-	const autonomy = new AutonomyBudget(settings);
-	const runtime: SubagentRuntime = new InProcessRuntime({
-		layout,
-		...(options.modelRegistry ? { modelRegistry: options.modelRegistry } : {}),
-		...(options.settingsManager ? { settingsManager: options.settingsManager } : {}),
-		maxConcurrent: settings.maxConcurrent,
-		maxHops: () => settings.maxHops,
-		autonomy,
-		// D15 ceiling defaults read LIVE off the settings object (like the
-		// autonomy limits) — a settings edit applies at the next turn.
-		ceilings: settings,
-		...(options.onMainMail ? { onMainMail: options.onMainMail } : {}),
+	// The one session-owned D21 pool — persisted so reload/resume cannot refill it.
+	const autonomy = new AutonomyBudget(settings, readAutonomySnapshot(layout.autonomyFile), (snapshot) => {
+		atomicWriteJson(layout.autonomyFile, { version: 1, ...snapshot, updatedAt: new Date().toISOString() });
 	});
+	let runtime: SubagentRuntime;
+	try {
+		runtime = new InProcessRuntime({
+			layout,
+			...(options.modelRegistry ? { modelRegistry: options.modelRegistry } : {}),
+			...(options.settingsManager ? { settingsManager: options.settingsManager } : {}),
+			maxConcurrent: settings.maxConcurrent,
+			persistentHost: persisted,
+			maxHops: () => settings.maxHops,
+			autonomy,
+			// D15 ceiling defaults read LIVE off the settings object (like the
+			// autonomy limits) — a settings edit applies at the next turn.
+			ceilings: settings,
+			...(options.onMainMail ? { onMainMail: options.onMainMail } : {}),
+		});
+	} catch (error) {
+		hostLease.release();
+		throw error;
+	}
 	const mainMailbox = layout.mainMailboxDir;
 
 	return {
@@ -336,6 +503,7 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 		interrupt: (to) => runtime.interrupt(to),
 		retire: (to) => runtime.retire(to),
 		collect: (to, schema) => runtime.collect(to, schema),
+		awaitResult: (awaitOptions) => awaitMainResult(layout, awaitOptions),
 		status: () => runtime.status(),
 		peek: (address, tail) => runtime.peek(address, tail),
 		availableTypes: () =>
@@ -389,10 +557,14 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 				marker: MAIN_MAIL_CUSTOM_TYPE,
 				requeueUndelivered: false,
 			});
-			const pending = readPending(mainMailbox);
+			const pending = claimPendingForHost(
+				mainMailbox,
+				() => true,
+				sessionFile,
+				MAIN_MAIL_CUSTOM_TYPE,
+			);
 			if (pending.length === 0) return null;
 			const ids = pending.map((p) => p.envelope.id);
-			beginDelivery(mainMailbox, ids);
 
 			const items: DigestItem[] = pending.map((p) => {
 				// Collect-result validation on arrival (03-tool-surface): a
@@ -416,27 +588,21 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 				};
 			});
 
-			const digest = composeWakeDigest({
-				items,
-				questionLookup: (correlationId, from) => lookupSentQuestion(mainMailbox, correlationId, from),
-			});
-			// The host owns the main session JSONL — there is no "after durable
-			// append" hook. Instead of finalizing here (the old, lossy
-			// DEVIATION), park the envelopes in .delivering/ with the target
-			// session file on record; reconciliation (above / session_start)
-			// finalizes them once the injected digest — which embeds every
-			// envelope id — is verifiably in that JSONL, and requeues them
-			// after a crash that lost the injection. Without a persisted
-			// session file nothing could ever verify delivery, so finalize at
-			// compose time as before.
-			if (typeof sessionFile === "string" && sessionFile.length > 0) {
-				beginHostDelivery(mainMailbox, ids, sessionFile);
-			} else {
-				// No persisted session file — finalize at compose time. This IS the
-				// finalize point for this path, so retire any collect requests these
-				// reports fulfilled now (finding 8): their verdict was just composed
-				// into a digest that nothing durable could ever verify.
-				markDone(mainMailbox, ids);
+			let digest: string;
+			try {
+				digest = composeWakeDigest({
+					items,
+					questionLookup: (correlationId, from) => lookupSentQuestion(mainMailbox, correlationId, from),
+				});
+			} catch (error) {
+				// Persisted claims were parked before rendering. Put them back if a
+				// formatter unexpectedly fails so no mail is stranded in-flight.
+				if (typeof sessionFile === "string" && sessionFile.length > 0) requeueHostClaim(mainMailbox, ids);
+				throw error;
+			}
+			if (!(typeof sessionFile === "string" && sessionFile.length > 0)) {
+				// No persisted session file — claimPendingForHost finalized at claim
+				// time. Retire collect records after their verdict was composed.
 				for (const p of pending) {
 					if (p.envelope.type === "report" && p.envelope.correlationId !== null) {
 						takeCollectRequest(mainMailbox, p.envelope.correlationId, p.envelope.from);
@@ -446,7 +612,13 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 			return digest;
 		},
 
-		dispose: () => runtime.dispose(),
+		dispose: async () => {
+			try {
+				await runtime.dispose();
+			} finally {
+				hostLease.release();
+			}
+		},
 	};
 }
 
@@ -460,9 +632,8 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
  * all under the settings-controlled archiveGcDays window (default 7).
  * index.ts fires this from session_start as cheap, unref'd async work.
  */
-export function runGcSweepFor(cwd: string, home?: string): GcSweepResult {
-	const layout = createLayout(cwd, home !== undefined ? { home } : {});
-	migrateStateRootIfNeeded(layout);
+export function runGcSweepFor(cwd: string, locator: ScopeLocator): GcSweepResult {
+	const layout = layoutFor(cwd, locator);
 	const { settings } = loadSettings(layout);
 	return gcSweep(layout, { days: settings.archiveGcDays });
 }
@@ -477,9 +648,8 @@ export function runGcSweepFor(cwd: string, home?: string): GcSweepResult {
  * verified ones finalize to .done/ (exactly once). Idempotent and cheap
  * (one directory scan; session files read once each).
  */
-export function reconcileMainMailFor(cwd: string, home?: string): HostDeliveryReconcile {
-	const layout = createLayout(cwd, home !== undefined ? { home } : {});
-	migrateStateRootIfNeeded(layout);
+export function reconcileMainMailFor(cwd: string, locator: ScopeLocator): HostDeliveryReconcile {
+	const layout = layoutFor(cwd, locator);
 	return reconcileHostDelivery(layout.mainMailboxDir, {
 		marker: MAIN_MAIL_CUSTOM_TYPE,
 		requeueUndelivered: true,

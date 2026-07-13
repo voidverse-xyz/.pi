@@ -24,10 +24,10 @@ system, regardless of direction (main→sub, sub→sub, sub→main).
 | id | unique, sortable (ulid) — doubles as the mailbox filename |
 | from / to | agent address `<type>/<id>`, or the specials `main` and `user` |
 | type | see table below |
-| correlationId | links answer→question (and future ack/reply chains); null otherwise |
+| correlationId | links answer→question, final report→task assignment, or collect report→request; null otherwise |
 | team | the team the send was authorized under (sub→sub only; null for main/user traffic) |
 | hops | causal-chain depth (D21): parent.hops + 1 when a message-triggered turn sends a message; fresh work = 0. Over maxHops (default 8) → bounces: "report to the main agent instead" |
-| payload | type-specific; always has a human-readable `text`; `collect` results add `data` (schema-conforming) |
+| payload | type-specific; always has human-readable `text`; collect results add `data`; final reports persist `final:true` (D26) |
 | sentAt | runtime-stamped, not sender-claimed |
 
 ## Types
@@ -37,7 +37,7 @@ system, regardless of direction (main→sub, sub→sub, sub→main).
 | message | any | plain communication / task instruction |
 | question | sub→main, sub→sub | needs an answer to proceed; asker goes dormant (non-blocking, D14) |
 | answer | main→sub, sub→sub | reply; correlationId REQUIRED |
-| report | sub→main | progress or final result (final report auto-retires a oneshot, D13) |
+| report | sub→main | progress or final result (`payload.final:true`; final auto-retires a oneshot, D13/D26) |
 | escalation | sub→main→user | tool call blocked by type policy; only a HUMAN may approve (D10) |
 | error | sub→main | crashed, budget exhausted, stuck |
 
@@ -53,13 +53,16 @@ system, regardless of direction (main→sub, sub→sub, sub→main).
    answer is delivered with its original question quoted (correlationId lookup),
    followed by all other mail queued during dormancy, ordered by id (D14).
 6. Mailbox on disk: one file per envelope under the recipient's dir
-   (`subagents/<type>/<id>/mailbox/<msg-id>.json`); processed mail moves to
-   `mailbox/.done/` (kept for audit, GC'd with the same N-day policy as .archive).
-   Main agent's mailbox: `subagents/.main/mailbox/`.
+   (`owners/<main-session-id>/<type>/<id>/mailbox/<msg-id>.json`); processed mail
+   moves to `mailbox/.done/` (kept for audit, GC'd with the same N-day policy as
+   .archive). Main mailbox is under that same owning session scope.
 
 ## Ordering & at-least-once
 
 Mailbox files are processed in id (ulid) order. The runtime deletes/moves an
 envelope only after the receiving turn has been durably appended to the session
 JSONL — a crash between delivery and append re-delivers (at-least-once; the
-digest labels re-delivered mail as such).
+digest labels re-delivered mail as such). Main digest/await delivery atomically
+claims files into `.delivering/` before rendering and finalizes only after the
+owning main-session JSONL contains both envelope id and delivery marker. A crash
+before append requeues the claim; timeout/cancelled await consumes nothing (D26).

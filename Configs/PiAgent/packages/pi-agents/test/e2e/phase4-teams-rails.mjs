@@ -282,7 +282,7 @@ await test("rosterViewOf + diffRosterViews produce deterministic change lines", 
 // World A: teams + hops + roster lines (no autonomy — unlimited)
 // ---------------------------------------------------------------------------
 const projectA = makeProject("project-a");
-const layoutA = createLayout(projectA, { home });
+const layoutA = createLayout(projectA, { home, sessionId: "test-session" });
 const settingsManager = piSdk.SettingsManager.create(projectA, join(home, ".pi", "agent"));
 const mainMailA = [];
 const runtimeA = new InProcessRuntime({
@@ -520,7 +520,7 @@ console.log("(c) autonomy rail (D21):");
 await test("tiny turn budget: 3 turns run, system pauses, mail queues, status + queued count exposed", async () => {
 	const projectB = makeProject("project-b");
 	const core = createCore({
-		cwd: projectB, home, modelRegistry,
+		cwd: projectB, home, sessionId: "test-session", modelRegistry,
 		settings: { autonomousTurns: 3, autonomousTokens: 1e12 },
 	});
 	// settings consolidation: doc defaults fill the rest
@@ -577,7 +577,7 @@ await test("tiny turn budget: 3 turns run, system pauses, mail queues, status + 
 await test("tiny token budget: first turn's token delta trips the pause; resume() drains", async () => {
 	const projectC = makeProject("project-c");
 	const core = createCore({
-		cwd: projectC, home, modelRegistry,
+		cwd: projectC, home, sessionId: "test-session", modelRegistry,
 		settings: { autonomousTurns: 1e9, autonomousTokens: 10 },
 	});
 	const events = [];
@@ -623,7 +623,7 @@ await test("tiny token budget: first turn's token delta trips the pause; resume(
 console.log("(c2) paused pool blocks a queued waiter post-slot (Finding 2):");
 await test("only one of two simultaneous turns runs; the waiter bails paused (no double-charge)", async () => {
 	const projectF = makeProject("project-f2");
-	const layoutF = createLayout(projectF, { home });
+	const layoutF = createLayout(projectF, { home, sessionId: "test-session" });
 	const autonomy = new autonomyMod.AutonomyBudget({ autonomousTurns: 1, autonomousTokens: 1e12 });
 	// maxConcurrent=1 forces B to wait for A's slot — A's noteTurnStart trips the
 	// pause while B is queued, exactly the race Finding 2 closes.

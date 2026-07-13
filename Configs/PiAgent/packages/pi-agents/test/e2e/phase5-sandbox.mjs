@@ -319,7 +319,7 @@ await test("M3: D21 settings files (rails config) are implicit denials — DENIE
 	assert.equal(paths.checkWrite("/proj/.pi/subagents-lookalike.json", policy).verdict, "allowed");
 	// the layout invariant the denial derivation relies on
 	const { createLayout: mkLayout, settingsFileSiblingOf } = await jiti.import(join(EXT, "store/layout.ts"));
-	const l = mkLayout("/proj", { home: "/home/u" });
+	const l = mkLayout("/proj", { home: "/home/u", sessionId: "test-session" });
 	assert.equal(l.projectSettingsFile, settingsFileSiblingOf(l.projectTypeDefsDir));
 	assert.equal(l.globalSettingsFile, settingsFileSiblingOf(l.globalTypeDefsDir));
 	assert.equal(l.projectSettingsFile, "/proj/.pi/subagents.json");
@@ -800,7 +800,7 @@ await test("(f) ceilings wiring: frontmatter beats settings default; compactions
 // ---------------------------------------------------------------------------
 const projectA = makeProject("project-a");
 mkdirSync(join(projectA, "allowed"), { recursive: true });
-const layoutA = createLayout(projectA, { home });
+const layoutA = createLayout(projectA, { home, sessionId: "test-session" });
 const mainMailA = [];
 const runtimeA = new InProcessRuntime({
 	layout: layoutA, modelRegistry, maxConcurrent: 1,
@@ -1009,6 +1009,13 @@ await test("write targeting the registry → DENIED (no escalation); bash on a t
 	assert.equal(eventsA.filter((e) => e.type === "escalation-created").length, 3, "no new escalation events");
 	const denials = llmCalls.filter((c) => c.agent === "scoped/main" && c.lastJson.includes("system state"));
 	assert.ok(denials.length >= 2, "both the write and the bash touch were denied with the system-state reason");
+	const scopedDef = runtimeA._resolveType("scoped").def;
+	const runtimePolicy = runtimeA._policyFor(scopedDef);
+	assert.equal(
+		paths.checkWrite(`${layoutA.legacyDigestSubagentsRoot}.legacy-backup-test`, runtimePolicy).verdict,
+		"denied",
+		"inactive adoption backups are inside the hard system denial boundary",
+	);
 });
 
 await runtimeA.dispose();
@@ -1018,7 +1025,7 @@ await runtimeA.dispose();
 // ---------------------------------------------------------------------------
 console.log("(e) ceilings + oneshot auto-retire:");
 const projectB = makeProject("project-b");
-const coreB = createCore({ cwd: projectB, home, modelRegistry });
+const coreB = createCore({ cwd: projectB, home, sessionId: "test-session", modelRegistry });
 const layoutB = coreB.layout;
 const eventsB = [];
 coreB.runtime.onEvent((e) => eventsB.push(e));
@@ -1095,7 +1102,7 @@ await coreB.dispose();
 // ---------------------------------------------------------------------------
 await test("settings default ceiling applies when frontmatter is silent; core.escalations surface exists", async () => {
 	const projectC = makeProject("project-c");
-	const coreC = createCore({ cwd: projectC, home, modelRegistry, settings: { maxTokensTotal: 12 } });
+	const coreC = createCore({ cwd: projectC, home, sessionId: "test-session", modelRegistry, settings: { maxTokensTotal: 12 } });
 	assert.deepEqual(coreC.escalations.pending(), []);
 	assert.equal(coreC.escalations.approve("esc_nope"), false);
 	assert.equal(coreC.escalations.deny("esc_nope", "x"), false);

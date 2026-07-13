@@ -2,7 +2,7 @@
  * Subagents — persistent subagents with durable memory and mailbox
  * communication (design: ~/Agents/Documents/Configs/Subagent-Docs/).
  *
- * Extension entry. Phase 3 registers the full seven-tool surface
+ * Extension entry. Registers the full eight-tool surface
  * (03-tool-surface.md): spawn, send, steer, status, collect, interrupt,
  * retire — and wires the MAIN agent's mailbox into the host session:
  *
@@ -23,16 +23,19 @@
  * full-screen session viewer (alt+j quick-switch), and the escalation modal
  * are wired here; all of them talk to the core facade only.
  *
- * Everything session-scoped (layout, store, runtime, core) is instantiated
- * lazily on first tool call, from the tool-call context — so the extension
- * binds to whatever cwd/model registry the host session actually has — and
- * torn down on session end/shutdown (subagents only run while a main session
- * is open; mail queues on disk otherwise, D7).
+ * Mutable state is keyed by the host's stable main-session id (D25). The core
+ * is acquired at session_start so its host-scope lease excludes a second
+ * consumer before reconciliation/GC; it is torn down on session end/shutdown.
+ * Subagents run only while their owning main session is open; mail queues on
+ * disk otherwise (D7).
  *
  * Install as a package: packages/pi-agents/extensions/subagents/index.ts
  * Reload: /reload
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createCore,
@@ -41,9 +44,18 @@ import {
 	reconcileMainMailFor,
 	runGcSweepFor,
 	setMainAutoWakeBlockedFor,
+	type ScopeLocator,
 	type SubagentsCore,
 } from "./core.ts";
+import { createLayout } from "./store/layout.ts";
 import {
+	adoptLegacyState,
+	legacyStateRoots,
+	recoverInterruptedAdoption,
+	rollbackLegacyAdoption,
+} from "./store/session-scope.ts";
+import {
+	createAwaitTool,
 	createCollectTool,
 	createInterruptTool,
 	createRetireTool,
@@ -66,6 +78,7 @@ const STATUS_KEY = "subagents";
 
 export default function (pi: ExtensionAPI) {
 	let core: SubagentsCore | undefined;
+	let activeScope: (ScopeLocator & { persisted: boolean; ephemeralRoot?: string }) | undefined;
 	/** Host-session streaming state used to defer mail until a settled boundary. */
 	let mainBusy = false;
 	/** Durable abort latch: only interactive/RPC user input re-enables wakeups. */
@@ -92,11 +105,22 @@ export default function (pi: ExtensionAPI) {
 	/** Last settings warning surfaced to the user — de-dupes the notify (Finding 12). */
 	let lastSettingsWarning = "";
 
+	const scopeFor = (ctx: ExtensionContext): ScopeLocator & { persisted: boolean } => {
+		const sessionId = ctx.sessionManager.getSessionId();
+		const persisted = ctx.sessionManager.getSessionFile() !== undefined;
+		if (activeScope?.sessionId === sessionId) return activeScope;
+		return { sessionId, persisted };
+	};
+
 	const getCore = (ctx: ExtensionContext): SubagentsCore => {
 		if (!core) {
-			autoWakeBlockedByAbort = mainAutoWakeBlockedFor(ctx.cwd);
+			const scope = scopeFor(ctx);
+			autoWakeBlockedByAbort = mainAutoWakeBlockedFor(ctx.cwd, scope);
 			core = createCore({
 				cwd: ctx.cwd,
+				sessionId: scope.sessionId,
+				persisted: scope.persisted,
+				...(scope.stateContainerRoot !== undefined ? { stateContainerRoot: scope.stateContainerRoot } : {}),
 				modelRegistry: ctx.modelRegistry,
 				onMainMail: (_envelope) => {
 					// Every envelope type wakes an idle main agent unless the user has
@@ -302,16 +326,23 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.notify("Subagent autonomy pool refilled — queued agent mail is draining.", "info");
 	};
 
-	// /agents [<type>/<id> | resume] — picker, jump to a viewer, or refill
+	// /agents [<type>/<id> | resume | adopt-legacy | rollback-legacy] — picker, viewer,
+	// autonomy refill, or human-only cwd-wide state adoption.
 	// the D21 pool (Phase 7; the paused status names this subcommand).
 	pi.registerCommand("agents", {
 		description:
-			"Agent roster picker; /agents <type>/<id> jumps to that session; /agents resume refills the autonomy pool",
+			"Session-owned agent roster; jump to an agent, resume autonomy, or adopt/rollback legacy cwd-wide state",
 		getArgumentCompletions: async (prefix) => {
 			const trimmed = prefix.trim();
 			const items: Array<{ value: string; label: string }> = [];
 			if ("resume".startsWith(trimmed) && core?.autonomy.paused) {
 				items.push({ value: "resume", label: "resume — refill the autonomy pool, drain queued mail" });
+			}
+			if ("adopt-legacy".startsWith(trimmed)) {
+				items.push({ value: "adopt-legacy", label: "adopt-legacy — assign old cwd-wide state to this session" });
+			}
+			if ("rollback-legacy".startsWith(trimmed)) {
+				items.push({ value: "rollback-legacy", label: "rollback-legacy — restore an unchanged adoption backup" });
 			}
 			if (!core) return items.length > 0 ? items : null;
 			try {
@@ -332,6 +363,64 @@ export default function (pi: ExtensionAPI) {
 			uiCtx = ctx;
 			if (args.trim() === "resume") {
 				resumeAutonomy(ctx);
+				return;
+			}
+			if (args.trim() === "adopt-legacy") {
+				const scope = scopeFor(ctx);
+				if (!scope.persisted) {
+					ctx.ui.notify("Legacy state can be adopted only into a persisted Pi session.", "error");
+					return;
+				}
+				const layout = createLayout(ctx.cwd, scope);
+				const roots = legacyStateRoots(layout);
+				if (roots.length === 0) {
+					ctx.ui.notify("No legacy cwd-wide subagent state was found.", "info");
+					return;
+				}
+				const confirmed = await ctx.ui.confirm(
+					"Adopt legacy subagent state?",
+					"This assigns the old cwd-wide registry, agents, teams, and mail to this Pi session only. Close other Pi processes in this project first.",
+				);
+				if (!confirmed) return;
+				await releaseCore();
+				try {
+					const result = adoptLegacyState(layout);
+					ctx.ui.notify(`Adopted ${result.files} files into this session; inactive backup retained.`, "info");
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				} finally {
+					try {
+						getCore(ctx);
+					} catch (error) {
+						ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+					}
+				}
+				return;
+			}
+			if (args.trim() === "rollback-legacy") {
+				const scope = scopeFor(ctx);
+				if (!scope.persisted) {
+					ctx.ui.notify("Legacy rollback requires a persisted Pi session.", "error");
+					return;
+				}
+				const confirmed = await ctx.ui.confirm(
+					"Rollback legacy adoption?",
+					"This succeeds only if the adopted scope is unchanged. It removes this session's scoped copy and restores the inactive cwd-wide backup.",
+				);
+				if (!confirmed) return;
+				await releaseCore();
+				try {
+					const result = rollbackLegacyAdoption(createLayout(ctx.cwd, scope));
+					ctx.ui.notify(`Restored legacy state at ${result.restored}. This session now has an empty scoped roster.`, "info");
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				} finally {
+					try {
+						getCore(ctx);
+					} catch (error) {
+						ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+					}
+				}
 				return;
 			}
 			if (ctx.mode !== "tui") {
@@ -405,12 +494,13 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	// The seven-tool surface (03-tool-surface.md).
+	// The eight-tool surface (03-tool-surface.md).
 	pi.registerTool(createSpawnTool(getCore));
 	pi.registerTool(createSendTool(getCore));
 	pi.registerTool(createSteerTool(getCore));
 	pi.registerTool(createStatusTool(getCore));
 	pi.registerTool(createCollectTool(getCore));
+	pi.registerTool(createAwaitTool(getCore));
 	pi.registerTool(createInterruptTool(getCore));
 	pi.registerTool(createRetireTool(getCore));
 
@@ -419,7 +509,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("input", async (event, ctx) => {
 		if (event.source !== "interactive" && event.source !== "rpc") return;
 		autoWakeBlockedByAbort = false;
-		setMainAutoWakeBlockedFor(ctx.cwd, false);
+		setMainAutoWakeBlockedFor(ctx.cwd, scopeFor(ctx), false);
 		// D21 agent budgets are user-attention rails too. Reset them here, where
 		// the source is known, never in before_agent_start (extension-generated
 		// sendUserMessage turns also fire that later hook).
@@ -465,7 +555,7 @@ export default function (pi: ExtensionAPI) {
 			.find((message) => message.role === "assistant") as { stopReason?: string } | undefined;
 		if (lastAssistant?.stopReason === "aborted") {
 			autoWakeBlockedByAbort = true;
-			setMainAutoWakeBlockedFor(ctx.cwd, true);
+			setMainAutoWakeBlockedFor(ctx.cwd, scopeFor(ctx), true);
 		}
 	});
 	// Turn boundary (D11): mail held during the host turn gets its wake now.
@@ -484,43 +574,94 @@ export default function (pi: ExtensionAPI) {
 	// New/resumed/forked session → fresh wiring on next tool call (cwd or
 	// registry may differ); shutdown → abort + release every live agent
 	// session. Registry/teams/JSONL/mailboxes persist on disk — that's the design.
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		mainBusy = false;
+		const previousScope = activeScope;
 		await releaseCore();
+		const sessionId = ctx.sessionManager.getSessionId();
+		const persisted = ctx.sessionManager.getSessionFile() !== undefined;
+		const reuseEphemeral =
+			!persisted &&
+			event.reason === "reload" &&
+			previousScope?.sessionId === sessionId &&
+			previousScope.ephemeralRoot !== undefined;
+		if (previousScope?.ephemeralRoot !== undefined && !reuseEphemeral) {
+			rmSync(previousScope.ephemeralRoot, { recursive: true, force: true });
+		}
+		const ephemeralRoot = reuseEphemeral
+			? previousScope!.ephemeralRoot
+			: !persisted
+				? mkdtempSync(join(tmpdir(), "pi-subagents-"))
+				: undefined;
+		activeScope = {
+			sessionId,
+			persisted,
+			...(ephemeralRoot !== undefined ? { stateContainerRoot: ephemeralRoot, ephemeralRoot } : {}),
+		};
 		uiCtx = ctx;
 		sessionMgr = ctx.sessionManager ?? sessionMgr;
-		// Main-mailbox crash recovery (at-least-once): settle .delivering/
-		// against the recorded session JSONLs BEFORE the widget reads unread
-		// counts. Verified digests finalize to .done/; injections a crashed
-		// process never appended are requeued as pending — re-composed into a
-		// fresh digest at the next drain (a re-delivered escalation surfaces
-		// again instead of silently stranding its subagent in `waiting`).
-		try {
-			reconcileMainMailFor(ctx.cwd);
-		} catch {
-			// Reconciliation must never break a session start.
+
+		let recoverySafe = true;
+		if (persisted) {
+			try {
+				recoverInterruptedAdoption(createLayout(ctx.cwd, activeScope));
+			} catch (error) {
+				recoverySafe = false;
+				if (ctx.hasUI) ctx.ui.notify(error instanceof Error ? error.message : String(error), "warning");
+			}
 		}
-		// TUI sessions get the ambient widget up front (it must show queued
-		// mail from PREVIOUS sessions before any tool call re-creates the
-		// core); headless modes stay fully lazy as before.
-		if (ctx.hasUI) installWidget(ctx);
-		// Existing and crash-requeued pending mail both wake immediately unless
-		// this extension instance is abort-latched. Headless sessions stay lazy
-		// until real user input creates the core.
+
+		try {
+			if (!recoverySafe) throw new Error("Subagent scope stayed closed because legacy-adoption recovery needs manual attention.");
+			getCore(ctx); // eagerly acquires the session host lease in every mode
+			reconcileMainMailFor(ctx.cwd, activeScope);
+		} catch (error) {
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					error instanceof Error ? error.message : "Could not open this session's subagent scope.",
+					"warning",
+				);
+			}
+		}
+
+		if (event.reason === "fork") {
+			pi.sendMessage({
+				customType: "subagent-scope-fork",
+				content:
+					"[subagent scope] This fork inherited conversation history but not the source session's subagents. Spawn new workers for this branch.",
+				display: true,
+			});
+		}
+
+		if (persisted) {
+			try {
+				const layout = createLayout(ctx.cwd, activeScope);
+				if (legacyStateRoots(layout).length > 0 && ctx.hasUI) {
+					ctx.ui.notify(
+						"Legacy cwd-wide subagent state is available but was not assigned. Use /agents adopt-legacy to adopt it into this session.",
+						"info",
+					);
+				}
+			} catch {
+				// Detection must never break startup.
+			}
+		}
+
+		if (ctx.hasUI && core) installWidget(ctx);
 		if (ctx.hasUI && core) {
 			const current = core;
 			if (current.settings.autoWake && !autoWakeBlockedByAbort && !mainBusy && current.mainHasPendingMail()) {
 				triggerWake();
 			}
 		}
-		// Phase 7 retention GC: archive funerals, processed .done/ mail, and
-		// resolved escalation records past archiveGcDays (default 7). Cheap
-		// directory scans, off the session-start path (unref'd — a short-lived
-		// headless run must never be held open for GC), errors swallowed.
+
 		const cwd = ctx.cwd;
+		const scope = activeScope;
+		const ownsScope = core !== undefined;
 		const timer = setTimeout(() => {
 			try {
-				runGcSweepFor(cwd);
+				if (!ownsScope) return;
+				runGcSweepFor(cwd, scope);
 			} catch {
 				// GC must never break a session.
 			}
@@ -531,5 +672,9 @@ export default function (pi: ExtensionAPI) {
 		uiCtx?.ui.setStatus(STATUS_KEY, undefined);
 		uiCtx = undefined;
 		await releaseCore();
+		if (activeScope?.ephemeralRoot !== undefined) {
+			rmSync(activeScope.ephemeralRoot, { recursive: true, force: true });
+		}
+		activeScope = undefined;
 	});
 }

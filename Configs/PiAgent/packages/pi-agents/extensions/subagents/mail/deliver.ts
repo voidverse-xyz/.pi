@@ -107,6 +107,8 @@ export interface DeliverySendOptions {
 	type: EnvelopeType;
 	text: string;
 	data?: unknown;
+	/** Persisted completion signal for report envelopes. */
+	final?: boolean;
 	correlationId?: string;
 	/** Accepted for API fidelity; see module header — never interrupts either way. */
 	when?: "now" | "after-turn";
@@ -202,12 +204,17 @@ export class Deliverer {
 			type: options.type,
 		});
 
+		if (options.final !== undefined && options.type !== "report") {
+			throw new Error("final is valid only for report envelopes.");
+		}
+
 		const draft = {
 			from: options.from,
 			to: options.to,
 			type: options.type,
 			text: options.text,
 			...(options.data !== undefined ? { data: options.data } : {}),
+			...(options.final !== undefined ? { final: options.final } : {}),
 			correlationId: options.correlationId ?? null,
 			hops,
 			...(options.now ? { now: options.now } : {}),

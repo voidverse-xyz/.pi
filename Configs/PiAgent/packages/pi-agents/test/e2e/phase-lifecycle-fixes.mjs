@@ -93,7 +93,7 @@ modelRegistry.registerProvider("mock", {
 	baseUrl: "http://mock.invalid", apiKey: "k", api: "mock-api", streamSimple: mockStream,
 	models: [{ id: "mock-1", name: "Mock", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 4096 }],
 });
-const layout = createLayout(project, { home });
+const layout = createLayout(project, { home, sessionId: "test-session" });
 const settingsManager = piSdk.SettingsManager.create(project, join(home, ".pi", "agent"));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const DAY_MS = 24 * 60 * 60 * 1000;

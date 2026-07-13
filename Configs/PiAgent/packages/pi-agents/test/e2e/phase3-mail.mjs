@@ -156,7 +156,7 @@ modelRegistry.registerProvider("mock", {
 // ---------------------------------------------------------------------------
 // Runtime under test
 // ---------------------------------------------------------------------------
-const layout = createLayout(project, { home });
+const layout = createLayout(project, { home, sessionId: "test-session" });
 const settingsManager = piSdk.SettingsManager.create(project, join(home, ".pi", "agent"));
 const mainMail = [];
 const runtime = new InProcessRuntime({
@@ -648,6 +648,7 @@ await test("oneshot final report → archived + teams scrubbed; report survives 
 	events.length = 0;
 	const res = await runtime.spawn({ type: "worker", lifetime: "oneshot", team: "duo", task: "ONESHOT_TASK: do one thing" });
 	assert.match(res.address, /^worker\/tmp-/);
+	assert.match(res.taskEnvelopeId, /^msg_/);
 	const retired = await waitFor((e) => e.type === "agent-retired" && e.address === res.address, "auto-retire");
 	// registry gone, address bounces, dir archived, teams scrubbed
 	assert.equal(readRegistry(layout.registryFile).agents[res.address], undefined);
@@ -660,6 +661,8 @@ await test("oneshot final report → archived + teams scrubbed; report survives 
 	const report = mainMail.find((e) => e.type === "report" && e.from === res.address);
 	assert.ok(report, "final report delivered to main");
 	assert.equal(report.payload.text, "FINAL_ONESHOT_RESULT");
+	assert.equal(report.payload.final, true, "final completion signal persists in the envelope");
+	assert.equal(report.correlationId, res.taskEnvelopeId, "final report correlates to its task await anchor");
 	const pending = mailbox.readPending(layout.mainMailboxDir);
 	assert.ok(pending.some((p) => p.envelope.id === report.id), "report file readable after the funeral");
 });
@@ -753,8 +756,8 @@ await test("all mail auto-wakes; abort latches wakeups off until real user input
 	};
 	assert.deepEqual(
 		[...registeredTools.keys()].sort(),
-		["subagent_collect", "subagent_interrupt", "subagent_retire", "subagent_send", "subagent_spawn", "subagent_status", "subagent_steer"],
-		"the full seven-tool surface is registered",
+		["subagent_await", "subagent_collect", "subagent_interrupt", "subagent_retire", "subagent_send", "subagent_spawn", "subagent_status", "subagent_steer"],
+		"the full eight-tool surface is registered",
 	);
 
 	const ctx = {
@@ -762,8 +765,12 @@ await test("all mail auto-wakes; abort latches wakeups off until real user input
 		modelRegistry,
 		model: modelRegistry.find("mock", "mock-1"),
 		isProjectTrusted: () => true,
+		sessionManager: {
+			getSessionId: () => "test-session-2",
+			getSessionFile: () => join(home, ".pi", "agent", "sessions", "host-test-session.jsonl"),
+		},
 	};
-	const layout2 = createLayout(project2, { home });
+	const layout2 = createLayout(project2, { home, sessionId: "test-session-2" });
 
 	// Subagent asks main a question via the ask tool.
 	scripts.push({
@@ -822,7 +829,7 @@ await test("all mail auto-wakes; abort latches wakeups off until real user input
 	const sendTool = registeredTools.get("subagent_send");
 	const answerRes = await sendTool.execute("t2", { to: "worker/main", text: "Use branch main-2. EXT_ANSWER", correlationId: corr }, undefined, undefined, ctx);
 	const answerJson = JSON.parse(answerRes.content[0].text);
-	assert.deepEqual(Object.keys(answerJson).sort(), ["delivery", "disposition", "recipientState"], "spec-exact send result");
+	assert.deepEqual(Object.keys(answerJson).sort(), ["delivery", "disposition", "envelopeId", "recipientState"], "spec-exact send result");
 	assert.ok(["woken", "held", "queued"].includes(answerJson.disposition), "Deliverer disposition surfaced");
 	{
 		const s2 = Date.now();
@@ -895,7 +902,7 @@ await test("all mail auto-wakes; abort latches wakeups off until real user input
 	stubPi.isStreaming = false;
 	for (const h of handlers.agent_settled ?? []) await h({ type: "agent_settled" }, ctx);
 	assert.equal(sentMessages.length, beforeAbort, "aborted run latched auto-wake off");
-	assert.equal(mainAutoWakeBlockedFor(project2), true, "abort latch persisted for reload/restart");
+	assert.equal(mainAutoWakeBlockedFor(project2, { sessionId: "test-session-2" }), true, "abort latch persisted for reload/restart");
 
 	// Extension-generated input cannot clear the latch or drain queued main mail.
 	for (const h of handlers.input ?? []) await h({ type: "input", text: "synthetic", source: "extension" }, ctx);
@@ -904,7 +911,7 @@ await test("all mail auto-wakes; abort latches wakeups off until real user input
 
 	// The next real user message clears the latch and receives the held digest.
 	for (const h of handlers.input ?? []) await h({ type: "input", text: "continue", source: "interactive" }, ctx);
-	assert.equal(mainAutoWakeBlockedFor(project2), false, "real user input durably cleared the latch");
+	assert.equal(mainAutoWakeBlockedFor(project2, { sessionId: "test-session-2" }), false, "real user input durably cleared the latch");
 	const injected = await handlers.before_agent_start[0]({}, ctx);
 	assert.match(injected.message.content, /ABORT_HELD_MARKER/, "real user input drained abort-held mail");
 	await fireHostTurn(ctx, [assistantMessage()]);

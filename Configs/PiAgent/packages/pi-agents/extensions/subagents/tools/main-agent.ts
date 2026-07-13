@@ -1,14 +1,15 @@
 /**
- * tools/main-agent.ts — the seven subagent_* tools the main agent's LLM sees
+ * tools/main-agent.ts — the eight subagent_* tools the main agent's LLM sees
  * (03-tool-surface.md, complete as of Phase 3).
  *
  * Imports ONLY core.ts (D23 structural rule 1). Tool results are
  * LLM-friendly JSON matching the documented return shapes exactly:
- *   subagent_spawn     → { address, created, state, vitals }
- *   subagent_send      → { delivery, disposition, recipientState }
+ *   subagent_spawn     → { address, created, state, vitals, taskEnvelopeId? }
+ *   subagent_send      → { delivery, disposition, recipientState, envelopeId }
  *   subagent_steer     → { steered }
  *   subagent_status    → roster | detail(+tail)
  *   subagent_collect   → { requested: true, requestId, recipientState }
+ *   subagent_await     → { status, report|attention?, progress? }
  *   subagent_interrupt → { interrupted }
  *   subagent_retire    → { retired: true }
  */
@@ -80,8 +81,9 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 		description:
 			"Spawn or wake a subagent instance at address <type>/<id>. " +
 			"Get-or-create: if the address already exists, it wakes with its memory intact " +
-			"and the result reports created:false. The task, if given, runs asynchronously — " +
-			"use subagent_status to observe progress.",
+			"and the result reports created:false. The task, if given, runs asynchronously and " +
+			"returns taskEnvelopeId; use subagent_await when the delegated result must be included " +
+			"before you answer the user.",
 		parameters: SpawnParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const core = getCore(ctx);
@@ -168,6 +170,7 @@ export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendPara
 					delivery: result.delivery,
 					disposition: result.disposition,
 					recipientState: result.recipientState,
+					envelopeId: result.envelopeId,
 				});
 			} catch (error) {
 				return errorResult(error);
@@ -278,16 +281,67 @@ export function createCollectTool(getCore: GetCore): ToolDefinition<typeof Colle
 		label: "Collect from subagent",
 		description:
 			"Request a schema-conforming final result from a subagent. NON-BLOCKING: this only " +
-			"sends the collect request; the result arrives later in your mail digest as a report " +
-			"envelope whose data was validated against the schema (verdict attached). Nothing to " +
-			"poll — keep working. Returns requestId (the request envelope's id — the fulfilling " +
-			"report carries it as correlationId, so multiple outstanding collects stay " +
-			"distinguishable) and recipientState (dormant vs running at request time).",
+			"sends the collect request; the result arrives later as a report whose data is validated " +
+			"against the schema. Keep working, or call subagent_await with waitFor:\"collect\" and " +
+			"the returned requestId when the result must be present before your response.",
 		parameters: CollectParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const core = getCore(ctx);
 			try {
 				return jsonResult(await core.collect(params.to, params.schema));
+			} catch (error) {
+				return errorResult(error);
+			}
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
+// subagent_await
+// ---------------------------------------------------------------------------
+
+const AwaitParams = Type.Object({
+	to: Type.String({ description: "Agent address <type>/<id>" }),
+	waitFor: Type.Union([Type.Literal("final"), Type.Literal("collect")], {
+		description:
+			'"final" waits for a final report correlated to a spawn/send anchor; "collect" waits for a report correlated to a collect request',
+	}),
+	anchorId: Type.String({
+		description: "taskEnvelopeId/envelopeId for final mode, or requestId for collect mode",
+	}),
+	timeoutSeconds: Type.Optional(
+		Type.Integer({
+			description: "Cancellable wait timeout in seconds (default 300; range 1–900)",
+			minimum: 1,
+			maximum: 900,
+		}),
+	),
+});
+
+export function createAwaitTool(getCore: GetCore): ToolDefinition<typeof AwaitParams> {
+	return {
+		name: "subagent_await",
+		label: "Await subagent result",
+		description:
+			"Wait cancellably for one anchored delegated result. Returns completed only when the " +
+			"matching report is available in this main session. Questions, escalations, and errors " +
+			"return early as attention so you can act and await again. Timeout consumes no mail. " +
+			"Use this whenever the user expects delegated findings in the current response; do not " +
+			"claim review completion before status:completed.",
+		parameters: AwaitParams,
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const core = getCore(ctx);
+			try {
+				return jsonResult(
+					await core.awaitResult({
+						to: params.to,
+						waitFor: params.waitFor,
+						anchorId: params.anchorId,
+						...(params.timeoutSeconds !== undefined ? { timeoutSeconds: params.timeoutSeconds } : {}),
+						sessionFile: ctx.sessionManager.getSessionFile() ?? null,
+						...(signal !== undefined ? { signal } : {}),
+					}),
+				);
 			} catch (error) {
 				return errorResult(error);
 			}

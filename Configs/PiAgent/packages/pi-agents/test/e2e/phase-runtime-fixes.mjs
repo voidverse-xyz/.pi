@@ -79,7 +79,7 @@ modelRegistry.registerProvider("mock", {
 	baseUrl: "http://mock.invalid", apiKey: "k", api: "mock-api", streamSimple: mockStream,
 	models: [{ id: "mock-1", name: "Mock", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 4096 }],
 });
-const layout = createLayout(project, { home });
+const layout = createLayout(project, { home, sessionId: "test-session" });
 const settingsManager = piSdk.SettingsManager.create(project, join(home, ".pi", "agent"));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -91,7 +91,7 @@ function makeWorld(name) {
 		join(proj, ".pi", "subagents", "worker.md"),
 		["---", "name: worker", "description: iso worker", "model: mock/mock-1", "projectContext: false", "---", "You are a worker.", ""].join("\n"),
 	);
-	return createLayout(proj, { home });
+	return createLayout(proj, { home, sessionId: "test-session" });
 }
 
 let passed = 0;
@@ -282,7 +282,7 @@ console.log("(5) main-mail durability (core):");
 	const { createCore, reconcileMainMailFor } = await jiti.import(join(EXT, "core.ts"));
 	const projectM = join(scratch, "project-mainmail");
 	mkdirSync(projectM, { recursive: true });
-	const layoutM = createLayout(projectM, { home });
+	const layoutM = createLayout(projectM, { home, sessionId: "test-session" });
 	// The "main session JSONL" the host owns; the extension only reads it.
 	const sessionFile = join(home, ".pi", "agent", "sessions", "fake-main-session.jsonl");
 	mkdirSync(join(home, ".pi", "agent", "sessions"), { recursive: true });
@@ -298,7 +298,7 @@ console.log("(5) main-mail durability (core):");
 		text: "Blocked: need human approval for `rm -rf build/` ESC_MARKER",
 	});
 	mailbox.writeEnvelope(layoutM.mainMailboxDir, esc);
-	const core1 = createCore({ cwd: projectM, home, settings: {} });
+	const core1 = createCore({ cwd: projectM, home, sessionId: "test-session", settings: {} });
 	const digest1 = core1.drainMainMail(sessionFile);
 	assert.ok(digest1.includes("ESC_MARKER") && digest1.includes(esc.id), "digest composed with the envelope id embedded");
 	assert.equal(mailbox.pendingCount(layoutM.mainMailboxDir), 0, "drained mail no longer pending");
@@ -315,10 +315,10 @@ console.log("(5) main-mail durability (core):");
 
 	// CRASH: host dies before appending the injected digest. Restart:
 	await core1.dispose();
-	const rec = reconcileMainMailFor(projectM, home);
+	const rec = reconcileMainMailFor(projectM, { home, sessionId: "test-session" });
 	assert.deepEqual(rec, { finalized: [], requeued: [esc.id], inFlight: [] }, "session_start reconcile detects the loss");
 	assert.equal(mailbox.pendingCount(layoutM.mainMailboxDir), 1, "escalation back in the pending mailbox");
-	const core2 = createCore({ cwd: projectM, home, settings: {} });
+	const core2 = createCore({ cwd: projectM, home, sessionId: "test-session", settings: {} });
 	const digest2 = core2.drainMainMail(sessionFile);
 	assert.ok(digest2.includes("ESC_MARKER"), "escalation re-delivered after the crash (was: silently lost)");
 	assert.match(digest2, /re-delivered: an earlier delivery attempt did not complete/, "re-delivery labeled in the digest");
@@ -331,7 +331,7 @@ console.log("(5) main-mail durability (core):");
 	assert.ok(!existsSync(join(layoutM.mainMailboxDeliveringDir, `${esc.id}.json`)), ".delivering/ cleared");
 	assert.equal(mailbox.pendingCount(layoutM.mainMailboxDir), 0);
 	// Idempotent: neither reconcile flavor resurrects mail the agent has seen.
-	assert.deepEqual(reconcileMainMailFor(projectM, home), { finalized: [], requeued: [], inFlight: [] });
+	assert.deepEqual(reconcileMainMailFor(projectM, { home, sessionId: "test-session" }), { finalized: [], requeued: [], inFlight: [] });
 	assert.equal(core2.drainMainMail(sessionFile), null, "finalized exactly once — never re-delivered");
 	ok("verified host append finalizes exactly once; reconciliation never resurrects seen mail");
 
@@ -355,7 +355,7 @@ console.log("(6) main-mail durability (host wiring):");
 	const extensionFactory = (await jiti.import(join(EXT, "index.ts"))).default ?? (await jiti.import(join(EXT, "index.ts")));
 	const projectW = join(scratch, "project-mainmail-wiring");
 	mkdirSync(projectW, { recursive: true });
-	const layoutW = createLayout(projectW, { home });
+	const layoutW = createLayout(projectW, { home, sessionId: "test-session" });
 	const sessionFile = join(home, ".pi", "agent", "sessions", "fake-wiring-session.jsonl");
 	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 1 })}\n`);
 	const prevHome = process.env.HOME;
@@ -387,7 +387,7 @@ console.log("(6) main-mail durability (host wiring):");
 		hasUI: true,
 		mode: "tui",
 		ui: { setStatus: () => {}, notify: () => {} },
-		sessionManager: { getSessionFile: () => sessionFile },
+		sessionManager: { getSessionId: () => "test-session", getSessionFile: () => sessionFile },
 	};
 	const fire = async (event) => {
 		for (const h of handlers[event] ?? []) await h({ type: event }, ctx);

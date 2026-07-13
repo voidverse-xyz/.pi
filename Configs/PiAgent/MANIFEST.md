@@ -6,7 +6,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 
 | Package | Main surface |
 |---|---|
-| `pi-agents` | Persistent subagents plus plain activity status for the shared footer |
+| `pi-agents` | Main-session-owned persistent subagents, durable anchored result awaiting, and plain activity status for the shared footer |
 | `pi-bookmark` | `/bookmark` and `/unbookmark` session-tree labels |
 | `pi-browse` | `/browse-files` native file browser |
 | `pi-changes` | `/changes` session edit review/undo and read-only `/git-changes` repository diff browser |

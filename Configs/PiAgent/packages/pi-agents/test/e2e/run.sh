@@ -59,6 +59,7 @@ TESTS=(
 	phase7-full-story.mjs
 	phase-lifecycle-fixes.mjs
 	phase-runtime-fixes.mjs
+	phase-session-scope-await.mjs
 	loadcheck.mjs
 )
 for t in "${TESTS[@]}"; do

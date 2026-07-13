@@ -1,14 +1,13 @@
-# Extension Architecture — pi-subagents package
+# Extension Architecture — pi-agents package
 
-Decided 2026-07-09 (D23). Monorepo conventions: package under
-~/Agents/Documents/Configs/PiAgent/packages/pi-subagents/, package.json with
-keywords:["pi-package"] + pi.extensions:["./extensions"], enabled by absolute path
-in ~/.pi/agent/settings.json packages[] (alphabetical), /reload to pick up.
+Decided 2026-07-09 (D23), session ownership added by D25/D26. Package path is
+`Configs/PiAgent/packages/pi-agents/`; package.json declares the `pi-package`
+keyword and `pi.extensions:["./extensions"]`.
 
 ## Layout
 
 ```
-packages/pi-subagents/
+packages/pi-agents/
   package.json
   extensions/subagents/
     index.ts                  # entry: register tools, /subagents, widget, keybinds; wire events
@@ -22,12 +21,13 @@ packages/pi-subagents/
       registry.ts             # roster, states, vitals (D15)
       teams.ts                # membership, scrub-on-retire (D12/D13)
       archive.ts              # retire-move + N-day GC
+      session-scope.ts        # scope manifest, host lease, explicit legacy adoption
     typedefs/
       discover.ts             # project/home merge, project wins (D6)
       parse.ts                # frontmatter validation (04-type-schema)
     mail/
       envelope.ts             # envelope type, ulid ids (02-envelope-contract)
-      mailbox.ts              # file-per-message, .done/, at-least-once
+      mailbox.ts              # file-per-message, atomic host claims, .done/, at-least-once
       deliver.ts              # turn-boundary injection, team check, bounce, hops
       digest.ts               # wake-digest composer (D14) — pure
     rails/
@@ -41,7 +41,7 @@ packages/pi-subagents/
     context/
       compose.ts              # D18 layers: identity block, roster, projectContext — pure
     tools/
-      main-agent.ts           # the seven subagent_* tools (03-tool-surface)
+      main-agent.ts           # the eight subagent_* tools, including anchored await
       sub-agent.ts            # peers' send/queue pair
     tui/
       widget.ts  picker.ts  viewer.ts  escalation-modal.ts   # (05-tui-spec)
@@ -56,8 +56,9 @@ packages/pi-subagents/
    one interface; nothing else moves. Interface mirrors the power matrix
    deliberately: spawn, send, steer, interrupt, retire, status, peek, onEvent —
    the matrix IS the API.
-2. store/layout.ts owns every path. "The directory is the truth" (D3/D5/D13) only
-   holds if no other module invents paths.
+2. store/layout.ts owns every path. Project resources are shared; every mutable
+   path is below `owners/<main-session-id>` (D25). A host-scope lease gates all
+   mutation/consumption, while per-agent run-owner markers remain defense in depth.
 3. Pure modules (unit-testable without a live agent): digest, paths, hops, parse,
    compose. The e2e harness covers wiring only.
 
@@ -75,5 +76,8 @@ packages/pi-subagents/
    out-of-scope write escalates; deny feeds tool-error.
 6. TUI — widget → picker → viewer → modal (each useful alone).
 7. Polish — collect, archive GC, vitals, oneshot auto-retire end-to-end.
+8. Session ownership + reliable results — v2 layout, host lease, explicit legacy
+   adoption, atomic main-mail claims, final anchors, `subagent_await`, and quiet
+   owner cancellation.
 
 Phases 1–3 = usable (spawn, talk, observe); 4–5 = safe; 6 = pleasant.

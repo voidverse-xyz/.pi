@@ -185,6 +185,8 @@ export interface InProcessRuntimeOptions {
 	authStorage?: AuthStorage;
 	/** Running-turn slot cap (D13). Default 5. */
 	maxConcurrent?: number;
+	/** False for non-persisted host sessions; persistent workers are rejected. */
+	persistentHost?: boolean;
 	/** An envelope landed in .main/mailbox/; the host may auto-wake main. */
 	onMainMail?: (envelope: Envelope) => void;
 	/** D21 chain-depth cap. Default 8. A getter keeps it live (Phase 7). */
@@ -300,6 +302,7 @@ export class InProcessRuntime implements SubagentRuntime {
 	private readonly _chains = new Map<string, Promise<void>>();
 	private readonly _autonomy: AutonomyBudget | undefined;
 	private readonly _ceilings: CeilingDefaults;
+	private readonly _persistentHost: boolean;
 	private readonly _escalations: EscalationManager;
 	/**
 	 * The running turn's scheduler slot per agent, swappable: an escalation
@@ -345,6 +348,7 @@ export class InProcessRuntime implements SubagentRuntime {
 		this._authStorage = options.authStorage;
 		this._scheduler = new Scheduler(options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT);
 		this._autonomy = options.autonomy;
+		this._persistentHost = options.persistentHost ?? true;
 		// Pause/resume are runtime events (Phase 6 banner) and a resume drains
 		// every mailbox that queued up while paused (D21: pause never kills).
 		this._autonomy?.subscribe((event, status) => {
@@ -457,6 +461,9 @@ export class InProcessRuntime implements SubagentRuntime {
 
 	async spawn(options: SpawnOptions): Promise<SpawnResult> {
 		const lifetime = options.lifetime ?? "persistent";
+		if (!this._persistentHost && lifetime === "persistent") {
+			throw new Error("Persistent subagents require a persisted main Pi session; use lifetime:\"oneshot\" here.");
+		}
 
 		// D20 lifetime rule: named = persistent, anonymous = disposable.
 		if (lifetime === "oneshot" && options.id !== undefined) {
@@ -520,11 +527,18 @@ export class InProcessRuntime implements SubagentRuntime {
 
 		await this._ensureHandle(address, record, discovered, def, options.inherit);
 
+		let taskEnvelopeId: string | undefined;
 		if (options.task !== undefined) {
 			// The task is mail like everything else (D18 layer 6): an envelope
 			// from main that wakes the agent into a digest turn, asynchronously
 			// under the scheduler cap (D13).
-			this._deliverer.send({ from: MAIN_ADDRESS, to: address, type: "message", text: options.task });
+			taskEnvelopeId = this._deliverer.send({
+				from: MAIN_ADDRESS,
+				to: address,
+				type: "message",
+				text: options.task,
+			}).envelope.id;
+			this._recordAssignmentAnchor(address, taskEnvelopeId);
 		}
 
 		const after = getAgent(readRegistry(this._layout.registryFile), address);
@@ -533,6 +547,7 @@ export class InProcessRuntime implements SubagentRuntime {
 			created,
 			state: after?.state ?? "dormant",
 			vitals: after?.vitals ?? emptyVitals(),
+			...(taskEnvelopeId !== undefined ? { taskEnvelopeId } : {}),
 		};
 	}
 
@@ -558,6 +573,9 @@ export class InProcessRuntime implements SubagentRuntime {
 			...(options.correlationId !== undefined ? { correlationId: options.correlationId } : {}),
 			...(options.when !== undefined ? { when: options.when } : {}),
 		});
+		if (options.correlationId === undefined && outcome.disposition !== "bounced") {
+			this._recordAssignmentAnchor(options.to, outcome.envelope.id);
+		}
 		return this._toSendResult(outcome, record.state);
 	}
 
@@ -645,8 +663,15 @@ export class InProcessRuntime implements SubagentRuntime {
 				this._handles.delete(to);
 			}
 			// Defensive: the abort's signal already cancels a paused escalation;
-			// sweep anything left so no promise pends for a dead agent.
+			// sweep anything left so no promise pends for a dead agent. Pending
+			// escalation mail is obsolete once the record is cancelled, so remove
+			// it from main's pending queue before it can prompt the user.
+			const obsoleteEscalationMail = this._escalations
+				.pending()
+				.filter((record) => record.agent === to && record.envelopeId !== null)
+				.map((record) => record.envelopeId!);
 			this._escalations.cancelFor(to, `Agent ${to} was retired while the escalation was pending.`);
+			markDone(this._layout.mainMailboxDir, obsoleteEscalationMail);
 			this._chains.delete(to);
 			// M5: bounce every UNPROCESSED envelope back to its sender before the
 			// mailbox is archived. Senders were told delivery succeeded (held/
@@ -662,8 +687,13 @@ export class InProcessRuntime implements SubagentRuntime {
 				if (foreignOwner !== null) {
 					throw new Error(`Cannot retire ${to}: it is run-owned by live Pi process ${foreignOwner.pid}.`);
 				}
+				writeFileSync(
+					this._layout.retireRequestedFile(liveRecord.type, liveRecord.id),
+					`${JSON.stringify({ kind: "manual", requestedAt: new Date().toISOString() })}\n`,
+					"utf8",
+				);
 				this._bouncePendingMail(to, liveRecord);
-				// Tombstone + archive precede roster scrub, so a crash cannot leave
+				// Durable intent + tombstone + archive precede roster scrub, so a crash cannot leave
 				// deregistered live memory. Startup reconciliation finishes a partial
 				// funeral; the lifecycle lock excludes a concurrent same-address spawn.
 				const archived = archiveAgentDir(this._layout, liveRecord.type, liveRecord.id);
@@ -822,7 +852,7 @@ export class InProcessRuntime implements SubagentRuntime {
 			// already archived (or tombstoned in place) but the registry record
 			// was never removed. Collected here, finished (archive + team scrub)
 			// after the registry mutation closes.
-			const crashedRetire: Array<{ address: string; type: string; id: string }> = [];
+			const crashedRetire: Array<{ address: string; record: AgentRecord }> = [];
 			updateRegistry(this._layout.registryFile, (registry) => {
 				for (const record of listAgents(registry)) {
 					const address = formatAgentAddress(record.type, record.id);
@@ -838,8 +868,12 @@ export class InProcessRuntime implements SubagentRuntime {
 					// rename). Finish the funeral so a later get-or-create can never
 					// wake a half-retired identity with resurrected memory.
 					const instanceDir = this._layout.agentInstanceDir(record.type, record.id);
-					if (!existsSync(instanceDir) || hasRetirementTombstone(instanceDir)) {
-						crashedRetire.push({ address, type: record.type, id: record.id });
+					if (
+						!existsSync(instanceDir) ||
+						hasRetirementTombstone(instanceDir) ||
+						this._retireIntentReady(record)
+					) {
+						crashedRetire.push({ address, record: { ...record, vitals: { ...record.vitals } } });
 						removeAgent(registry, address);
 						continue;
 					}
@@ -850,10 +884,11 @@ export class InProcessRuntime implements SubagentRuntime {
 					}
 				}
 			});
-			for (const { address, type, id } of crashedRetire) {
-				// Idempotent: a no-op if the dir was already moved (Window B); it
-				// completes the move if it was only tombstoned (Window A).
-				archiveAgentDir(this._layout, type, id);
+			for (const { address, record } of crashedRetire) {
+				// Finish cancellation/bounces before the move when durable retirement
+				// intent survived a crash. Idempotent peer bounces are at-least-once.
+				this._bouncePendingMail(address, record);
+				archiveAgentDir(this._layout, record.type, record.id);
 				updateTeams(this._layout.teamsFile, (teams) => scrubAddress(teams, address));
 			}
 			// A crash while `waiting` orphans the agent's pending escalation
@@ -1157,7 +1192,7 @@ export class InProcessRuntime implements SubagentRuntime {
 				// main; a oneshot gets its funeral like a final report (D13).
 				this._emit({ type: "turn-error", address, error: failure.errorMessage });
 				this._sendErrorToMain(address, `Turn failed: ${failure.errorMessage}`);
-				if (record.lifetime === "oneshot") handle.retireAfterTurn = true;
+				if (record.lifetime === "oneshot") this._markRetireAfterTurn(record, handle);
 			} else {
 				const violation = ceilingViolation(this._vitalsOf(handle), ceilings);
 				if (violation !== null) this._notifyCeiling(address, record, handle, violation);
@@ -1168,7 +1203,7 @@ export class InProcessRuntime implements SubagentRuntime {
 			this._emit({ type: "turn-error", address, error: message });
 			// A crashed turn is a fatal error envelope too; oneshot funeral (D13).
 			this._sendErrorToMain(address, `Turn crashed: ${message}`);
-			if (record.lifetime === "oneshot") handle.retireAfterTurn = true;
+			if (record.lifetime === "oneshot") this._markRetireAfterTurn(record, handle);
 		} finally {
 			turnTimer?.clear();
 			if (this._turnTimers.get(address) === turnTimer) this._turnTimers.delete(address);
@@ -1227,6 +1262,25 @@ export class InProcessRuntime implements SubagentRuntime {
 	/** The outbound-mail port subagent tools run against (tools/sub-agent.ts). */
 	private readonly _mailPort: SubagentMailPort = {
 		sendFromAgent: async (options) => {
+			// Task reports automatically correlate to the assignment in the
+			// CURRENT turn's trigger, not merely the latest message ever sent.
+			// This prevents task B (arriving while A runs) from stealing A's final.
+			const triggerAssignments =
+				options.type === "report" && options.correlationId === undefined
+					? this._reportAssignmentCandidates(options.from)
+					: [];
+			if (triggerAssignments.length > 1) {
+				return {
+					disposition: "bounced",
+					bounceReason:
+						"This turn contains multiple task assignments; set correlationId to the exact task message id shown in the wake digest.",
+				};
+			}
+			const assignmentCorrelation =
+				options.type === "report" && options.correlationId === undefined
+					? (triggerAssignments[0] ?? this._readAssignmentAnchor(options.from))
+					: undefined;
+			const correlationId = options.correlationId ?? assignmentCorrelation;
 			// Hops threading (D21): a turn caused by mail sending mail is one
 			// hop deeper than the deepest trigger envelope; fresh work = 0.
 			const trigger = this._handles.get(options.from)?.trigger;
@@ -1240,10 +1294,18 @@ export class InProcessRuntime implements SubagentRuntime {
 				type: options.type,
 				text: options.text,
 				...(options.data !== undefined ? { data: options.data } : {}),
-				...(options.correlationId !== undefined ? { correlationId: options.correlationId } : {}),
+				...(options.final !== undefined ? { final: options.final } : {}),
+				...(correlationId !== undefined ? { correlationId } : {}),
 				...(options.when !== undefined ? { when: options.when } : {}),
 				...(causedBy ? { causedBy } : {}),
 			});
+			if (
+				options.type === "report" &&
+				options.final === true &&
+				outcome.disposition !== "bounced"
+			) {
+				this._clearAssignmentAnchor(options.from, correlationId);
+			}
 			return {
 				disposition: outcome.disposition,
 				...(outcome.bounceReason !== undefined ? { bounceReason: outcome.bounceReason } : {}),
@@ -1251,8 +1313,14 @@ export class InProcessRuntime implements SubagentRuntime {
 		},
 		noteFinalReport: (from) => {
 			const record = getAgent(readRegistry(this._layout.registryFile), from);
+			if (record?.lifetime === "oneshot") this._markRetireAfterTurn(record, this._handles.get(from));
+		},
+		cancelFinalReport: (from) => {
+			const record = getAgent(readRegistry(this._layout.registryFile), from);
+			if (record?.lifetime !== "oneshot") return;
+			rmSync(this._layout.retireRequestedFile(record.type, record.id), { force: true });
 			const handle = this._handles.get(from);
-			if (record?.lifetime === "oneshot" && handle) handle.retireAfterTurn = true;
+			if (handle) handle.retireAfterTurn = false;
 		},
 	};
 
@@ -1489,12 +1557,121 @@ export class InProcessRuntime implements SubagentRuntime {
 			writePaths: def.config.writePaths,
 			denyPaths: def.config.denyPaths,
 			systemDenyPrefixes: [
-				this._layout.subagentsRoot,
+				// Hard-deny Pi's whole per-project session directory: it contains
+				// main JSONLs, every owner scope, legacy roots, and timestamped
+				// adoption backups. Ephemeral owner state may live elsewhere.
+				this._layout.projectSessionDir,
+				this._layout.stateContainerRoot,
 				this._layout.globalTypeDefsDir,
 				this._layout.projectTypeDefsDir,
 			].map((dir) => realpathDeep(dir, realpath)),
 			realpath,
 		};
+	}
+
+	private _mainHasRetirementEvidence(address: string): boolean {
+		const matches = (envelope: Envelope): boolean =>
+			envelope.from === address &&
+			(envelope.type === "error" ||
+				(envelope.type === "report" && envelope.payload.final === true));
+		try {
+			if (readPending(this._layout.mainMailboxDir).some(({ envelope }) => matches(envelope))) return true;
+		} catch {
+			// Continue through parked/processed audit state.
+		}
+		for (const dir of [this._layout.mainMailboxDeliveringDir, this._layout.mainMailboxDoneDir]) {
+			try {
+				for (const name of readdirSync(dir)) {
+					if (!name.endsWith(".json")) continue;
+					const envelope = JSON.parse(readFileSync(join(dir, name), "utf8")) as Envelope;
+					if (matches(envelope)) return true;
+				}
+			} catch {
+				// Missing/unreadable audit directory has no evidence.
+			}
+		}
+		return false;
+	}
+
+	private _retireIntentReady(record: AgentRecord): boolean {
+		const file = this._layout.retireRequestedFile(record.type, record.id);
+		if (!existsSync(file)) return false;
+		try {
+			const intent = JSON.parse(readFileSync(file, "utf8")) as { kind?: unknown };
+			if (intent.kind === "manual") return true;
+			if (intent.kind === "oneshot-auto") {
+				const address = formatAgentAddress(record.type, record.id);
+				if (this._mainHasRetirementEvidence(address)) return true;
+				rmSync(file, { force: true });
+				return false; // crash happened before the final/error envelope write
+			}
+		} catch {
+			// Pre-kind markers came only from explicit/manual retirement builds.
+			return true;
+		}
+		return true;
+	}
+
+	private _markRetireAfterTurn(record: AgentRecord, handle?: Handle): void {
+		try {
+			writeFileSync(
+				this._layout.retireRequestedFile(record.type, record.id),
+				`${JSON.stringify({ kind: "oneshot-auto", requestedAt: new Date().toISOString() })}\n`,
+				"utf8",
+			);
+		} catch {
+			// In-memory retirement still runs; startup recovery is best-effort.
+		}
+		if (handle) handle.retireAfterTurn = true;
+	}
+
+	private _recordAssignmentAnchor(address: string, envelopeId: string): void {
+		const parsed = parseAddress(address);
+		if (parsed?.kind !== "agent") return;
+		try {
+			mkdirSync(this._layout.agentInstanceDir(parsed.type, parsed.id), { recursive: true });
+			writeFileSync(this._layout.assignmentAnchorFile(parsed.type, parsed.id), `${envelopeId}\n`, "utf8");
+		} catch {
+			// The report still delivers; an await can fall back to ordinary digest.
+		}
+	}
+
+	private _reportAssignmentCandidates(address: string): string[] {
+		return (this._handles.get(address)?.trigger ?? [])
+			.filter(
+				(envelope) =>
+					envelope.type === "message" &&
+					(envelope.from === MAIN_ADDRESS || envelope.from === USER_ADDRESS) &&
+					!(typeof envelope.payload.data === "object" &&
+						envelope.payload.data !== null &&
+						"collectSchema" in (envelope.payload.data as Record<string, unknown>)),
+			)
+			.map((envelope) => envelope.id);
+	}
+
+	private _readAssignmentAnchor(address: string): string | undefined {
+		const parsed = parseAddress(address);
+		if (parsed?.kind !== "agent") return undefined;
+		try {
+			const id = readFileSync(this._layout.assignmentAnchorFile(parsed.type, parsed.id), "utf8").trim();
+			return /^msg_[0-9A-HJKMNP-TV-Z]{26}$/.test(id) ? id : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private _clearAssignmentAnchor(address: string, expected?: string): void {
+		const parsed = parseAddress(address);
+		if (parsed?.kind !== "agent") return;
+		const file = this._layout.assignmentAnchorFile(parsed.type, parsed.id);
+		if (expected !== undefined) {
+			try {
+				if (readFileSync(file, "utf8").trim() !== expected) return;
+			} catch {
+				return;
+			}
+		}
+		rmSync(file, { force: true });
 	}
 
 	/**
@@ -1514,20 +1691,69 @@ export class InProcessRuntime implements SubagentRuntime {
 	 * resort). Called by retire() BEFORE the registry/teams scrub so peer
 	 * bounces still pass the delivery guards. Best-effort per envelope.
 	 */
+	private _hasRetirementBounce(to: string, from: string, correlationId: string): boolean {
+		const parsed = parseAddress(to);
+		if (parsed?.kind !== "agent") return false;
+		const mailboxDir = this._layout.mailboxDir(parsed.type, parsed.id);
+		try {
+			if (
+				readPending(mailboxDir).some(
+					({ envelope }) =>
+						envelope.type === "error" &&
+						envelope.from === from &&
+						envelope.correlationId === correlationId,
+				)
+			) {
+				return true;
+			}
+		} catch {
+			// Fall through to the processed audit scan.
+		}
+		try {
+			for (const name of readdirSync(this._layout.mailboxDoneDir(parsed.type, parsed.id))) {
+				if (!name.endsWith(".json")) continue;
+				const envelope = JSON.parse(
+					readFileSync(join(this._layout.mailboxDoneDir(parsed.type, parsed.id), name), "utf8"),
+				) as Envelope;
+				if (
+					envelope.type === "error" &&
+					envelope.from === from &&
+					envelope.correlationId === correlationId
+				) {
+					return true;
+				}
+			}
+		} catch {
+			// Missing/unreadable done dir means no verifiable earlier bounce.
+		}
+		return false;
+	}
+
 	private _bouncePendingMail(address: string, record: AgentRecord): void {
+		const mailboxDir = this._layout.mailboxDir(record.type, record.id);
 		let pending: ReturnType<typeof readPending>;
 		try {
-			pending = readPending(this._layout.mailboxDir(record.type, record.id));
+			pending = readPending(mailboxDir);
 		} catch {
 			return;
 		}
+		const settled: string[] = [];
 		for (const p of pending) {
-			const to = p.envelope.from === USER_ADDRESS ? MAIN_ADDRESS : p.envelope.from;
-			if (to === address) continue; // self-send dies with the agent
+			// The owning main/user is performing the retirement. Bouncing its own
+			// still-pending tasks back into main mail creates cleanup spam and no
+			// useful recovery path; archive them as processed audit instead.
+			if (p.envelope.from === MAIN_ADDRESS || p.envelope.from === USER_ADDRESS || p.envelope.from === address) {
+				settled.push(p.envelope.id);
+				continue;
+			}
+			if (this._hasRetirementBounce(p.envelope.from, address, p.envelope.id)) {
+				settled.push(p.envelope.id);
+				continue;
+			}
 			try {
 				this._deliverer.send({
 					from: address,
-					to,
+					to: p.envelope.from,
 					type: "error",
 					correlationId: p.envelope.id,
 					causedBy: p.envelope,
@@ -1535,17 +1761,20 @@ export class InProcessRuntime implements SubagentRuntime {
 						`Delivery failure: recipient \`${address}\` retired with this message unprocessed.\n` +
 						`Your message (${p.envelope.id}, ${p.envelope.type}) was NOT processed:\n${p.envelope.payload.text}`,
 				});
+				settled.push(p.envelope.id);
 			} catch {
 				// Best-effort: one undeliverable bounce must not block the funeral.
 			}
 		}
+		markDone(mailboxDir, settled);
 	}
 
 	// -----------------------------------------------------------------------
-	// M4 run-ownership marker (two Pi processes sharing one cwd)
+	// M4 run-ownership marker (defense in depth beneath the D25 host-scope lease)
 	//
-	// D3 promises a shared roster across sessions, but registry/teams writes
-	// are lock-free read-modify-write. The DANGEROUS failure is two runtimes
+	// Session scopes now exclude other main conversations. The marker still
+	// protects recovery bugs and overlapping runtimes inside one owner scope.
+	// The DANGEROUS failure is two runtimes
 	// waking the same agent (two live AgentSessions appending one JSONL); the
 	// marker below prevents that: a turn stamps <instanceDir>/.run-owner.json
 	// (pid + runtime id) and no other runtime with a LIVE foreign pid will
@@ -1683,7 +1912,7 @@ export class InProcessRuntime implements SubagentRuntime {
 					"or have the human raise the ceiling in the type definition.",
 			);
 		}
-		if (record.lifetime === "oneshot") handle.retireAfterTurn = true;
+		if (record.lifetime === "oneshot") this._markRetireAfterTurn(record, handle);
 	}
 
 	/** Layer-4 inputs: address, purview, team rosters WITH purviews (D18). */

@@ -26,6 +26,10 @@ transcript components where sessions are shown (D7).
   (D13 post-mortem promise).
 - Keys: ↑↓ navigate · Enter view · x interrupt · X retire (confirm dialog) · Esc.
 - /agents <type>/<id> jumps straight to the viewer (D17).
+- Roster/archive/mail are for the current owning main session only (D25).
+- `/agents adopt-legacy` confirms assignment of inactive cwd-wide state into an
+  empty persisted current scope; `/agents rollback-legacy` restores its backup
+  only before fingerprinted state diverges. Both are human-only, never LLM tools.
 
 ## 3. Viewer (full-screen session view)
 

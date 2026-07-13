@@ -138,7 +138,7 @@ modelRegistry.registerProvider("mock", {
 // ---------------------------------------------------------------------------
 // Runtime under test
 // ---------------------------------------------------------------------------
-const layout = createLayout(project, { home });
+const layout = createLayout(project, { home, sessionId: "test-session" });
 const settingsManager = piSdk.SettingsManager.create(project, join(home, ".pi", "agent"));
 const runtime = new InProcessRuntime({ layout, modelRegistry, settingsManager, maxConcurrent: 1 });
 
@@ -477,13 +477,13 @@ await test("retire deregisters, scrubs teams, archives the dir", async () => {
 // ---------------------------------------------------------------------------
 console.log("core + tools:");
 await test("core facade lists types (project wins) and spawns", async () => {
-	const core = createCore({ cwd: project, home, modelRegistry, settingsManager, maxConcurrent: 1 });
+	const core = createCore({ cwd: project, home, sessionId: "test-session", modelRegistry, settingsManager, maxConcurrent: 1 });
 	const types = core.availableTypes().map((t) => `${t.name}:${t.source}`);
 	assert.deepEqual(types, ["greeter:global", "researcher:project"]);
 	await core.dispose();
 });
 await test("subagent_spawn / subagent_status tools return spec-shaped JSON", async () => {
-	const core = createCore({ cwd: project, home, modelRegistry, settingsManager, maxConcurrent: 1 });
+	const core = createCore({ cwd: project, home, sessionId: "test-session", modelRegistry, settingsManager, maxConcurrent: 1 });
 	const getCore = () => core;
 	const spawnTool = createSpawnTool(getCore);
 	const statusTool = createStatusTool(getCore);
@@ -493,7 +493,7 @@ await test("subagent_spawn / subagent_status tools return spec-shaped JSON", asy
 
 	const spawnRes = await spawnTool.execute("t1", { type: "greeter", id: "tooltest", task: "hi" }, undefined, undefined, ctx);
 	const spawnJson = JSON.parse(spawnRes.content[0].text);
-	assert.deepEqual(Object.keys(spawnJson).sort(), ["address", "created", "state", "vitals"]);
+	assert.deepEqual(Object.keys(spawnJson).sort(), ["address", "created", "state", "taskEnvelopeId", "vitals"]);
 	assert.equal(spawnJson.address, "greeter/tooltest");
 
 	const badSpawn = await spawnTool.execute("t2", { type: "missing-type" }, undefined, undefined, ctx);

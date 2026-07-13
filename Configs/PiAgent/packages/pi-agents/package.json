@@ -2,7 +2,7 @@
 	"name": "pi-agents",
 	"version": "1.0.0",
 	"type": "module",
-	"description": "Persistent subagents for Pi: long-lived agent identities with durable memory (Pi-native session JSONL under the project's sessions dir), disk-backed mailboxes with a single envelope contract (message/question/answer/report/escalation/error), team-scoped peer communication, markdown+frontmatter type definitions (project overrides global), get-or-create spawn, oneshot lifetimes with archive + N-day GC, and a session-viewer TUI.",
+	"description": "Main-session-owned persistent subagents for Pi: durable Pi-native memory, disk-backed mailboxes, anchored result awaiting, team-scoped peer communication, sandboxed markdown-defined types, oneshot archives, and a session-viewer TUI.",
 	"keywords": [
 		"pi-package"
 	],

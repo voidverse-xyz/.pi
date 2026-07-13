@@ -42,6 +42,7 @@ export interface AutonomyStatus {
 
 export type AutonomyEventKind = "paused" | "resumed";
 export type AutonomyListener = (event: AutonomyEventKind, status: AutonomyStatus) => void;
+export type AutonomySnapshot = Pick<AutonomyStatus, "trippedBy" | "turnsUsed" | "tokensUsed">;
 
 export class AutonomyBudget {
 	/** Read live so settings edits apply without rebuilding the budget. */
@@ -50,12 +51,27 @@ export class AutonomyBudget {
 	private _tokensUsed = 0;
 	private _trippedBy: "turns" | "tokens" | null = null;
 	private readonly _listeners = new Set<AutonomyListener>();
+	private readonly _onChange: ((snapshot: AutonomySnapshot) => void) | undefined;
 
-	constructor(limits?: AutonomyLimits) {
+	constructor(
+		limits?: AutonomyLimits,
+		initial?: Partial<AutonomySnapshot>,
+		onChange?: (snapshot: AutonomySnapshot) => void,
+	) {
 		this._limits = limits ?? {
 			autonomousTurns: DEFAULT_AUTONOMOUS_TURNS,
 			autonomousTokens: DEFAULT_AUTONOMOUS_TOKENS,
 		};
+		if (Number.isInteger(initial?.turnsUsed) && initial!.turnsUsed! >= 0) this._turnsUsed = initial!.turnsUsed!;
+		if (Number.isFinite(initial?.tokensUsed) && initial!.tokensUsed! >= 0) this._tokensUsed = initial!.tokensUsed!;
+		if (initial?.trippedBy === "turns" || initial?.trippedBy === "tokens") {
+			this._trippedBy = initial.trippedBy;
+		} else if (this._turnsUsed >= this._limits.autonomousTurns) {
+			this._trippedBy = "turns";
+		} else if (this._tokensUsed >= this._limits.autonomousTokens) {
+			this._trippedBy = "tokens";
+		}
+		this._onChange = onChange;
 	}
 
 	get paused(): boolean {
@@ -87,6 +103,8 @@ export class AutonomyBudget {
 		this._turnsUsed++;
 		if (this._trippedBy === null && this._turnsUsed >= this._limits.autonomousTurns) {
 			this._trip("turns");
+		} else {
+			this._changed();
 		}
 	}
 
@@ -96,6 +114,8 @@ export class AutonomyBudget {
 		this._tokensUsed += delta;
 		if (this._trippedBy === null && this._tokensUsed >= this._limits.autonomousTokens) {
 			this._trip("tokens");
+		} else {
+			this._changed();
 		}
 	}
 
@@ -108,6 +128,7 @@ export class AutonomyBudget {
 		this._turnsUsed = 0;
 		this._tokensUsed = 0;
 		this._trippedBy = null;
+		this._changed();
 		if (wasPaused) this._emit("resumed");
 	}
 
@@ -124,7 +145,20 @@ export class AutonomyBudget {
 
 	private _trip(by: "turns" | "tokens"): void {
 		this._trippedBy = by;
+		this._changed();
 		this._emit("paused");
+	}
+
+	private _changed(): void {
+		try {
+			this._onChange?.({
+				trippedBy: this._trippedBy,
+				turnsUsed: this._turnsUsed,
+				tokensUsed: this._tokensUsed,
+			});
+		} catch {
+			// Persistence is a durability aid; a failed write must not break a turn.
+		}
 	}
 
 	private _emit(event: AutonomyEventKind): void {

@@ -213,7 +213,7 @@ runtime reads each subagent's context fill, tokens, cost, turn count directly.
   crossing emits an error envelope + interrupt; retire stays a main-agent decision
   (auto-retire on ceiling only for oneshots — no memory worth saving).
 
-### D16 — Tool surface: seven intent-grouped tools; selective auto-wake for main (2026-07-09)
+### D16 — Tool surface: seven intent-grouped tools; selective auto-wake for main (2026-07-09; tool count superseded by D26)
 Rejected: one multiplexed subagent(action=...) mega-tool (sparse schema, weak
 validation) and 10+ one-per-power tools (context bloat). Decided seven tools, full
 spec in 03-tool-surface.md: subagent_spawn (task? = first message; get-or-create),
@@ -350,6 +350,31 @@ result but not its source, so Esc and programmatic aborts are intentionally trea
 the same. Main mailbox turns neither consume nor obey the subagent autonomy pool;
 D21 turn/token budgets continue to govern subagent turns. `autoWake: false` remains
 an explicit fully-manual override.
+
+### D25 — Main-session-owned mutable state (2026-07-12)
+Supersedes D3's cwd-wide ownership while retaining its Pi-native JSONL and
+project-colocation decisions. Project type definitions, settings, trust, cwd, and
+context remain shared resources; registry, agents, teams, mailboxes, escalations,
+autonomy counters, and archives are keyed by the stable owning main Pi session ID.
+Reload/resume restore the scope; new/fork start empty (fork visibly discloses
+non-inheritance). One host-scope lease prevents two processes from consuming the
+same session. Non-persisted sessions are temporary and oneshot-only. Older
+cwd-wide state is never auto-assigned; `/agents adopt-legacy` is a human-confirmed,
+backup-retaining migration into one empty persisted session. A human-only
+`/agents rollback-legacy` restores the backup only while the scoped fingerprint
+is unchanged; divergence requires export/manual recovery.
+
+### D26 — Anchored durable await/join and cancellation-aware retirement (2026-07-12)
+The main tool surface grows to eight with `subagent_await`. Spawn/send/collect
+return envelope anchors; final reports persist `payload.final:true`. Await matches
+an anchored final or correlated collect report, returns early for questions,
+escalations, and errors, and consumes nothing on timeout/cancellation. Main-mail
+digest and await delivery share an atomic claim-first `.delivering` protocol and
+finalize only after the host JSONL contains envelope ID plus delivery marker.
+Manual retirement quietly audits pending owner/user messages instead of bouncing
+them back as cleanup noise, but still bounces peer mail so peers cannot strand.
+Delegated review completion must not be claimed before the anchored report is
+received; verdict/findings precede orchestration details.
 
 ## Proposed (under discussion)
 

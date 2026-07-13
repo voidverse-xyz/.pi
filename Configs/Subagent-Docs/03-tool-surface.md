@@ -1,7 +1,7 @@
 # Tool Surface — What the Main Agent's LLM Sees
 
-Decided 2026-07-09 (D16). Implements the 01-power-matrix.md allowed set as seven
-intent-grouped tools. Rejected: one multiplexed mega-tool (sparse schema, weak
+Decided 2026-07-09 (D16), extended 2026-07-12 (D26). Implements the
+01-power-matrix.md allowed set as eight intent-grouped tools. Rejected: one multiplexed mega-tool (sparse schema, weak
 validation); one-tool-per-power (context bloat).
 
 ## Tools
@@ -9,18 +9,18 @@ validation); one-tool-per-power (context bloat).
 ### subagent_spawn
 ```
 (type, id?, team?, lifetime?: "persistent"|"oneshot", task?)
-→ { address, created: boolean, state, vitals }
+→ { address, created: boolean, state, vitals, taskEnvelopeId? }
 ```
 - Get-or-create on `<type>/<id>` (D5): created:false = existed, woke it, memory intact.
 - id required for persistent spawns (meaningful purview slug; default "main" for
   singleton types); omitted id on oneshot → auto `tmp-<short>`.
 - team: names a team; creates it if new (D12).
-- task: optional first message — spawn + assign in one call (the common case).
+- task: optional first message — spawn + assign in one call; its envelope id is returned as an await anchor.
 
 ### subagent_send
 ```
 (to, text, when?: "now"|"after-turn", correlationId?)
-→ { delivery: "delivered"|"queued", disposition: "woken"|"held"|"queued", recipientState }
+→ { delivery: "delivered"|"queued", disposition: "woken"|"held"|"queued", recipientState, envelopeId }
 ```
 - Covers three matrix powers: send (when:"now", default), queue (when:"after-turn"),
   answer (correlationId set → answer envelope). correlationId doubles as the
@@ -68,6 +68,17 @@ validation); one-tool-per-power (context bloat).
 - requestId = the collect-request envelope's id; the fulfilling report carries it
   as correlationId, so multiple outstanding collects stay distinguishable.
 
+### subagent_await
+```
+(to, waitFor: "final"|"collect", anchorId, timeoutSeconds?)
+→ { status: "completed"|"attention"|"timeout"|"retired", report?, attention?, progress? }
+```
+- Final mode matches `payload.final:true` correlated to a task/send anchor; collect mode
+  matches a report correlated to requestId.
+- Questions/escalations/errors return `attention` early so waiting cannot deadlock.
+- Timeout/cancellation consumes no mail. Completed results are parked until the
+  main-session JSONL durably contains the await tool result (D26).
+
 ### subagent_interrupt
 ```
 (to) → { interrupted: boolean }
@@ -80,7 +91,8 @@ validation); one-tool-per-power (context bloat).
 ```
 - The ONLY destructive tool — kept separate so Pi's per-tool permissioning can
   require confirmation for it alone. Deregisters, bounces future sends, scrubs
-  teams.json, moves dir to .archive/ (N-day GC) (D13).
+  teams.json, moves dir to .archive/ (N-day GC) (D13). Pending owner/user mail
+  is quietly audited as cancelled; peer mail still bounces (D26).
 
 ## Not tools (by design)
 - approve — the main agent can never grant a blocked call (D10); escalation goes

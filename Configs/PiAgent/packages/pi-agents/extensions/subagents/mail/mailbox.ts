@@ -188,7 +188,12 @@ export function markDone(mailboxDir: string, envelopeIds: string[]): void {
  * Call ONLY for the main mailbox (subagent appends are runtime-owned and use
  * markDone directly).
  */
-export function beginHostDelivery(mailboxDir: string, envelopeIds: string[], sessionFile: string): void {
+export function beginHostDelivery(
+	mailboxDir: string,
+	envelopeIds: string[],
+	sessionFile: string,
+	marker?: string,
+): void {
 	const deliveringDir = mailboxDeliveringDirOf(mailboxDir);
 	mkdirSync(deliveringDir, { recursive: true });
 	for (const id of envelopeIds) {
@@ -197,12 +202,55 @@ export function beginHostDelivery(mailboxDir: string, envelopeIds: string[], ses
 		const parked = join(deliveringDir, `${id}.json`);
 		writeFileSync(
 			deliveringMetaOf(parked),
-			`${JSON.stringify({ sessionFile, recordedAt: new Date().toISOString() })}\n`,
+			`${JSON.stringify({
+				sessionFile,
+				recordedAt: new Date().toISOString(),
+				...(marker !== undefined ? { marker } : {}),
+			})}\n`,
 			"utf8",
 		);
 		renameSync(file, parked);
 		rmSync(attemptMarkerOf(file), { force: true });
 	}
+}
+
+/**
+ * Atomically select and park main-mail envelopes before rendering them. This
+ * closes the old read-then-move race between digest delivery and await.
+ */
+export function claimPendingForHost(
+	mailboxDir: string,
+	predicate: (pending: PendingEnvelope) => boolean,
+	sessionFile: string | null | undefined,
+	marker: string,
+): PendingEnvelope[] {
+	return withFileLockSync(join(mailboxDir, ".host-delivery"), () => {
+		const selected = readPending(mailboxDir).filter(predicate);
+		if (selected.length === 0) return [];
+		const ids = selected.map((pending) => pending.envelope.id);
+		beginDelivery(mailboxDir, ids);
+		if (typeof sessionFile === "string" && sessionFile.length > 0) {
+			beginHostDelivery(mailboxDir, ids, sessionFile, marker);
+		} else {
+			markDone(mailboxDir, ids);
+		}
+		return selected;
+	});
+}
+
+/** Requeue a failed-to-render host claim without waiting for process restart. */
+export function requeueHostClaim(mailboxDir: string, envelopeIds: string[]): void {
+	withFileLockSync(join(mailboxDir, ".host-delivery"), () => {
+		const deliveringDir = mailboxDeliveringDirOf(mailboxDir);
+		for (const id of envelopeIds) {
+			const parked = join(deliveringDir, `${id}.json`);
+			if (!existsSync(parked)) continue;
+			const restored = join(mailboxDir, `${id}.json`);
+			renameSync(parked, restored);
+			writeFileSync(attemptMarkerOf(restored), "", "utf8");
+			rmSync(deliveringMetaOf(parked), { force: true });
+		}
+	});
 }
 
 export interface HostDeliveryReconcile {
@@ -280,15 +328,19 @@ export function reconcileHostDelivery(
 		const parked = join(deliveringDir, name);
 		const metaFile = deliveringMetaOf(parked);
 		let sessionFile: string | null = null;
+		let marker = options.marker;
 		try {
-			const meta = JSON.parse(readFileSync(metaFile, "utf8")) as { sessionFile?: unknown };
+			const meta = JSON.parse(readFileSync(metaFile, "utf8")) as {
+				sessionFile?: unknown;
+				marker?: unknown;
+			};
 			if (typeof meta.sessionFile === "string") sessionFile = meta.sessionFile;
+			if (typeof meta.marker === "string" && meta.marker.length > 0) marker = meta.marker;
 		} catch {
 			// Missing/corrupt meta — treat as unverifiable (undelivered).
 		}
 		const lines = sessionFile !== null ? readSessionLines(sessionFile) : null;
-		const delivered =
-			lines !== null && lines.some((line) => line.includes(id) && line.includes(options.marker));
+		const delivered = lines !== null && lines.some((line) => line.includes(id) && line.includes(marker));
 		try {
 			if (delivered) {
 				// This envelope is now durably delivered — the finalize point where

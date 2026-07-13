@@ -6,7 +6,7 @@
  * Run: node phase1-data-layer.mjs
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { EXT, WORLDS, jiti } from "./env.mjs";
@@ -18,6 +18,7 @@ const archive = await jiti.import(join(EXT, "store/archive.ts"));
 const discover = await jiti.import(join(EXT, "typedefs/discover.ts"));
 const { parseTypeFile } = await jiti.import(join(EXT, "typedefs/parse.ts"));
 const envelope = await jiti.import(join(EXT, "mail/envelope.ts"));
+const { adoptLegacyState, recoverInterruptedAdoption, rollbackLegacyAdoption } = await jiti.import(join(EXT, "store/session-scope.ts"));
 
 const scratch = join(WORLDS, "phase1-world");
 rmSync(scratch, { recursive: true, force: true });
@@ -43,9 +44,12 @@ ok("session filename matches Pi's convention", () => {
 		"2026-07-06T22-32-38-193Z_019f398f-e031-71c5-99dd-a9c81af42b22.jsonl",
 	);
 });
-const layout = createLayout(project, { home });
+const layout = createLayout(project, { home, sessionId: "test-session" });
 ok("all paths derive from the sessions dir", () => {
-	const root = join(home, `.pi/agent/sessions/--home-user-fake-project--/subagents-${cwdDigest(project)}`);
+	const root = join(
+		home,
+		`.pi/agent/sessions/--home-user-fake-project--/subagents-by-main-session-${cwdDigest(project)}/owners/test-session`,
+	);
 	assert.equal(layout.subagentsRoot, root);
 	assert.equal(layout.registryFile, join(root, "registry.json"));
 	assert.equal(layout.teamsFile, join(root, "teams.json"));
@@ -67,39 +71,87 @@ ok("all paths derive from the sessions dir", () => {
 	// Phase 7 settings files (store/settings.ts source of truth)
 	assert.equal(layout.globalSettingsFile, join(home, ".pi/agent/subagents.json"));
 	assert.equal(layout.projectSettingsFile, join(project, ".pi/subagents.json"));
-	// finding 6: the legacy (pre-digest) root is exposed for migration.
+	// Both cwd-wide predecessor roots are exposed for explicit adoption only.
 	assert.equal(layout.legacySubagentsRoot, join(home, ".pi/agent/sessions/--home-user-fake-project--/subagents"));
+	assert.equal(
+		layout.legacyDigestSubagentsRoot,
+		join(home, `.pi/agent/sessions/--home-user-fake-project--/subagents-${cwdDigest(project)}`),
+	);
 });
 
-// finding 6 regression: slug-colliding cwds no longer share OUR state root, but
-// still share Pi's own (slug) session dir; and existing legacy state migrates.
-const { migrateStateRootIfNeeded } = await jiti.import(join(EXT, "core.ts"));
+// Session ownership: slug-colliding cwds no longer share OUR state root, and
+// existing cwd-wide state moves only through explicit human-command plumbing.
 ok("cwd-slug collision no longer shares the subagents state root", () => {
 	assert.equal(cwdSlug("/a-b/c"), cwdSlug("/a/b-c")); // the lossy slug still collides
 	const home2 = join(scratch, "home-collide");
-	const lA = createLayout("/a-b/c", { home: home2 });
-	const lB = createLayout("/a/b-c", { home: home2 });
+	const lA = createLayout("/a-b/c", { home: home2, sessionId: "test-session" });
+	const lB = createLayout("/a/b-c", { home: home2, sessionId: "test-session" });
 	assert.equal(lA.projectSessionDir, lB.projectSessionDir); // Pi's dir: unchanged, shared
 	assert.notEqual(lA.subagentsRoot, lB.subagentsRoot); // OUR root: disambiguated
 	assert.notEqual(cwdDigest("/a-b/c"), cwdDigest("/a/b-c"));
 });
-ok("existing legacy state migrates into the digest root (compat)", () => {
+ok("interrupted legacy copy is recovered to the inactive source", () => {
+	const home2 = join(scratch, "home-migrate-crash");
+	const lay = createLayout("/home/user/crash-project", { home: home2, sessionId: "test-session" });
+	mkdirSync(lay.legacySubagentsRoot, { recursive: true });
+	writeFileSync(join(lay.legacySubagentsRoot, "registry.json"), '{"version":1,"agents":{}}\n');
+	const backup = `${lay.legacySubagentsRoot}.legacy-backup-crash`;
+	const staging = join(lay.ownersRoot, ".adopting-test-session-crash");
+	renameSync(lay.legacySubagentsRoot, backup);
+	mkdirSync(staging, { recursive: true });
+	writeFileSync(join(staging, "partial"), "partial\n");
+	mkdirSync(lay.stateContainerRoot, { recursive: true });
+	writeFileSync(
+		join(lay.stateContainerRoot, ".adoption-ledger.json"),
+		`${JSON.stringify({
+			version: 1,
+			status: "copying",
+			source: lay.legacySubagentsRoot,
+			backup,
+			staging,
+			ownerSessionId: lay.ownerSessionId,
+		})}\n`,
+	);
+	const recovered = recoverInterruptedAdoption(lay);
+	assert.equal(recovered.recovered, true);
+	assert.ok(existsSync(join(lay.legacySubagentsRoot, "registry.json")));
+	assert.ok(!existsSync(backup));
+	assert.ok(!existsSync(staging));
+});
+
+ok("existing legacy state requires explicit adoption into one session", () => {
 	const home2 = join(scratch, "home-migrate");
 	const cwd = "/home/user/legacy-project";
-	const lay = createLayout(cwd, { home: home2 });
+	const lay = createLayout(cwd, { home: home2, sessionId: "test-session" });
 	// Seed pre-digest state under the legacy dir; digest root absent.
 	mkdirSync(lay.legacySubagentsRoot, { recursive: true });
 	writeFileSync(join(lay.legacySubagentsRoot, "registry.json"), '{"agents":{}}\n');
 	assert.ok(!existsSync(lay.subagentsRoot));
-	migrateStateRootIfNeeded(lay);
-	// Legacy adopted into the digest root; its files came along.
+	// Merely constructing the layout never assigns it, and a live legacy
+	// run-owner blocks adoption until every old Pi process is closed.
+	assert.ok(existsSync(lay.legacySubagentsRoot));
+	const liveAgent = join(lay.legacySubagentsRoot, "worker", "live");
+	mkdirSync(liveAgent, { recursive: true });
+	writeFileSync(join(liveAgent, ".run-owner.json"), `${JSON.stringify({ pid: process.pid })}\n`);
+	assert.throws(() => adoptLegacyState(lay), /still run-owned by live Pi process/);
+	rmSync(liveAgent, { recursive: true, force: true });
+	const adopted = adoptLegacyState(lay);
 	assert.ok(!existsSync(lay.legacySubagentsRoot));
+	assert.ok(existsSync(adopted.backup), "inactive legacy backup retained");
 	assert.ok(existsSync(join(lay.subagentsRoot, "registry.json")));
-	// Idempotent: a second call with an already-populated digest root is a no-op.
-	mkdirSync(lay.legacySubagentsRoot, { recursive: true }); // a stray legacy dir reappears
+	assert.ok(existsSync(lay.scopeManifestFile));
+	const rolledBack = rollbackLegacyAdoption(lay);
+	assert.equal(rolledBack.restored, lay.legacySubagentsRoot);
+	assert.ok(existsSync(join(lay.legacySubagentsRoot, "registry.json")));
+	assert.ok(!existsSync(lay.subagentsRoot));
+	adoptLegacyState(lay); // activate again for the non-merge check below
+	// A populated owner scope is never silently merged with a reappearing root.
+	mkdirSync(lay.legacySubagentsRoot, { recursive: true });
 	writeFileSync(join(lay.legacySubagentsRoot, "registry.json"), '{"stray":true}\n');
-	migrateStateRootIfNeeded(lay);
-	assert.equal(readFileSync(join(lay.subagentsRoot, "registry.json"), "utf8"), '{"agents":{}}\n');
+	assert.throws(() => adoptLegacyState(lay), /not empty/);
+	rmSync(lay.legacySubagentsRoot, { recursive: true, force: true });
+	writeFileSync(join(lay.subagentsRoot, "new-work.txt"), "diverged\n");
+	assert.throws(() => rollbackLegacyAdoption(lay), /has diverged/);
 });
 
 // ---------------------------------------------------------------- registry
@@ -345,7 +397,7 @@ ok("global/project merge, project wins, hash matches sha256", () => {
 	mkdirSync(layout.globalTypeDefsDir, { recursive: true });
 	const projTypes = join(scratch, "project/.pi/subagents");
 	mkdirSync(projTypes, { recursive: true });
-	const discLayout = createLayout(join(scratch, "project"), { home });
+	const discLayout = createLayout(join(scratch, "project"), { home, sessionId: "test-session" });
 	writeFileSync(join(layout.globalTypeDefsDir, "researcher.md"), "---\nname: researcher\ndescription: global\n---\ng");
 	writeFileSync(join(layout.globalTypeDefsDir, "refactorer.md"), "---\nname: refactorer\ndescription: global\n---\ng");
 	writeFileSync(join(projTypes, "refactorer.md"), "---\nname: refactorer\ndescription: project\n---\np");

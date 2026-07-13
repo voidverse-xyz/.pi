@@ -157,6 +157,8 @@ export interface EnvelopePayload {
 	text: string;
 	/** Structured extras (e.g. schema-conforming collect results on reports). */
 	data?: unknown;
+	/** Persisted completion signal; valid only on report envelopes. */
+	final?: boolean;
 }
 
 export interface Envelope {
@@ -186,6 +188,8 @@ export interface MakeEnvelopeOptions {
 	type: EnvelopeType;
 	text: string;
 	data?: unknown;
+	/** Persisted completion signal; valid only on report envelopes. */
+	final?: boolean;
 	correlationId?: string | null;
 	team?: string | null;
 	hops?: number;
@@ -208,7 +212,11 @@ export function makeEnvelope(options: MakeEnvelopeOptions): Envelope {
 		correlationId: options.correlationId ?? null,
 		team: options.team ?? null,
 		hops: options.hops ?? 0,
-		payload: options.data === undefined ? { text: options.text } : { text: options.text, data: options.data },
+		payload: {
+			text: options.text,
+			...(options.data !== undefined ? { data: options.data } : {}),
+			...(options.final !== undefined ? { final: options.final } : {}),
+		},
 		sentAt: now.toISOString(),
 	};
 	const errors = validateEnvelope(envelope);
@@ -256,8 +264,15 @@ export function validateEnvelope(value: unknown): string[] {
 	const payload = env.payload;
 	if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
 		errors.push("payload must be an object with a text field");
-	} else if (typeof (payload as Record<string, unknown>).text !== "string") {
-		errors.push("payload.text must be a string");
+	} else {
+		const payloadRecord = payload as Record<string, unknown>;
+		if (typeof payloadRecord.text !== "string") errors.push("payload.text must be a string");
+		if (payloadRecord.final !== undefined && typeof payloadRecord.final !== "boolean") {
+			errors.push("payload.final must be a boolean when present");
+		}
+		if (payloadRecord.final !== undefined && env.type !== "report") {
+			errors.push("payload.final is valid only on report envelopes");
+		}
 	}
 	if (typeof env.sentAt !== "string" || Number.isNaN(Date.parse(env.sentAt))) {
 		errors.push(`sentAt must be an ISO timestamp, got ${JSON.stringify(env.sentAt)}`);

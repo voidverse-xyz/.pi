@@ -1,7 +1,7 @@
 /**
  * Definitive registration check: load the extension entry with Pi's OWN
  * extension loader and assert the full surface registered cleanly — the
- * seven subagent_* tools, the /agents command, and both shortcuts.
+ * eight subagent_* tools, the /agents command, and both shortcuts.
  *
  * Run: node loadcheck.mjs   (exits non-zero on any load error / missing item)
  */
@@ -26,6 +26,7 @@ const keysOf = (v) => (v?.keys ? [...v.keys()] : v ? Object.keys(v) : []);
 assert.deepEqual(
 	keysOf(ext.tools).sort(),
 	[
+		"subagent_await",
 		"subagent_collect",
 		"subagent_interrupt",
 		"subagent_retire",
@@ -34,7 +35,7 @@ assert.deepEqual(
 		"subagent_status",
 		"subagent_steer",
 	],
-	"the seven-tool surface",
+	"the eight-tool surface",
 );
 assert.deepEqual(keysOf(ext.commands), ["agents"], "/agents command");
 assert.deepEqual(keysOf(ext.shortcuts).sort(), ["alt+e", "alt+j"], "shortcuts");

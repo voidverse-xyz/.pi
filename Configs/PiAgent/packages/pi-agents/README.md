@@ -3,13 +3,15 @@
 A Pi extension that gives the main agent a roster of **persistent subagents**:
 long-lived identities with durable memory (each one is a REAL Pi session JSONL
 stored beside the project's own sessions, resumable by Pi itself), addressed
-as `<type>/<id>` and connected only through **disk-backed mailboxes** with a
+as `<type>/<id>` and owned by one main Pi conversation. Independent Pi sessions
+in the same cwd have isolated rosters, memory, teams, and mail. Agents are
+connected only through **disk-backed mailboxes** with a
 single envelope contract (`message | question | answer | report | escalation |
 error`). Mail never interrupts a running turn; questions never block (the
 asker goes dormant and the answer wakes it with its question quoted back);
 teams scope which peers may talk; everything destructive escalates to the
 human. Design docs are authoritative:
-`~/Agents/Documents/Configs/Subagent-Docs/` (00-design-log.md D1–D23,
+`Configs/Subagent-Docs/` (00-design-log.md,
 01-power-matrix, 02-envelope-contract, 03-tool-surface, 04-type-schema,
 05-tui-spec, 06-architecture).
 
@@ -23,15 +25,16 @@ human. Design docs are authoritative:
 3. Author at least one type definition (below), then ask the main agent to
    spawn it, or watch it decide to on its own.
 
-## The seven main-agent tools (03-tool-surface)
+## The eight main-agent tools (03-tool-surface)
 
 | Tool | Power |
 |------|-------|
-| `subagent_spawn` | Get-or-create `<type>/<id>` (existing = wake, memory intact; `created:false`). `team` joins/creates a team; `lifetime:"oneshot"` = disposable (auto `tmp-<short>` id — oneshots never take an explicit id); `task` = first message |
-| `subagent_send` | Mail to an agent: send (`when:"now"`), queue (`when:"after-turn"`), answer (`correlationId` = the question's envelope id). Never interrupts a running turn |
+| `subagent_spawn` | Get-or-create `<type>/<id>` (existing = wake, memory intact; `created:false`). `team` joins/creates a team; `lifetime:"oneshot"` = disposable (auto `tmp-<short>` id — oneshots never take an explicit id); `task` = first message and returns `taskEnvelopeId` |
+| `subagent_send` | Mail to an agent and return `envelopeId`: send (`when:"now"`), queue (`when:"after-turn"`), answer (`correlationId` = the question's envelope id). Never interrupts a running turn |
 | `subagent_steer` | Inject into a RUNNING turn (main-agent-only; `steered:false` if idle) |
 | `subagent_status` | Roster (state, lifetime, teams, vitals: ctx %, tokens, cost, turns) or per-agent detail + transcript tail. Read-only |
-| `subagent_collect` | Non-blocking: sends a collect request carrying a JSON schema; the result arrives later as a report envelope, validated against the schema on arrival |
+| `subagent_collect` | Non-blocking: sends a collect request carrying a JSON schema and returns `requestId`; the result is validated on arrival |
+| `subagent_await` | Cancellably wait for a final report correlated to `taskEnvelopeId`/`envelopeId`, or a collect result correlated to `requestId`. Questions/escalations/errors return early as `attention`; timeout consumes nothing |
 | `subagent_interrupt` | Abort the current turn; agent stays alive, goes dormant |
 | `subagent_retire` | The ONLY destructive tool: deregister, scrub from teams, move the dir to `.archive/` (post-mortem viewable, GC'd after N days) |
 
@@ -93,14 +96,27 @@ auto-retired. **Oneshots** ("named = persistent, anonymous = disposable")
 auto-retire after their final report, error, or budget ceiling; the dir moves
 to `.archive/<type>/<id>/` and stays viewable until GC (default 7 days).
 
-State on disk (D3/D5), beside Pi's own sessions:
+Mutable state is owned by the current main Pi session; project type libraries
+and settings remain shared. `/reload` and `/resume` restore the same scope;
+`/new` starts empty; `/fork` starts empty and shows an explicit non-inheritance
+notice. The same persisted session cannot have two live host consumers.
+Non-persisted host sessions permit oneshots only and use temporary state.
+
+State on disk, beside Pi's own sessions:
 
 ```
-~/.pi/agent/sessions/<cwd-slug>/subagents/
-  registry.json  teams.json
-  .main/mailbox/  .main/escalations/  .archive/
-  <type>/<id>/{<ts>_<uuid>.jsonl, mailbox/, files/}
+~/.pi/agent/sessions/<cwd-slug>/subagents-by-main-session-<cwd-digest>/
+  owners/<main-session-id>/
+    scope.json  autonomy.json  registry.json  teams.json
+    .main/mailbox/  .main/escalations/  .archive/
+    <type>/<id>/{<ts>_<uuid>.jsonl, mailbox/, files/}
 ```
+
+Older cwd-wide state is never silently assigned. Close other Pi processes and
+run `/agents adopt-legacy` to copy it into the current persisted session while
+retaining an inactive backup. `/agents rollback-legacy` restores that backup only
+while the adopted scope remains unchanged; after divergence, export/recover
+manually rather than guessing at a merge.
 
 ## Safety model (D10/D20/D21)
 
@@ -120,6 +136,7 @@ State on disk (D3/D5), beside Pi's own sessions:
   kills question ping-pong. Main-agent mailbox wakeups do not consume or obey
   this pool. Tripping **pauses, never kills**: agent turns finish, agent mail
   queues on disk, and your next message or `/agents resume` refills and drains.
+  Counters are persisted inside the owning session scope across reload/resume.
 - **Budget ceilings** (D15): per-type (frontmatter) or global (settings)
   `maxTokensTotal` / `maxTurnMinutes` / `maxContextCompactions`. Crossing
   emits an error envelope + interrupt; persistent agents park dormant for the
@@ -141,6 +158,10 @@ State on disk (D3/D5), beside Pi's own sessions:
 - `/agents <type>/<id>` — jump straight into the session viewer.
 - `/agents resume` — refill the autonomy pool and drain queued mail
   without sending a message.
+- `/agents adopt-legacy` — human-confirmed assignment of inactive cwd-wide
+  state into the current empty persisted session scope.
+- `/agents rollback-legacy` — restore the inactive backup only if the adopted
+  scope's fingerprint has not diverged.
 - `alt+j` — cycle main → agent 1 → … → main through the full-screen viewer
   (Pi-native transcript replay + live tail; envelope traffic as compact 📨
   entries). The input line is the agent's *user*: `Enter` mails at the turn
@@ -181,7 +202,7 @@ restart; the next interactive or RPC user message re-enables them. Pi exposes th
 aborted result, not whether Esc or another abort source caused it.
 
 Files are re-read at every real user turn, so edits apply **live** (only
-`maxConcurrent` waits for the next session//reload). Unknown keys and bad
+`maxConcurrent` waits for the next session/reload). Unknown keys and bad
 values are ignored with warnings, never fatal. Retention GC (archive, `.done`
 mail, resolved escalation records) runs automatically on session start.
 
@@ -194,7 +215,8 @@ cd packages/pi-agents
 
 One command: strict typecheck (tsc — resolved from PATH or installed
 on demand into a temp dir via `npm install typescript`; pin with `TSC=...`),
-then the phase 1–7 harnesses and the Pi extension-loader check. The harnesses
+then the phase 1–7, lifecycle, runtime, and session-scope/await harnesses plus
+the Pi extension-loader check. The harnesses
 use the jiti-alias pattern with a scripted mock LLM provider — real
 AgentSession turns, **no network, no real model**. Prereqs: node ≥ 22 and a
 global pi install (set `PI_SDK_DIR=/path/to/@earendil-works/pi-coding-agent`
@@ -203,6 +225,6 @@ if it lives somewhere unusual). Individual files run standalone:
 
 ## Design docs
 
-`~/Agents/Documents/Configs/Subagent-Docs/` — the design log (D1–D23) and the
-six specs (01–06) are the source of truth; deviations are marked `// DEVIATION:` in
+`Configs/Subagent-Docs/` — the design log and six specs (01–06) are the source
+of truth; deviations are marked `// DEVIATION:` in
 the source.

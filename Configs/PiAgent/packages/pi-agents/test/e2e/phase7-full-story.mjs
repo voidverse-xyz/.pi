@@ -192,14 +192,14 @@ async function test(name, fn) {
 	console.log(`  ok  ${name}`);
 }
 
-const layout = createLayout(project, { home });
+const layout = createLayout(project, { home, sessionId: "test-session" });
 
 // ---------------------------------------------------------------------------
 // (unit) settings loader
 // ---------------------------------------------------------------------------
 console.log("settings (unit):");
 await test("defaults when no files exist", async () => {
-	const empty = createLayout(join(scratch, "nowhere"), { home: join(scratch, "nohome") });
+	const empty = createLayout(join(scratch, "nowhere"), { home: join(scratch, "nohome"), sessionId: "test-session" });
 	const { settings, warnings } = settingsMod.loadSettings(empty);
 	assert.deepEqual(settings, {
 		autoWake: true, maxConcurrent: 5, maxHops: 8,
@@ -337,6 +337,10 @@ const ctx = {
 	model: modelRegistry.find("mock", "mock-1"),
 	isProjectTrusted: () => true,
 	hasUI: false,
+	sessionManager: {
+		getSessionId: () => "test-session",
+		getSessionFile: () => join(layout.projectSessionDir, "host-main.jsonl"),
+	},
 	ui: {
 		notify: (text, level) => notifications.push({ text, level }),
 		setStatus: () => {},
@@ -484,7 +488,9 @@ await test("5. collect with schema → report validated on drain (digest note)",
 	assert.match(res.requestId, /^msg_/);
 	assert.ok(["dormant", "queued", "running", "waiting"].includes(res.recipientState));
 	await waitUntil(
-		() => mailbox.readPending(layout.mainMailboxDir).some((p) => p.envelope.type === "report" && p.envelope.correlationId !== null),
+		() => mailbox.readPending(layout.mainMailboxDir).some(
+			(p) => p.envelope.type === "report" && p.envelope.correlationId === res.requestId,
+		),
 		"collect report in main mailbox",
 	);
 	const digest = await drainMainViaUserTurn();
@@ -707,7 +713,7 @@ await test("9. end state consistent: registry ⋈ teams ⋈ disk, no orphans", a
 	const [rType, rId] = runnerAddress.split("/");
 	assert.ok(existsSync(layout.archiveDir(rType, rId)));
 	// no agent dirs without registry entries (D3: the directory is the truth)
-	const RESERVED = new Set([".archive", ".main", "registry.json", "teams.json"]);
+	const RESERVED = new Set([".archive", ".main", ".host-owner.json", "autonomy.json", "scope.json", "registry.json", "teams.json"]);
 	for (const entry of readdirSync(layout.subagentsRoot)) {
 		if (RESERVED.has(entry)) continue;
 		for (const id of readdirSync(join(layout.subagentsRoot, entry))) {
