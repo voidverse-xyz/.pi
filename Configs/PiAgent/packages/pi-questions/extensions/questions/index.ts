@@ -47,6 +47,9 @@ const OptionSchema = Type.Object({
 	value: Type.Optional(
 		Type.String({ description: "Optional stable value returned when this option is selected, instead of its display title." }),
 	),
+	recommended: Type.Optional(
+		Type.Boolean({ description: "If true, visually marks this option as recommended without selecting it." }),
+	),
 }, { additionalProperties: false });
 
 const InputSchema = Type.Object({
@@ -113,11 +116,12 @@ export default function askUser(pi: ExtensionAPI) {
 		description:
 			"Ask the user one or more questions and wait for their answers. Use this whenever you have a question, " +
 			"need to clarify requirements, want a preference, or must confirm a decision before proceeding. Inputs can be " +
-			"text, radio, multi, or file. Inputs may be optional, have defaults, and include validation.",
+			"text, radio, multi, or file. Inputs may be optional, have defaults or recommended choices, and include validation.",
 		promptSnippet: "ask_user — ask the user text / single-choice / multi-choice / typed questions and get their answers",
 		promptGuidelines: [
 			"When you need information only the user can provide, call ask_user instead of guessing or asking in prose.",
-			"Give every ask_user input a clear title and description, use optional for nice-to-have answers, and provide default/defaults when a best guess exists.",
+			"Give every ask_user input a clear title and description, and use optional for nice-to-have answers.",
+			"In ask_user, mark a suggested radio or multi choice with options[].recommended; this labels the choice without selecting it. Use default/defaults only when the answer should actually be preselected.",
 			"Prefer typed ask_user inputs (file, radio, multi) over free text when the answer shape is known; for a number use text with a pattern like '^-?\\d+$'.",
 			"For a yes/no confirmation, use a required radio with two options rather than free text.",
 			"Set a stable `id` on each input (and `options[].value`) when you will process answers programmatically — answers echo the id and the selected option's value.",

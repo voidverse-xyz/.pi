@@ -10,8 +10,10 @@ Supported inputs:
 - file or directory selection
 
 Inputs support stable IDs, defaults, optional answers, descriptions, and custom
-“Something else” choices. One call may contain up to ten inputs and fifty options per
-choice input; individual text answers are limited to 16 KiB.
+“Something else” choices. Choice options may also be marked `recommended`; this adds
+a persistent “(recommended)” label without selecting the option. Defaults remain
+separate because they preselect answers. One call may contain up to ten inputs and
+fifty options per choice input; individual text answers are limited to 16 KiB.
 
 The tool intentionally requires Pi's interactive TUI. Legacy IPC forwarding was
 removed because it targeted the archived subprocess subagent system. A headless agent

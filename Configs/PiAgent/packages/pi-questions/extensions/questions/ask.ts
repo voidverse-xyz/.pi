@@ -25,6 +25,8 @@ export interface Option {
 	description?: string;
 	/** Stable value returned when this option is selected, instead of its display title. */
 	value?: string;
+	/** Visually suggests this option without selecting it. */
+	recommended?: boolean;
 }
 
 export interface Input {
@@ -78,7 +80,7 @@ export interface RawInput {
 	title: string;
 	id?: string;
 	description?: string;
-	options?: { title: string; description?: string; value?: string }[];
+	options?: { title: string; description?: string; value?: string; recommended?: boolean }[];
 	optional?: boolean;
 	default?: string;
 	defaults?: string[];
@@ -173,7 +175,7 @@ const ALLOWED_INPUT_KEYS = new Set([
 	"patternHint",
 	"fileKind",
 ]);
-const ALLOWED_OPTION_KEYS = new Set(["title", "description", "value"]);
+const ALLOWED_OPTION_KEYS = new Set(["title", "description", "value", "recommended"]);
 
 /** Reject unknown/stale fields on the raw tool payload before it is normalized. */
 export function validateRawInputs(raw: unknown): string | null {
@@ -219,6 +221,7 @@ export function normalizeInputs(raw: RawInput[]): Input[] {
 				title: o.title.trim(),
 				description: o.description?.trim() || undefined,
 				value: o.value?.trim() || undefined,
+				recommended: o.recommended === true || undefined,
 			})),
 			optional: i.optional === true,
 			default: i.default,
@@ -960,8 +963,10 @@ export function showUserInputs(
 				return inp.type;
 			}
 
-			function defaultSuffix(show: boolean): string {
-				return show ? theme.fg("dim", " (default)") : "";
+			function optionSuffix(isDefault: boolean, isRecommended: boolean): string {
+				const defaultLabel = isDefault ? theme.fg("dim", " (default)") : "";
+				const recommendedLabel = isRecommended ? theme.fg("success", " (recommended)") : "";
+				return defaultLabel + recommendedLabel;
 			}
 
 			function renderInput(idx: number, rw: number, add: (prefix: string, text: string) => void) {
@@ -990,7 +995,7 @@ export function showUserInputs(
 							// Show the current value first, then the edit action beneath it, so the
 							// default (or previously entered) value reads as the answer and "Edit"
 							// is the action that changes it.
-							add("     ", theme.fg("text", s.textValue) + defaultSuffix(!s.textEdited && !!inp.defaultText));
+							add("     ", theme.fg("text", s.textValue) + optionSuffix(!s.textEdited && !!inp.defaultText, false));
 							lines.push("");
 							add(editPrefix, theme.fg(editColor, "Edit ✎"));
 						} else {
@@ -1018,7 +1023,7 @@ export function showUserInputs(
 					const mark = inp.type === "multi" ? (chosen ? "[x]" : "[ ]") : chosen ? "(●)" : "( )";
 					const prefix = cursor ? theme.fg("accent", "> ") : "  ";
 					const color = cursor ? "accent" : "text";
-					const suffix = defaultSuffix(!s.selectionEdited && !!inp.defaultSelections?.has(i));
+					const suffix = optionSuffix(!s.selectionEdited && !!inp.defaultSelections?.has(i), opt.recommended === true);
 					add(prefix, `${theme.fg(chosen ? "success" : "dim", mark)} ${theme.fg(color, opt.title)}${suffix}`);
 					if (opt.description) add("       ", theme.fg("muted", opt.description));
 				}
@@ -1056,7 +1061,7 @@ export function showUserInputs(
 					add("   ", theme.fg("muted", "Path:"));
 					for (const line of editor.render(Math.max(1, rw - 4))) lines.push(`   ${line}`);
 				} else if (s.textValue) {
-					add("     ", theme.fg("text", s.textValue) + defaultSuffix(!s.textEdited && !!inputs[idx].defaultText));
+					add("     ", theme.fg("text", s.textValue) + optionSuffix(!s.textEdited && !!inputs[idx].defaultText, false));
 				}
 			}
 

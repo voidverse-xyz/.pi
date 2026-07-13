@@ -18,7 +18,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-groovebox-cycle` | `/groovebox-cycle [on\|off]` animated theme colors |
 | `pi-merge` | `/merge` current-session branch synthesis |
 | `pi-notify-user` | LLM-callable `notify_user` notices |
-| `pi-questions` | LLM-callable `ask_user` TUI questions |
+| `pi-questions` | LLM-callable `ask_user` TUI questions with defaults and non-selecting recommendations |
 | `pi-queue` | Managed, session-persistent steer/follow-up messages with `/queue` |
 | `pi-run-guard` | Confirmation before interrupting an active run |
 | `pi-safety` | Main-agent Bash confirmation modes and privacy-preserving `/safety-log` |
