@@ -12,7 +12,7 @@ The local Codex CLI 0.144.1 TUI used these stable presentation details:
 - syntax palette: muted `#9399b2`, red `#eba0ac`, cyan `#94e2d5`, green `#a6e3a1`, text `#cdd6f4`
 - footer model/thinking: warm `#f6e2b7`
 - footer working directory: green `#abdfa7` (represented by the theme's green token)
-- working row: a randomly selected spinner per agent run, elapsed duration in dim gray, and current-turn output tokens in a distinct muted blue-gray
+- working row: a randomly selected spinner per agent run, elapsed duration in dim gray, and current-turn output count in a distinct muted blue-gray with the `token` label
 
 ## Pi implementation
 

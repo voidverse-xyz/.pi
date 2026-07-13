@@ -199,7 +199,7 @@ export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 		let tokenSuffix = "";
 		if (turnOutputTokens >= 1) {
 			const estimateMark = tokenCountIsExact ? "" : "~";
-			const tokens = theme.fg("thinkingText", `${estimateMark}${formatTokenCount(turnOutputTokens)} tok`);
+			const tokens = theme.fg("thinkingText", `${estimateMark}${formatTokenCount(turnOutputTokens)} token`);
 			tokenSuffix = ` ${separator} ${tokens}`;
 		}
 		ctx.ui.setWorkingMessage(`${label} ${separator} ${elapsed}${tokenSuffix}`);
