@@ -89,7 +89,8 @@ const InputSchema = Type.Object({
 	patternHint: Type.Optional(Type.String({ description: "Text inputs only: human-readable hint shown when pattern validation fails." })),
 	fileKind: Type.Optional(
 		StringEnum(["file", "directory", "any"] as const, {
-			description: "File inputs only: restrict the path to files, directories, or either. Defaults to 'any'.",
+			description:
+				"File inputs only: restrict existing paths to files, directories, or either. Nonexistent paths are allowed. Defaults to 'any'.",
 		}),
 	),
 }, { additionalProperties: false });

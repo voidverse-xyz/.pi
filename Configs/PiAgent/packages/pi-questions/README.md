@@ -9,6 +9,10 @@ Supported inputs:
 - multiple choice
 - file or directory selection
 
+File inputs accept existing paths and paths that do not exist yet, such as a
+new output file or directory. `fileKind` is enforced when an existing path can
+be inspected.
+
 Inputs support stable IDs, defaults, optional answers, descriptions, and custom
 “Something else” choices. Choice options may also be marked `recommended`; this adds
 a persistent “(recommended)” label without selecting the option. Defaults remain

@@ -92,7 +92,7 @@ export interface RawInput {
 interface FileStatCache {
 	raw: string;
 	abs: string;
-	status: "checking" | "ok" | "missing" | "wrong-kind";
+	status: "checking" | "ok" | "wrong-kind";
 	message?: string;
 }
 
@@ -668,7 +668,10 @@ export function showUserInputs(
 				},
 				() => {
 					if (token !== s.fileStatToken) return;
-					s.fileStat = { raw, abs: pathInfo.abs, status: "missing", message: "Path does not exist" };
+					// Nonexistent paths are valid: callers may be asking where to create
+					// a new file or directory. fileKind is enforced only when the path
+					// already exists and its kind can be inspected.
+					s.fileStat = { raw, abs: pathInfo.abs, status: "ok" };
 					refresh();
 				},
 			);
@@ -691,7 +694,6 @@ export function showUserInputs(
 			if (inp.type === "file") {
 				const cache = checkFilePath(idx);
 				if (!cache || cache.status === "checking") return "Checking path…";
-				if (cache.status === "missing") return cache.message ?? "Path does not exist";
 				if (cache.status === "wrong-kind") return cache.message ?? "Pick a file/directory";
 				return null;
 			}
