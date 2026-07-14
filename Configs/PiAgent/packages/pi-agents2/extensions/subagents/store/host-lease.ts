@@ -1,0 +1,212 @@
+/**
+ * store/host-lease.ts — the ONE mutual-exclusion primitive (D7).
+ *
+ * Exactly one live process may own a `subagents/<sessionId>/` scope at a time.
+ * Everything else in v2 relies on this: no per-agent run-owner locks, no
+ * registry advisory locks. The lease is a `.host-owner.json` marker created with
+ * an exclusive `wx` open; a heartbeat keeps it fresh; a foreign marker is
+ * honored only while its process is provably alive (pid liveness + start-time
+ * fence against PID reuse), otherwise it's swept.
+ *
+ * Also owns the scope manifest (`scope.json`): records {cwd, ownerSessionId} so a
+ * fork/new session that inherits a stale dir is detected (D25 — fork starts
+ * empty, non-inheritance is disclosed).
+ */
+
+import { randomBytes } from "node:crypto";
+import { mkdirSync, openSync, readFileSync, writeFileSync, closeSync, unlinkSync, statSync } from "node:fs";
+import { dirname } from "node:path";
+import { atomicWriteJson } from "./registry.ts";
+import type { Layout } from "./layout.ts";
+
+const HEARTBEAT_MS = 5000;
+/** A marker whose heartbeat is older than this AND whose pid is dead is stale. */
+const STALE_AFTER_MS = HEARTBEAT_MS * 4;
+
+interface HostOwnerMarker {
+	runtimeId: string;
+	pid: number;
+	/** Process start-time fence (Linux /proc starttime), or null when unavailable. */
+	startTime: number | null;
+	updatedAt: number;
+}
+
+/** Linux: field 22 of /proc/<pid>/stat is the process start time (clock ticks since boot). */
+function processStartTime(pid: number): number | null {
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		// The comm field (field 2) may contain spaces/parens; split after the last ')'.
+		const rparen = stat.lastIndexOf(")");
+		const rest = stat.slice(rparen + 2).split(" ");
+		// After comm, field 3 is at index 0; starttime is field 22 → index 22 - 3 = 19.
+		const start = rest[19];
+		return start ? Number.parseInt(start, 10) : null;
+	} catch {
+		return null;
+	}
+}
+
+function pidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "EPERM"; // alive but not ours
+	}
+}
+
+/** Is a foreign owner marker still live (so we must NOT steal the scope)? */
+function markerIsLive(marker: HostOwnerMarker, now: number): boolean {
+	if (!pidAlive(marker.pid)) return false;
+	// Guard PID reuse: if we can read the current start time, it must match.
+	if (marker.startTime !== null) {
+		const current = processStartTime(marker.pid);
+		if (current !== null && current !== marker.startTime) return false;
+	}
+	// A live pid with a stalled heartbeat is still treated as live (paused process);
+	// only a dead pid frees the lease. The staleness window guards the case where
+	// the pid is alive but start-time is unavailable and the heartbeat is ancient.
+	if (marker.startTime === null && now - marker.updatedAt > STALE_AFTER_MS) return false;
+	return true;
+}
+
+export class HostScopeLockedError extends Error {
+	constructor(public readonly ownerPid: number) {
+		super(`Subagents scope is owned by a live process (pid ${ownerPid}).`);
+		this.name = "HostScopeLockedError";
+	}
+}
+
+function readMarker(path: string): HostOwnerMarker | null {
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf8")) as Partial<HostOwnerMarker>;
+		if (typeof parsed.runtimeId !== "string" || typeof parsed.pid !== "number" || typeof parsed.updatedAt !== "number") {
+			return null;
+		}
+		return { runtimeId: parsed.runtimeId, pid: parsed.pid, startTime: typeof parsed.startTime === "number" ? parsed.startTime : null, updatedAt: parsed.updatedAt };
+	} catch {
+		return null;
+	}
+}
+
+export interface HostScopeLease {
+	readonly runtimeId: string;
+	release(): void;
+}
+
+/** Ensure the scope manifest records this cwd + owner (idempotent). */
+export function ensureScopeManifest(layout: Layout): void {
+	type Manifest = { cwd?: string; ownerSessionId?: string };
+	let existing: Manifest | null = null;
+	try {
+		existing = JSON.parse(readFileSync(layout.scopeManifestFile, "utf8")) as Manifest;
+	} catch {
+		existing = null;
+	}
+	if (existing && existing.cwd === layout.cwd && existing.ownerSessionId === layout.ownerSessionId) return;
+	atomicWriteJson(layout.scopeManifestFile, { version: 1, cwd: layout.cwd, ownerSessionId: layout.ownerSessionId });
+}
+
+/**
+ * Claim the host-scope lease for this process. Throws HostScopeLockedError if a
+ * live process already owns it. Returns a lease with a heartbeat timer; call
+ * release() at session end/shutdown.
+ */
+export function claimHostScope(layout: Layout, options: { now?: () => number } = {}): HostScopeLease {
+	const now = options.now ?? Date.now;
+	const path = layout.hostOwnerFile;
+	mkdirSync(dirname(path), { recursive: true });
+	const runtimeId = randomBytes(12).toString("hex");
+	const pid = process.pid;
+	const startTime = processStartTime(pid);
+
+	// Heartbeat: refresh the marker we already own. Only writes if the marker is
+	// still ours (a swept-then-reclaimed scope must not be clobbered).
+	const heartbeat = (): void => {
+		const current = readMarker(path);
+		if (current && current.runtimeId !== runtimeId) return;
+		const marker: HostOwnerMarker = { runtimeId, pid, startTime, updatedAt: now() };
+		writeFileSync(path, JSON.stringify(marker), "utf8");
+	};
+
+	// Claim loop: try exclusive create; on EEXIST, sweep if dead, else fail.
+	for (let attempt = 0; attempt < 3; attempt++) {
+		try {
+			const fd = openSync(path, "wx");
+			const marker: HostOwnerMarker = { runtimeId, pid, startTime, updatedAt: now() };
+			writeFileSync(fd, JSON.stringify(marker), "utf8");
+			closeSync(fd);
+			break;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			const foreign = readMarker(path);
+			if (foreign && foreign.runtimeId !== runtimeId && markerIsLive(foreign, now())) {
+				throw new HostScopeLockedError(foreign.pid);
+			}
+			// stale or unreadable → sweep and retry
+			try {
+				unlinkSync(path);
+			} catch {
+				/* raced away */
+			}
+		}
+	}
+
+	ensureScopeManifest(layout);
+
+	const timer = setInterval(() => {
+		try {
+			heartbeat();
+		} catch {
+			/* transient; next tick retries */
+		}
+	}, HEARTBEAT_MS);
+	if (typeof timer.unref === "function") timer.unref();
+
+	let released = false;
+	return {
+		runtimeId,
+		release(): void {
+			if (released) return;
+			released = true;
+			clearInterval(timer);
+			const current = readMarker(path);
+			if (current && current.runtimeId === runtimeId) {
+				try {
+					unlinkSync(path);
+				} catch {
+					/* already gone */
+				}
+			}
+		},
+	};
+}
+
+/** Whether a scope dir currently has a live host owner (without claiming). */
+export function hostScopeIsLive(layout: Layout, now: number = Date.now()): boolean {
+	const marker = readMarker(layout.hostOwnerFile);
+	return marker !== null && markerIsLive(marker, now);
+}
+
+/** Read the scope manifest, if present (for fork non-inheritance disclosure). */
+export function readScopeManifest(layout: Layout): { cwd: string; ownerSessionId: string } | null {
+	try {
+		const parsed = JSON.parse(readFileSync(layout.scopeManifestFile, "utf8")) as { cwd?: string; ownerSessionId?: string };
+		if (typeof parsed.cwd === "string" && typeof parsed.ownerSessionId === "string") {
+			return { cwd: parsed.cwd, ownerSessionId: parsed.ownerSessionId };
+		}
+		return null;
+	} catch {
+		return null;
+	}
+}
+
+/** statSync helper kept for callers checking dir presence without throwing. */
+export function pathExists(path: string): boolean {
+	try {
+		statSync(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
