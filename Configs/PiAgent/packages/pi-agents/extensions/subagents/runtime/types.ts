@@ -14,6 +14,7 @@
  * Contract-only module: types and one interface, no implementation.
  */
 
+import type { EnvelopeType } from "../mail/envelope.ts";
 import type { AutonomyStatus } from "../rails/autonomy.ts";
 import type { EscalationEvent, EscalationRecord } from "../sandbox/escalation.ts";
 import type { AgentState, AgentVitals, Lifetime } from "../store/registry.ts";
@@ -51,6 +52,8 @@ export interface SpawnOptions {
 	lifetime?: Lifetime;
 	/** Optional first message — spawn + assign in one call. */
 	task?: string;
+	/** Explicitly detach this task from the current main-turn completion barrier. */
+	background?: boolean;
 	/** Session defaults for fields the frontmatter leaves unset. */
 	inherit?: InheritedDefaults;
 }
@@ -84,6 +87,8 @@ export interface SendOptions {
 	when?: "now" | "after-turn";
 	/** Set when this send answers a question envelope (03-tool-surface). */
 	correlationId?: string;
+	/** Explicitly detach an uncorrelated task message from the current completion barrier. */
+	background?: boolean;
 }
 
 export interface SendResult {
@@ -145,8 +150,10 @@ export interface SteerResult {
 }
 
 export interface InterruptResult {
-	/** false = agent wasn't running. */
+	/** false = agent wasn't running or the expected warning turn is stale. */
 	interrupted: boolean;
+	/** Exact task assignments present in the interrupted turn. */
+	taskAnchorIds?: string[];
 }
 
 export interface RetireResult {
@@ -236,13 +243,29 @@ export type RuntimeEvent =
 	| { type: "turn-error"; address: string; error: string }
 	| { type: "agent-retired"; address: string; archiveDir: string | null }
 	/** An envelope left the runtime (Phase 3 emits; declared now so the contract is stable). */
-	| { type: "envelope-sent"; from: string; to: string; envelopeId: string }
+	| {
+		type: "envelope-sent";
+		from: string;
+		to: string;
+		envelopeId: string;
+		envelopeType: EnvelopeType;
+		correlationId: string | null;
+	  }
 	/** A delivery bounced — guard rejection or unknown address (Phase 4, D12/D21). */
 	| { type: "bounce"; from: string; to: string; envelopeId: string; reason: string }
-	/** The D21 autonomy pool tripped: no new autonomous turns until reset/resume. */
-	| { type: "autonomy-paused"; status: AutonomyStatus }
-	/** The pool was refilled (user input or manual resume); queued mail drains. */
-	| { type: "autonomy-resumed"; status: AutonomyStatus }
+	/** A warning-only threshold was crossed; execution continues until a human interrupts it. */
+	| {
+		type: "limit-warning";
+		address: string;
+		limit: "autonomousTurns" | "autonomousTokens" | "maxTokensTotal" | "maxTurnMinutes" | "maxContextCompactions";
+		observed: number;
+		threshold: number;
+		status?: AutonomyStatus;
+		/** Runtime-unique affected turn; fences delayed warning actions. */
+		turnId: string;
+		/** Exact required assignments present in the affected turn, when known. */
+		taskAnchorIds?: string[];
+	  }
 	/** Phase 5: a guarded tool call escalated / was resolved (D10/D22 modal). */
 	| EscalationEvent;
 
@@ -283,7 +306,7 @@ export interface SubagentRuntime {
 	steer(to: string, text: string): Promise<SteerResult>;
 
 	/** Abort the current turn; agent stays alive, memory intact, goes dormant. */
-	interrupt(to: string): Promise<InterruptResult>;
+	interrupt(to: string, expectedTurnId?: string): Promise<InterruptResult>;
 
 	/**
 	 * The ONLY destructive power: deregister, scrub teams.json, move the dir

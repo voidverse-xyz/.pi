@@ -7,22 +7,14 @@
  * swappable behind runtime/types.ts — this file holds a SubagentRuntime,
  * never the in-process class, past construction.
  *
- * Phase-3 surface: the full power-matrix passthroughs (spawn, send, steer,
- * interrupt, retire, collect, status, peek), sendAsUser (D17), and main-mail
- * plumbing for all-mail auto-wake: onMainMail notification, unread count
- * (📬 status, Phase 6), and drainMainMail() — compose the wake digest
- * over .main/mailbox/ (validating collect results against their recorded
- * schemas on the way) and park the envelopes in .delivering/ until the
- * injected digest is verified in the main session JSONL (reconciliation:
- * drainMainMail finalizes in-process, reconcileMainMailFor requeues crash
- * losses at session_start — main-mailbox at-least-once).
+ * The surface includes the power-matrix passthroughs, sendAsUser (D17), durable
+ * main-mail claiming/reconciliation, exact anchored await, and the D27
+ * current-user-turn required-task group. Direct tasks plus transitive peer
+ * delegations stay joined unless a call explicitly sets background:true.
  *
- * Phase 4 adds the D21 rails: the consolidated settings object (autoWake,
- * maxConcurrent, maxHops, autonomousTurns, autonomousTokens — doc defaults)
- * and the ONE subagent AutonomyBudget per core. The runtime meters subagent
- * turns and drains on resume; main-agent mailbox wakeups are deliberately not
- * charged to or gated by this pool. index.ts resets the agent pool on user
- * input. queuedMailCount() + autonomy.status() feed the paused status.
+ * Session turn/token accounting and per-agent token/time/compaction values are
+ * warning thresholds only. They never gate, abort, or retire work; index.ts
+ * resets the session window on genuine user input and renders targeted warnings.
  *
  * Phase 7: settings come from a REAL source (store/settings.ts —
  * ~/.pi/agent/subagents.json overridden by <project>/.pi/subagents.json;
@@ -35,12 +27,12 @@
  * settings-controlled retention).
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { collectResultNote, validateAgainstSchema } from "./mail/collect.ts";
 import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
-import { ENVELOPE_ID_RE, type Envelope } from "./mail/envelope.ts";
+import { ENVELOPE_ID_RE, MAIN_ADDRESS, type Envelope } from "./mail/envelope.ts";
 import {
 	addHostDeliveryMarker,
 	claimPendingForHost,
@@ -110,26 +102,10 @@ function layoutFor(cwd: string, locator: ScopeLocator): Layout {
 	});
 }
 
-/** Read the durable abort latch for one owning main session. */
-export function mainAutoWakeBlockedFor(cwd: string, locator: ScopeLocator): boolean {
-	return existsSync(layoutFor(cwd, locator).mainAutoWakeLatchFile);
-}
-
-/** Persist/clear the abort latch for one owning main session. */
-export function setMainAutoWakeBlockedFor(cwd: string, locator: ScopeLocator, blocked: boolean): void {
-	const file = layoutFor(cwd, locator).mainAutoWakeLatchFile;
-	if (!blocked) {
-		rmSync(file, { force: true });
-		return;
-	}
-	mkdirSync(dirname(file), { recursive: true });
-	writeFileSync(file, "blocked\n", { mode: 0o600 });
-}
 
 /**
- * The customType (prefix) index.ts stamps on every main-mail digest message
- * it injects into the host session ("subagent-mail" and "subagent-mail-wake"
- * both contain it). Reconciliation uses it to recognize OUR injected digests
+ * The customType prefix index.ts stamps on main-mail digest messages.
+ * Reconciliation uses it to recognize OUR injected digests
  * in the main session JSONL: an envelope counts as delivered only when its id
  * appears on a JSONL line that also carries this marker — envelope ids alone
  * can leak into the session via tool results and must not finalize mail.
@@ -180,6 +156,13 @@ export interface AvailableType {
 	invalid?: string;
 }
 
+export interface RequiredTaskAnchor {
+	to: string;
+	anchorId: string;
+	waitFor: "final" | "collect";
+	createdAt: string;
+}
+
 export interface SubagentsCore {
 	readonly layout: Layout;
 	/** The D7 swap-point — TUI live-tail and later phases hang off this. */
@@ -209,9 +192,13 @@ export interface SubagentsCore {
 	send(options: SendOptions): Promise<SendResult>;
 	sendAsUser(options: SendOptions): Promise<SendResult>;
 	steer(to: string, text: string): Promise<SteerResult>;
-	interrupt(to: string): Promise<InterruptResult>;
+	interrupt(to: string, expectedTurnId?: string): Promise<InterruptResult>;
 	retire(to: string): Promise<RetireResult>;
-	collect(to: string, schema: unknown): Promise<CollectResult>;
+	collect(to: string, schema: unknown, background?: boolean): Promise<CollectResult>;
+	/** Start/clear the required-task set for one genuine main user turn. */
+	beginRequiredTaskGroup(): void;
+	clearRequiredTaskGroup(): void;
+	pendingRequiredTasks(): RequiredTaskAnchor[];
 	/** Cancellable join for an anchored final/collect report in main mail. */
 	awaitResult(options: AwaitOptions): Promise<AwaitResult>;
 	status(): Promise<RosterEntry[]>;
@@ -219,11 +206,7 @@ export interface SubagentsCore {
 	/** Merged type libraries (project wins), for spawn UX and errors (D6). */
 	availableTypes(): AvailableType[];
 
-	/**
-	 * Unprocessed envelopes across all SUBAGENT mailboxes — while the system is
-	 * paused this is the "queued mail" figure for the D21 banner (add
-	 * mainUnreadCount() for the full picture). Cheap directory scans.
-	 */
+	/** Unprocessed envelopes across all subagent mailboxes. Cheap directory scans. */
 	queuedMailCount(): number;
 
 	/** Unprocessed envelopes in ONE agent's mailbox (picker unread badge). */
@@ -562,8 +545,8 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 			persistentHost: persisted,
 			maxHops: () => settings.maxHops,
 			autonomy,
-			// D15 ceiling defaults read LIVE off the settings object (like the
-			// autonomy limits) — a settings edit applies at the next turn.
+			// Per-agent warning defaults read LIVE off the settings object — a
+			// settings edit applies at the next turn.
 			ceilings: settings,
 			...(options.onMainMail ? { onMainMail: options.onMainMail } : {}),
 		});
@@ -577,6 +560,37 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 		persisted: boolean;
 		collects: Array<{ envelopeId: string; correlationId: string; from: string; schema: unknown }>;
 	} | null = null;
+	let requiredGroupActive = false;
+	const requiredTasks = new Map<string, RequiredTaskAnchor>();
+	const trackRequired = (task: RequiredTaskAnchor, background?: boolean): void => {
+		if (!requiredGroupActive || background === true) return;
+		requiredTasks.set(task.anchorId, task);
+	};
+	const settleRequired = (result: AwaitResult): void => {
+		if (
+			result.status === "completed" ||
+			result.status === "retired" ||
+			(result.status === "attention" && result.attention?.type === "error")
+		) {
+			requiredTasks.delete(result.anchorId);
+		}
+	};
+	const unsubscribeRequiredDelegation = runtime.onEvent((event) => {
+		if (
+			!requiredGroupActive ||
+			event.type !== "envelope-sent" ||
+			event.envelopeType !== "message" ||
+			event.correlationId !== null ||
+			event.to === MAIN_ADDRESS ||
+			![...requiredTasks.values()].some((task) => task.to === event.from)
+		) return;
+		trackRequired({
+			anchorId: event.envelopeId,
+			to: event.to,
+			waitFor: "final",
+			createdAt: new Date().toISOString(),
+		});
+	});
 
 	return {
 		layout,
@@ -590,30 +604,83 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 			return warnings;
 		},
 		autonomy,
-		spawn: (spawnOptions) => {
+		spawn: async (spawnOptions) => {
 			// Validate the team name at the spawn boundary — BEFORE runtime.spawn
 			// commits any registry record (finding 11). The old flow committed the
 			// record first and only then called addTo, so a bad name (e.g.
 			// "__proto__") threw AFTER the roster was mutated, leaving partial
 			// state. Rejecting here keeps spawn all-or-nothing for every caller.
 			if (spawnOptions.team !== undefined && !isValidTeamName(spawnOptions.team)) {
-				return Promise.reject(
-					new Error(
+				throw new Error(
 						`Invalid team name ${JSON.stringify(spawnOptions.team)} — use a slug ` +
 							"(letters, digits, and ._-, not starting with a dot), not a reserved word " +
 							"(__proto__/prototype/constructor) or empty string.",
-					),
-				);
+					);
 			}
-			return runtime.spawn(spawnOptions);
+			const result = await runtime.spawn(spawnOptions);
+			if (spawnOptions.task !== undefined && result.taskEnvelopeId !== undefined) {
+				trackRequired({
+					to: result.address,
+					anchorId: result.taskEnvelopeId,
+					waitFor: "final",
+					createdAt: new Date().toISOString(),
+				}, spawnOptions.background);
+			}
+			return result;
 		},
-		send: (sendOptions) => runtime.send(sendOptions),
+		send: async (sendOptions) => {
+			const result = await runtime.send(sendOptions);
+			if (sendOptions.correlationId === undefined) {
+				trackRequired({
+					to: sendOptions.to,
+					anchorId: result.envelopeId,
+					waitFor: "final",
+					createdAt: new Date().toISOString(),
+				}, sendOptions.background);
+			}
+			return result;
+		},
 		sendAsUser: (sendOptions) => runtime.sendAsUser(sendOptions),
 		steer: (to, text) => runtime.steer(to, text),
-		interrupt: (to) => runtime.interrupt(to),
-		retire: (to) => runtime.retire(to),
-		collect: (to, schema) => runtime.collect(to, schema),
-		awaitResult: (awaitOptions) => awaitMainResult(layout, awaitOptions),
+		interrupt: async (to, expectedTurnId) => {
+			const result = await runtime.interrupt(to, expectedTurnId);
+			if (result.interrupted) {
+				for (const id of result.taskAnchorIds ?? []) requiredTasks.delete(id);
+			}
+			return result;
+		},
+		retire: async (to) => {
+			const result = await runtime.retire(to);
+			for (const [id, task] of requiredTasks) if (task.to === to) requiredTasks.delete(id);
+			return result;
+		},
+		collect: async (to, schema, background) => {
+			const result = await runtime.collect(to, schema);
+			trackRequired({
+				to,
+				anchorId: result.requestId,
+				waitFor: "collect",
+				createdAt: new Date().toISOString(),
+			}, background);
+			return result;
+		},
+		beginRequiredTaskGroup: () => {
+			// A user/main interruption does not detach already-delegated work.
+			// Preserve the unfinished group; a genuinely completed group starts fresh.
+			if (requiredGroupActive && requiredTasks.size > 0) return;
+			requiredTasks.clear();
+			requiredGroupActive = true;
+		},
+		clearRequiredTaskGroup: () => {
+			requiredTasks.clear();
+			requiredGroupActive = false;
+		},
+		pendingRequiredTasks: () => [...requiredTasks.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+		awaitResult: async (awaitOptions) => {
+			const result = await awaitMainResult(layout, awaitOptions);
+			settleRequired(result);
+			return result;
+		},
 		status: () => runtime.status(),
 		peek: (address, tail) => runtime.peek(address, tail),
 		availableTypes: () =>
@@ -760,6 +827,9 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 		},
 
 		dispose: async () => {
+			unsubscribeRequiredDelegation();
+			requiredTasks.clear();
+			requiredGroupActive = false;
 			try {
 				await runtime.dispose();
 			} finally {

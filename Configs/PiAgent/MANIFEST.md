@@ -19,8 +19,9 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-merge` | `/merge` current-session branch synthesis |
 | `pi-model-thinking` | Model/thinking producer for the shared status row |
 | `pi-notify-user` | LLM-callable `notify_user` notices |
+| `pi-plan` | Branch-persistent, hard read-only Plan mode with automatic tagged-skill routing, explicit `--skill` override, and a user-authorized `save_plan` path |
 | `pi-questions` | LLM-callable `ask_user` TUI questions with defaults and non-selecting recommendations |
-| `pi-queue` | Managed, session-persistent steer/follow-up messages with `/queue` |
+| `pi-queue` | Managed, session-persistent steer/follow-up messages with an above-working queue card and `/queue` |
 | `pi-run-guard` | Confirmation before interrupting an active run |
 | `pi-safety` | Main-agent Bash confirmation modes and privacy-preserving `/safety-log` |
 | `pi-session-name` | Session naming commands |
@@ -28,9 +29,11 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-status-line` | Shared above-editor row plus dynamic two-line footer layout |
 | `pi-tool-monitor` | Plain active-tool status producer and `/tools` |
 
-## Theme
+## Theme and keybindings
 
 The active theme is `codex`, stored at `.pi/agent/themes/codex.json`. The `pi-groovebox-cycle` package remains installed but is disabled in its local runtime config so it does not replace the selected theme.
+
+Keybindings are stored at `.pi/agent/keybindings.json`. `Shift+Tab` is reserved for Plan mode, thinking-level cycling uses `Alt+T`, and forward model cycling uses `Alt+M`.
 
 ## Layout and activation
 

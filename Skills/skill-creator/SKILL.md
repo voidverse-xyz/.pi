@@ -48,6 +48,8 @@ It's OK to briefly explain terms if you're in doubt, and feel free to clarify te
 
 Start by understanding the user's intent. The current conversation might already contain a workflow the user wants to capture (e.g., they say "turn this into a skill"). If so, extract answers from the conversation history first — the tools used, the sequence of steps, corrections the user made, input/output formats observed. The user may need to fill the gaps, and should confirm before proceeding to the next step.
 
+When the user supplies exact wording for an instruction, template, label, or policy, preserve it verbatim unless they explicitly ask for editing. Do not silently soften or expand text whose exact phrasing is part of the requirement.
+
 1. What should this skill enable Claude to do?
 2. When should this skill trigger? (what user phrases/contexts)
 3. What's the expected output format?
@@ -95,6 +97,7 @@ These word counts are approximate and you can feel free to go longer if needed.
 **Key patterns:**
 - Keep SKILL.md under 500 lines; if you're approaching this limit, add an additional layer of hierarchy along with clear pointers about where the model using the skill should go next to follow up.
 - Reference files clearly from SKILL.md with guidance on when to read them
+- Keep references one level deep where practical; link directly from SKILL.md instead of building chains the agent may not follow
 - For large reference files (>300 lines), include a table of contents
 
 **Domain organization**: When a skill supports multiple domains/frameworks, organize by variant:
@@ -115,6 +118,14 @@ This goes without saying, but skills must not contain malware, exploit code, or 
 #### Writing Patterns
 
 Prefer using the imperative form in instructions.
+
+### Match the degree of freedom to the task
+
+- **High freedom:** use principles and decision criteria when many approaches can be correct (design review, planning, writing).
+- **Medium freedom:** use pseudocode, checklists, and adaptable templates when there is a preferred pattern with legitimate variation.
+- **Low freedom:** use exact commands, strict schemas, or bundled scripts when the task is fragile, safety-sensitive, or must be reproducible.
+
+Do not overconstrain judgment-heavy work, and do not leave a destructive or format-sensitive operation as vague prose.
 
 **Defining output formats** - You can do it like this:
 ```markdown

@@ -38,6 +38,6 @@ assert.deepEqual(
 	"the eight-tool surface",
 );
 assert.deepEqual(keysOf(ext.commands), ["agents"], "/agents command");
-assert.deepEqual(keysOf(ext.shortcuts).sort(), ["alt+e", "alt+j"], "shortcuts");
+assert.deepEqual(keysOf(ext.shortcuts).sort(), ["alt+ctrl+i", "alt+ctrl+x", "alt+e", "alt+j"], "shortcuts");
 
 console.log("loadcheck ok — tools:", keysOf(ext.tools).length, "· commands:", keysOf(ext.commands), "· shortcuts:", keysOf(ext.shortcuts));

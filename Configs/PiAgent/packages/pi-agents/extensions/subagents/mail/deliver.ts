@@ -11,7 +11,7 @@
  *   recipient queued          → nothing extra; its pending turn reads the
  *                               mailbox when it starts ("queued")
  *   recipient main            → .main/mailbox/ + onMainMail() so the host
- *                               extension can apply main-mail auto-wake
+ *                               host can surface durable main-mail state
  *
  * "when: now|after-turn" never changes any of the above (03-tool-surface:
  * neither interrupts; the distinction only orders a send against the sender's
@@ -160,7 +160,7 @@ export interface DelivererOptions {
 	senderGenerationId?: (address: string) => string | undefined;
 	/** Start a mail turn on a dormant agent (fire-and-forget; runtime serializes). */
 	wake: (address: string) => void;
-	/** An envelope just landed in .main/mailbox/ (host auto-wake hook). */
+	/** An envelope just landed in .main/mailbox/ (diagnostic hook). */
 	onMainMail?: (envelope: Envelope) => void;
 	/** Every envelope that left the engine (runtime "envelope-sent" events). */
 	onEnvelope?: (envelope: Envelope) => void;

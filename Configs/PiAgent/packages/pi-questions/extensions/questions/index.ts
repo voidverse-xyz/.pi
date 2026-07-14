@@ -26,6 +26,10 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
+
+const ICON_SKIPPED = ""; // nf-fa-circle_o
+const ICON_SUCCESS = ""; // nf-fa-check_circle
+const ICON_EDIT = ""; // nf-fa-pencil
 import {
 	type Input,
 	normalizeInputs,
@@ -169,8 +173,8 @@ export default function askUser(pi: ExtensionAPI) {
 			const answers = Array.isArray(details.answers) ? details.answers : [];
 			const lines = answers.map((a) => {
 				const idTag = a.id ? theme.fg("dim", ` [${a.id}]`) : "";
-				if (a.skipped) return `${theme.fg("dim", "○ ")}${theme.fg("accent", a.title)}${idTag}: ${theme.fg("dim", "(skipped)")}`;
-				const head = `${theme.fg("success", "✓ ")}${theme.fg("accent", a.title)}${idTag}: `;
+				if (a.skipped) return `${theme.fg("dim", `${ICON_SKIPPED} `)}${theme.fg("accent", a.title)}${idTag}: ${theme.fg("dim", "(skipped)")}`;
+				const head = `${theme.fg("success", `${ICON_SUCCESS} `)}${theme.fg("accent", a.title)}${idTag}: `;
 				if (a.type === "text") {
 					return head + theme.fg("text", a.text ?? "");
 				}
@@ -182,7 +186,7 @@ export default function askUser(pi: ExtensionAPI) {
 				return head + theme.fg("text", picks || "(none)");
 			});
 			if (details.note) {
-				lines.push(`${theme.fg("dim", "✎ ")}${theme.fg("accent", "Notes")}: ${theme.fg("text", details.note)}`);
+				lines.push(`${theme.fg("dim", `${ICON_EDIT} `)}${theme.fg("accent", "Notes")}: ${theme.fg("text", details.note)}`);
 			}
 			return new Text(lines.join("\n"), 0, 0);
 		},

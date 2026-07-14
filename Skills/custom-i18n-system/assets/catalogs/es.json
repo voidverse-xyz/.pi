@@ -1,0 +1,20 @@
+{
+    "id": "es",
+    "name": "Español",
+    "dir": "ltr",
+    "locales": ["es-ES", "es-MX"],
+    "messages": {
+        "common": {
+            "save": "Guardar",
+            "cancel": "Cancelar"
+        },
+        "welcome": "Te damos la bienvenida, {{name}}.",
+        "inbox": {
+            "unread": {
+                "=0": "No hay mensajes sin leer",
+                "one": "{{count}} mensaje sin leer",
+                "other": "{{count}} mensajes sin leer"
+            }
+        }
+    }
+}

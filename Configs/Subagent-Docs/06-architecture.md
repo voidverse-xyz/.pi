@@ -1,6 +1,6 @@
 # Extension Architecture — pi-agents package
 
-Decided 2026-07-09 (D23), session ownership added by D25/D26. Package path is
+Decided 2026-07-09 (D23), session ownership added by D25/D26 and required-turn joins by D27. Package path is
 `Configs/PiAgent/packages/pi-agents/`; package.json declares the `pi-package`
 keyword and `pi.extensions:["./extensions"]`.
 
@@ -10,7 +10,7 @@ keyword and `pi.extensions:["./extensions"]`.
 packages/pi-agents/
   package.json
   extensions/subagents/
-    index.ts                  # entry: register tools, /subagents, widget, keybinds; wire events
+    index.ts                  # entry: tools/TUI/events + host completion barrier
     core.ts                   # facade — the ONLY import for tools/ and tui/
     runtime/
       types.ts                # SubagentRuntime interface (D7 swap-point)
@@ -31,7 +31,7 @@ packages/pi-agents/
       deliver.ts              # turn-boundary injection, team check, bounce, hops
       digest.ts               # wake-digest composer (D14) — pure
     rails/
-      autonomy.ts             # subagent turn/token pool, pause state (D21/D24)
+      autonomy.ts             # session turn/token accounting + one-shot warnings (D27)
       hops.ts                 # chain-depth check — pure
     sandbox/
       tools-filter.ts         # type allowlist → Pi tool set
@@ -42,7 +42,7 @@ packages/pi-agents/
       compose.ts              # D18 layers: identity block, roster, projectContext — pure
     tools/
       main-agent.ts           # the eight subagent_* tools, including anchored await
-      sub-agent.ts            # peers' send/queue pair
+      sub-agent.ts            # peer send, report, and ask tools
     tui/
       widget.ts  picker.ts  viewer.ts  escalation-modal.ts   # (05-tui-spec)
   test/
@@ -81,5 +81,8 @@ packages/pi-agents/
 8. Session ownership + reliable results — v2 layout, host lease, explicit legacy
    adoption, atomic main-mail claims, final anchors, `subagent_await`, and quiet
    owner cancellation.
+9. Required-turn joins + warning-only thresholds — no main-mail auto-wake,
+   host-enforced current-turn anchor groups (including peer delegation), explicit
+   `background:true`, non-blocking warning widget, and targeted interruption.
 
 Phases 1–3 = usable (spawn, talk, observe); 4–5 = safe; 6 = pleasant.

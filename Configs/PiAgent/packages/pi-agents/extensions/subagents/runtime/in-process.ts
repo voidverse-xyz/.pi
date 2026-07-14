@@ -38,15 +38,10 @@
  * while waiting); registry state + vitals (SessionStats, D15) are updated
  * around every turn; the resolved type-file hash is recorded at wake (D6).
  *
- * Teams + rails (Phase 4, D12/D21): the Deliverer below runs the real guards —
- * makeTeamGuard (shared-team check, live teams.json reads, envelope.team
- * stamped) and rails/hops.ts makeHopsGuard (maxHops cap; report/escalation/
- * error to main always pass — the escape route). An optional shared
- * AutonomyBudget gates _mailTurn: while paused NO new subagent turn starts
- * (mail stays queued on disk — pause never kills) and every turn that does
- * run consumes one pool turn plus its SessionStats token delta; a resume
- * refills the pool and this runtime re-drains every pending mailbox.
- * Roster-change wake-digest lines (D18): each mail turn diffs the agent's
+ * Teams + rails (Phase 4, D12/D21/D27): the Deliverer runs shared-team and
+ * maxHops guards. Session AutonomyBudget counters meter turns/tokens and emit
+ * one-shot warnings but never gate execution. Roster-change wake-digest lines
+ * (D18): each mail turn diffs the agent's
  * `.roster.json` snapshot against teams.json and prepends the changes.
  * Sandbox + escalation (Phase 5, D10/D20/D22): _buildSessionOptions maps the
  * type's tools/readOnly/writePaths/denyPaths onto the session via
@@ -54,7 +49,8 @@
  * definitions, mutating ones wrapped through sandbox/paths.ts +
  * sandbox/bash-guard.ts). A guarded call that needs a human blocks inside
  * its tool execute on EscalationManager.request(): the agent flips to
- * `waiting`, an escalation envelope reaches main (D16 auto-wake), and —
+ * `waiting`, an escalation envelope reaches main (surfaced by the active
+ * barrier or next real user turn), and —
  * DECISION — the turn RELEASES its scheduler slot while waiting (a possibly-
  * forever human pause must not starve other agents; per-agent turn
  * serialization is untouched because the turn's chain promise stays pending)
@@ -62,12 +58,10 @@
  * resolves via approve/deny (core → Phase 6 modal); the main agent may only
  * DENY, by mailing the waiting agent with correlationId = the escalation
  * envelope's id (no new tool surface, 01-power-matrix).
- * Ceilings (D15/D20): frontmatter maxTokensTotal/maxTurnMinutes/
- * maxContextCompactions (defaults from settings) — maxTurnMinutes aborts the
- * running turn via a timer; token/compaction ceilings are checked before and
- * after every turn. Crossing emits an `error` envelope + interrupt; oneshots
- * auto-retire (D13 — also on fatal turn errors), persistent agents park
- * dormant until the main agent decides.
+ * Thresholds (D15/D27): frontmatter/settings maxTokensTotal,
+ * maxTurnMinutes, and maxContextCompactions emit targeted warnings only.
+ * Crossing never aborts, gates, or retires an agent. Oneshots still auto-retire
+ * after final reports and fatal runtime errors.
  */
 
 import { randomBytes } from "node:crypto";
@@ -197,20 +191,15 @@ export interface InProcessRuntimeOptions {
 	disposeTimeoutMs?: number;
 	/** False for non-persisted host sessions; persistent workers are rejected. */
 	persistentHost?: boolean;
-	/** An envelope landed in .main/mailbox/; the host may auto-wake main. */
+	/** Optional diagnostic callback when an envelope lands in main's mailbox. */
 	onMainMail?: (envelope: Envelope) => void;
 	/** D21 chain-depth cap. Default 8. A getter keeps it live (Phase 7). */
 	maxHops?: number | (() => number);
-	/**
-	 * The session's D21 subagent autonomy pool (core owns it). Main-agent
-	 * mailbox wakeups are independent. Omitted = unlimited (lower-phase
-	 * harnesses). While paused, no new subagent turn starts; on
-	 * resume this runtime re-drains every mailbox with pending envelopes.
-	 */
+	/** Session turn/token warning accounting. Omitted = no session thresholds. */
 	autonomy?: AutonomyBudget;
 	/**
-	 * D15/D20 global ceiling defaults (core settings); a type's frontmatter
-	 * overrides field-by-field. Undefined field = unlimited. Read live per
+	 * D15/D27 global warning defaults (core settings); a type's frontmatter
+	 * overrides field-by-field. Undefined field = no warning. Read live per
 	 * turn, so settings edits apply without a rebuild.
 	 */
 	ceilings?: CeilingDefaults;
@@ -225,7 +214,7 @@ export interface InProcessRuntimeOptions {
 	isProjectTrusted?: () => boolean;
 }
 
-/** Global ceiling defaults (D15) — same fields the frontmatter can pin. */
+/** Global per-agent warning defaults — same fields frontmatter can pin. */
 export interface CeilingDefaults {
 	maxTokensTotal?: number | undefined;
 	maxTurnMinutes?: number | undefined;
@@ -245,9 +234,9 @@ export function effectiveCeilings(
 }
 
 /**
- * Which cumulative ceiling (tokens / compactions) is crossed, if any —
- * a human-readable description, or null. maxTurnMinutes is enforced by a
- * live turn timer instead (it is a rate, not a cumulative figure).
+ * Which cumulative warning threshold (tokens / compactions) is crossed, if
+ * any — a human-readable description, or null. maxTurnMinutes is observed by
+ * a live turn timer instead (it is a rate, not a cumulative figure).
  */
 export function ceilingViolation(
 	vitals: Pick<AgentVitals, "tokens" | "compactions">,
@@ -279,14 +268,16 @@ interface Handle {
 	baseVitals: AgentVitals;
 	/** Envelopes that triggered the CURRENT turn (hops threading, D21). */
 	trigger?: Envelope[] | undefined;
+	/** Runtime-unique current turn identity for stale-warning fencing. */
+	turnId?: string | undefined;
 	/** Oneshot delivered its final report — retire at the turn boundary (D13). */
 	retireAfterTurn?: boolean;
 	/** Exact final/error envelope proving this generation's auto-retirement. */
 	retirementEvidenceId?: string;
-	/** Who aborted the current turn: user interrupt vs the turn-minutes timer. */
-	abortedBy?: "interrupt" | "ceiling" | null;
-	/** A ceiling error envelope was already sent — never spam main (D15). */
-	ceilingNotified?: boolean;
+	/** Explicit human/main interrupt; warning thresholds never abort turns. */
+	abortedBy?: "interrupt" | null;
+	/** Lifetime limits already surfaced for this generation. */
+	limitWarnings?: Set<"maxTokensTotal" | "maxContextCompactions">;
 }
 
 const DEFAULT_PERSISTENT_ID = "main";
@@ -395,16 +386,6 @@ export class InProcessRuntime implements SubagentRuntime {
 		if (!Number.isFinite(this._disposeTimeoutMs) || this._disposeTimeoutMs < 1) {
 			throw new Error("disposeTimeoutMs must be a positive finite number.");
 		}
-		// Pause/resume are runtime events (Phase 6 banner) and a resume drains
-		// every mailbox that queued up while paused (D21: pause never kills).
-		this._autonomy?.subscribe((event, status) => {
-			if (event === "paused") {
-				this._emit({ type: "autonomy-paused", status });
-			} else {
-				this._emit({ type: "autonomy-resumed", status });
-				this._drainAllPendingMail();
-			}
-		});
 		this._deliverer = new Deliverer({
 			layout: options.layout,
 			withDeliveryLock: (run) => this._withLifecycleLock(run),
@@ -419,8 +400,33 @@ export class InProcessRuntime implements SubagentRuntime {
 			senderGenerationId: (address) => getAgent(readRegistry(this._layout.registryFile), address)?.generationId,
 			wake: (address) => this._scheduleMailTurn(address),
 			...(options.onMainMail ? { onMainMail: options.onMainMail } : {}),
-			onEnvelope: (envelope) =>
-				this._emit({ type: "envelope-sent", from: envelope.from, to: envelope.to, envelopeId: envelope.id }),
+			onEnvelope: (envelope) => {
+				this._emit({
+					type: "envelope-sent",
+					from: envelope.from,
+					to: envelope.to,
+					envelopeId: envelope.id,
+					envelopeType: envelope.type,
+					correlationId: envelope.correlationId,
+				});
+				// An uncorrelated peer message is a delegated task. Give it the
+				// same exact final-report correlation and generation fence as a
+				// main-originated assignment so the host completion barrier can
+				// follow delegation transitively.
+				if (
+					envelope.type === "message" &&
+					envelope.correlationId === null &&
+					envelope.from !== MAIN_ADDRESS &&
+					envelope.from !== USER_ADDRESS &&
+					envelope.to !== MAIN_ADDRESS
+				) {
+					const record = getAgent(readRegistry(this._layout.registryFile), envelope.to);
+					if (record) {
+						recordAwaitAnchor(this._layout.mainMailboxDir, envelope.id, envelope.to, record.generationId);
+						this._recordAssignmentAnchor(envelope.to, envelope.id);
+					}
+				}
+			},
 			onBounce: (failed, _bounce, reason) =>
 				this._emit({ type: "bounce", from: failed.from, to: failed.to, envelopeId: failed.id, reason }),
 		});
@@ -673,13 +679,9 @@ export class InProcessRuntime implements SubagentRuntime {
 		if (this._disposed) throw new Error("This subagent runtime is disposed; reload or resume the host session.");
 		this._assertStartupRecoveryComplete();
 		const record = this._requireRecord(options.to);
-		// D21 / Finding 14: a message typed into the subagent VIEWER is a genuine
-		// USER action (D17 superuser row) — it resets the autonomy pool exactly
-		// like a main-session user turn (index.ts's source-aware input reset). If
-		// the pool was paused this resumes it, and the "resumed" event drains
-		// every queued mailbox (subscribe → _drainAllPendingMail), so this
-		// message doesn't sit queued behind a paused pool. NOT done for send()
-		// (main-agent tool sends are autonomous, never a user reset).
+		// A message typed into the subagent viewer is genuine user input: open a
+		// fresh warning-accounting window. Ordinary main-agent tool sends do not
+		// reset the session counters.
 		this._autonomy?.reset();
 		const outcome = this._withLifecycleLock(() => {
 			const delivered = this._deliverer.send({
@@ -740,13 +742,18 @@ export class InProcessRuntime implements SubagentRuntime {
 		return { steered: true };
 	}
 
-	async interrupt(to: string): Promise<InterruptResult> {
+	async interrupt(to: string, expectedTurnId?: string): Promise<InterruptResult> {
 		this._assertStartupRecoveryComplete();
 		const handle = this._handles.get(to);
-		if (!handle || !handle.session.isStreaming) return { interrupted: false };
-		handle.abortedBy = "interrupt"; // not a crash, not a ceiling — no error envelope
+		if (
+			!handle ||
+			!handle.session.isStreaming ||
+			(expectedTurnId !== undefined && handle.turnId !== expectedTurnId)
+		) return { interrupted: false };
+		const taskAnchorIds = this._taskAnchorIdsFor(to, handle.trigger ?? []);
+		handle.abortedBy = "interrupt"; // not a crash — no error envelope
 		await handle.session.abort();
-		return { interrupted: true };
+		return { interrupted: true, taskAnchorIds };
 	}
 
 	async retire(to: string): Promise<RetireResult> {
@@ -1191,13 +1198,7 @@ export class InProcessRuntime implements SubagentRuntime {
 		}
 	}
 
-	/**
-	 * Autonomy-resumed drain (D21): schedule a digest turn for every DORMANT
-	 * agent whose mailbox accumulated envelopes while the system was paused.
-	 * m2: only dormant — a running/waiting/queued agent already has a live
-	 * turn (or a queued one) that drains its mailbox at the boundary, and
-	 * stamping `queued` over `waiting`/`running` would corrupt lifecycle state.
-	 */
+	/** Retry startup reconciliation after transient durable-state I/O. */
 	private _scheduleStartupRecoveryRetry(): void {
 		if (this._disposed) return;
 		this._startupRecoveryBlocked = true;
@@ -1209,19 +1210,6 @@ export class InProcessRuntime implements SubagentRuntime {
 		this._startupRecoveryTimer.unref?.();
 	}
 
-	private _drainAllPendingMail(): void {
-		for (const record of listAgents(readRegistry(this._layout.registryFile))) {
-			const address = formatAgentAddress(record.type, record.id);
-			if (record.state !== "dormant") continue;
-			try {
-				if (pendingCount(this._layout.mailboxDir(record.type, record.id)) > 0) {
-					this._scheduleMailTurn(address);
-				}
-			} catch {
-				this._waitForForeignOwner(address); // also retries transient mailbox I/O
-			}
-		}
-	}
 
 	/**
 	 * C2 startup reconciliation (see constructor). Best-effort: reconciliation
@@ -1438,14 +1426,6 @@ export class InProcessRuntime implements SubagentRuntime {
 			return;
 		}
 
-		// D21 rail: a paused system starts NO new autonomous turns. The mail
-		// stays queued on disk (pause never kills — nothing is lost) and the
-		// autonomy-resumed drain re-schedules this turn.
-		if (this._autonomy && !this._autonomy.canStart()) {
-			this._setState(address, "dormant", generationId);
-			return;
-		}
-
 		const mailboxDir = this._layout.mailboxDir(record.type, record.id);
 
 		let handle: Handle;
@@ -1469,18 +1449,8 @@ export class InProcessRuntime implements SubagentRuntime {
 		// retired agent resurrects ghost state under the archived path.
 		if (this._disposed || !this._agentLive(address, generationId)) return;
 
-		// D15 pre-check: an agent already over a cumulative ceiling (tokens/
-		// compactions) runs NO further turns — mail stays queued on disk; the
-		// error envelope (sent once) tells main to decide (retire / split /
-		// raise the ceiling by editing the type). Oneshots get the funeral.
+		// Limits are warning-only and never block, abort, or auto-retire.
 		const ceilings = effectiveCeilings(handle.def.config, this._ceilings);
-		const preViolation = ceilingViolation(this._vitalsOf(handle), ceilings);
-		if (preViolation !== null) {
-			if (!this._setState(address, "dormant", generationId)) return;
-			this._notifyCeiling(address, record, handle, preViolation);
-			if (handle.retireAfterTurn) await this._startRetire(address, true).catch(() => {});
-			return;
-		}
 
 		// The turn's scheduler slot, swappable: escalations release it while
 		// `waiting` and re-acquire on resolution (see _slots).
@@ -1493,14 +1463,15 @@ export class InProcessRuntime implements SubagentRuntime {
 		let ran = false;
 		let crashed = false;
 		/**
-		 * Findings 1/2/5: leave the triggering mail PENDING and do NOT auto-retry
-		 * it at the turn boundary. Set when the turn did not consume its digest —
-		 * an explicit interrupt / shutdown abort (F1), a paused autonomy pool
-		 * (F2), or a lost run-ownership claim (F5). The mail waits for the next
-		 * real wake / resume-drain / the owner's boundary instead of looping.
+		 * Leave the triggering mail pending when a turn did not consume its
+		 * digest: explicit interrupt/shutdown, transient I/O, or a lost run-owner
+		 * claim. It waits for an external wake instead of looping.
 		 */
 		let leavePending = false;
 		let tokensBefore = 0;
+		let taskAnchorIds: string[] = [];
+		let turnId = "";
+		let turnThresholdStatus: ReturnType<AutonomyBudget["status"]> | undefined;
 		let turnTimer: { pause(): void; resume(): void; clear(): void } | undefined;
 		let unsubscribe: (() => void) | undefined;
 		/** Final assistant stopReason error/aborted, captured off the event stream. */
@@ -1521,6 +1492,7 @@ export class InProcessRuntime implements SubagentRuntime {
 			}
 			if (pending.length === 0) return; // duplicate schedule — no-op
 			const ids = pending.map((p) => p.envelope.id);
+			taskAnchorIds = this._taskAnchorIdsFor(address, pending.map((item) => item.envelope));
 
 			// Finding 5: the AUTHORITATIVE, atomic run-ownership claim. The early
 			// _foreignRunOwner check above is only a fast bail; THIS exclusive
@@ -1541,23 +1513,13 @@ export class InProcessRuntime implements SubagentRuntime {
 				});
 				return;
 			}
+			turnId = `turn_${ulid()}`;
+			handle.turnId = turnId;
 
-			// Finding 2: re-check AND atomically consume the autonomy budget now
-			// that we hold a slot + run-ownership, BEFORE any mailbox consumption
-			// or model execution. canStart() was checked before we queued for the
-			// slot, but many waiters clear that gate and then an earlier turn's
-			// noteTurnStart() trips the pause while they wait — each would
-			// otherwise start a turn after the pool paused. The check and the
-			// consume are adjacent (no await between), so consumption is atomic:
-			// a tripped pool leaves the mail pending (dormant) with no double-start
-			// and no double-charge (we consume exactly once, only for a turn that
-			// will actually run).
-			if (this._autonomy) {
-				if (!this._autonomy.canStart()) {
-					leavePending = true;
-					return;
-				}
-				this._autonomy.noteTurnStart();
+			// Account once the slot/run-owner are committed. Crossing an autonomy
+			// threshold emits a targeted warning but never blocks this or later turns.
+			if (this._autonomy?.noteTurnStart() === "turns") {
+				turnThresholdStatus = this._autonomy.status();
 			}
 
 			// Roster-change lines (Phase 4, D18): diff the roster this agent
@@ -1580,10 +1542,6 @@ export class InProcessRuntime implements SubagentRuntime {
 			});
 
 			ran = true;
-			// D21 turn consumption (noteTurnStart) was charged ABOVE (Finding 2) —
-			// before mailbox consumption, not here — so a pool that tripped while
-			// this turn queued for its slot cannot start it. The consuming turn
-			// still runs to completion once committed (pause never kills).
 			tokensBefore = handle.session.getSessionStats().tokens.total;
 			handle.trigger = pending.map((p) => p.envelope);
 			handle.abortedBy = null;
@@ -1593,16 +1551,19 @@ export class InProcessRuntime implements SubagentRuntime {
 			}
 			this._emit({ type: "turn-started", address });
 
-			// D15 maxTurnMinutes: a live timer interrupts the runaway turn.
-			// Pausable (m4): escalations stop the clock while `waiting` — the
-			// ceiling meters RUNNING time, never an hours-long human pause
-			// (D22: waiting may last forever). m5: abort() rejection is
-			// swallowed — an unhandled rejection inside a timer callback would
-			// crash the host process.
+			// maxTurnMinutes is warning-only. Human escalation time remains paused;
+			// crossing the running-time threshold surfaces one warning for this turn.
 			if (ceilings.maxTurnMinutes !== undefined) {
 				turnTimer = makePausableTimer(ceilings.maxTurnMinutes * 60_000, () => {
-					handle.abortedBy = "ceiling";
-					void handle.session.abort().catch(() => {});
+					this._emit({
+						type: "limit-warning",
+						address,
+						limit: "maxTurnMinutes",
+						observed: ceilings.maxTurnMinutes!,
+						threshold: ceilings.maxTurnMinutes!,
+						turnId,
+						taskAnchorIds,
+					});
 				});
 				this._turnTimers.set(address, turnTimer);
 			}
@@ -1620,7 +1581,23 @@ export class InProcessRuntime implements SubagentRuntime {
 				}
 			});
 
-			await handle.session.prompt(digest);
+			const prompt = handle.session.prompt(digest);
+			// prompt() marks the session streaming synchronously, so warning actions
+			// can fence and interrupt this exact turn rather than a later one.
+			if (turnThresholdStatus) {
+				this._emit({
+					type: "limit-warning",
+					address,
+					limit: "autonomousTurns",
+					observed: turnThresholdStatus.turnsUsed,
+					threshold: turnThresholdStatus.turnsBudget,
+					status: turnThresholdStatus,
+					turnId,
+					taskAnchorIds,
+				});
+			}
+			this._warnCumulativeLimits(address, handle, ceilings, turnId, taskAnchorIds);
+			await prompt;
 			await handle.session.waitForIdle();
 
 			// M3: retire may have raced the turn — its abort unwound the prompt
@@ -1641,38 +1618,22 @@ export class InProcessRuntime implements SubagentRuntime {
 			// stays alive with its mail still pending; shutdown: the startup
 			// reconciliation re-drains). leavePending also suppresses the
 			// end-of-turn auto-retry — the mail waits for an EXTERNAL wake, not an
-			// immediate re-run that would defeat the interrupt. A ceiling abort is
-			// deliberately NOT here: it consumes the mail (below) and then parks
-			// the agent, which runs no further turns until a human raises the
-			// ceiling — re-delivering an over-budget digest would just re-abort.
+			// immediate re-run that would defeat the interrupt.
 			if (handle.abortedBy === "interrupt") {
 				leavePending = true;
 				return;
 			}
 
-			// Decide terminal auto-retirement BEFORE consuming the trigger mail.
-			// A crash can now land on either side safely: before the intent, the
-			// trigger re-delivers; after it, startup replays the exact error evidence.
+			// Fatal provider/tool errors remain terminal evidence for oneshots.
+			// Warning thresholds never participate in retirement.
 			const failure = turnFailure as { stopReason: "error" | "aborted"; errorMessage: string } | null;
-			const timedViolation =
-				handle.abortedBy === "ceiling"
-					? `maxTurnMinutes (${ceilings.maxTurnMinutes} min) — the turn was interrupted mid-flight`
-					: null;
-			const cumulativeViolation =
-				timedViolation === null && !(failure !== null && failure.stopReason === "error")
-					? ceilingViolation(this._vitalsOf(handle), ceilings)
-					: null;
 			const fatalText =
 				failure !== null && failure.stopReason === "error"
 					? `Turn failed: ${failure.errorMessage}`
 					: null;
-			const retirementErrorText =
-				timedViolation !== null || cumulativeViolation !== null
-					? this._ceilingErrorText(timedViolation ?? cumulativeViolation!)
-					: fatalText;
 			const preparedEvidenceId =
-				retirementErrorText !== null
-					? this._prepareRuntimeRetirement(record, handle, retirementErrorText)
+				fatalText !== null
+					? this._prepareRuntimeRetirement(record, handle, fatalText)
 					: undefined;
 
 			// The receiving turn is now durably in the session JSONL.
@@ -1691,15 +1652,11 @@ export class InProcessRuntime implements SubagentRuntime {
 					.map((env) => ({ correlationId: env.correlationId as string, from: env.from })),
 			);
 
-			// Post-turn D13/D15 bookkeeping. Order: a ceiling abort beats the
-			// generic "aborted" it caused; a fatal error beats cumulative ceilings.
-			if (timedViolation !== null) {
-				this._notifyCeiling(address, record, handle, timedViolation, preparedEvidenceId);
-			} else if (fatalText !== null && failure !== null) {
+			if (fatalText !== null && failure !== null) {
 				this._emit({ type: "turn-error", address, error: failure.errorMessage });
 				this._sendErrorToMain(address, fatalText, preparedEvidenceId);
-			} else if (cumulativeViolation !== null) {
-				this._notifyCeiling(address, record, handle, cumulativeViolation, preparedEvidenceId);
+			} else {
+				this._warnCumulativeLimits(address, handle, ceilings, turnId, taskAnchorIds);
 			}
 		} catch (error) {
 			crashed = true;
@@ -1715,15 +1672,30 @@ export class InProcessRuntime implements SubagentRuntime {
 			if (this._turnTimers.get(address) === turnTimer) this._turnTimers.delete(address);
 			unsubscribe?.();
 			handle.trigger = undefined;
+			if (handle.turnId === turnId) handle.turnId = undefined;
 			handle.abortedBy = null;
 			this._slots.delete(address);
 			slot.release();
 			const liveVitals = vitalsFrom(handle.session);
 			// Registry persists WHOLE-LIFE vitals (Phase 7): base + live.
 			const vitals = combineVitals(handle.baseVitals, liveVitals);
-			// D21: the turn's token consumption = this session's SessionStats
-			// delta across the turn, charged to the shared pool.
-			if (ran && !this._disposeComplete) this._autonomy?.noteTokens(liveVitals.tokens - tokensBefore);
+			// Session-wide token accounting is warning-only.
+			if (ran && !this._disposeComplete && this._autonomy) {
+				const crossed = this._autonomy.noteTokens(liveVitals.tokens - tokensBefore);
+				if (crossed === "tokens") {
+					const status = this._autonomy.status();
+					this._emit({
+						type: "limit-warning",
+						address,
+						limit: "autonomousTokens",
+						observed: status.tokensUsed,
+						threshold: status.tokensBudget,
+						status,
+						turnId,
+						taskAnchorIds,
+					});
+				}
+			}
 			// Publish dormant + inspect/schedule held mail under the SAME lifecycle
 			// lock used by Deliverer._route. This closes the cross-process boundary
 			// race where a sender observed `running`, then wrote just after an
@@ -2308,7 +2280,8 @@ export class InProcessRuntime implements SubagentRuntime {
 			]
 				.filter((envelope) =>
 					envelope.type === "message" &&
-					(envelope.from === MAIN_ADDRESS || envelope.from === USER_ADDRESS),
+					envelope.correlationId === null &&
+					envelope.from !== address,
 				)
 				.sort((a, b) => {
 					const byTime = Date.parse(a.sentAt) - Date.parse(b.sentAt);
@@ -2385,6 +2358,21 @@ export class InProcessRuntime implements SubagentRuntime {
 			state.generationId !== currentGeneration
 		) return undefined;
 		return state.active ?? undefined;
+	}
+
+	private _taskAnchorIdsFor(address: string, trigger: Envelope[]): string[] {
+		const triggered = trigger
+			.filter((envelope) => envelope.type === "message" && envelope.correlationId === null)
+			.map((envelope) => envelope.id);
+		const resumesPrior = trigger.some(
+			(envelope) =>
+				(envelope.type === "answer" || envelope.type === "error") &&
+				typeof envelope.correlationId === "string",
+		);
+		const active = triggered.length === 0 || resumesPrior
+			? this._readAssignmentAnchor(address)
+			: undefined;
+		return [...new Set([...triggered, ...(active !== undefined ? [active] : [])])];
 	}
 
 	private _clearAssignmentAnchor(address: string, expected?: string): void {
@@ -2747,12 +2735,47 @@ export class InProcessRuntime implements SubagentRuntime {
 		return evidenceEnvelopeId;
 	}
 
-	private _ceilingErrorText(violation: string): string {
-		return (
-			`Budget ceiling crossed: ${violation}. The agent was interrupted and will run no further ` +
-			"turns under this ceiling (mail queues on disk). Decide: retire it, split its purview, " +
-			"or have the human raise the ceiling in the type definition."
-		);
+	private _warnCumulativeLimits(
+		address: string,
+		handle: Handle,
+		ceilings: CeilingDefaults,
+		turnId: string,
+		taskAnchorIds: string[] = [],
+	): void {
+		const vitals = this._vitalsOf(handle);
+		handle.limitWarnings ??= new Set();
+		if (
+			ceilings.maxTokensTotal !== undefined &&
+			vitals.tokens >= ceilings.maxTokensTotal &&
+			!handle.limitWarnings.has("maxTokensTotal")
+		) {
+			handle.limitWarnings.add("maxTokensTotal");
+			this._emit({
+				type: "limit-warning",
+				address,
+				limit: "maxTokensTotal",
+				observed: vitals.tokens,
+				threshold: ceilings.maxTokensTotal,
+				turnId,
+				taskAnchorIds,
+			});
+		}
+		if (
+			ceilings.maxContextCompactions !== undefined &&
+			vitals.compactions >= ceilings.maxContextCompactions &&
+			!handle.limitWarnings.has("maxContextCompactions")
+		) {
+			handle.limitWarnings.add("maxContextCompactions");
+			this._emit({
+				type: "limit-warning",
+				address,
+				limit: "maxContextCompactions",
+				observed: vitals.compactions,
+				threshold: ceilings.maxContextCompactions,
+				turnId,
+				taskAnchorIds,
+			});
+		}
 	}
 
 	/** Error envelope to main; mail failures must never break the turn pipeline. */
@@ -2770,28 +2793,6 @@ export class InProcessRuntime implements SubagentRuntime {
 		}
 	}
 
-	/**
-	 * A D15 ceiling was crossed: error envelope to main (once per handle —
-	 * never spam) and the D13 funeral flag for oneshots (persistent agents
-	 * stay; retire remains a main-agent decision).
-	 */
-	private _notifyCeiling(
-		address: string,
-		record: AgentRecord,
-		handle: Handle,
-		violation: string,
-		preparedEvidenceId?: string,
-	): void {
-		const text = this._ceilingErrorText(violation);
-		let evidenceEnvelopeId = preparedEvidenceId;
-		if (record.lifetime === "oneshot" && !handle.retireAfterTurn) {
-			evidenceEnvelopeId = this._prepareRuntimeRetirement(record, handle, text);
-		}
-		if (!handle.ceilingNotified) {
-			handle.ceilingNotified = true;
-			this._sendErrorToMain(address, text, evidenceEnvelopeId);
-		}
-	}
 
 	/** Layer-4 inputs: address, purview, team rosters WITH purviews (D18). */
 	private _identityFor(address: string, record: AgentRecord): IdentityOptions {

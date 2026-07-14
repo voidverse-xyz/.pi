@@ -72,6 +72,11 @@ const SpawnParams = Type.Object({
 				"conversation, so the task must carry the full brief",
 		}),
 	),
+	background: Type.Optional(
+		Type.Boolean({
+			description: "Explicitly detach this task from the current user-turn completion barrier",
+		}),
+	),
 });
 
 export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnParams> {
@@ -81,9 +86,8 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 		description:
 			"Spawn or wake a subagent instance at address <type>/<id>. " +
 			"Get-or-create: if the address already exists, it wakes with its memory intact " +
-			"and the result reports created:false. The task, if given, runs asynchronously and " +
-			"returns taskEnvelopeId; use subagent_await when the delegated result must be included " +
-			"before you answer the user.",
+			"and the result reports created:false. A task runs asynchronously but is required by the " +
+			"current user-turn completion barrier; set background:true only to detach it explicitly.",
 		parameters: SpawnParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const core = getCore(ctx);
@@ -94,6 +98,7 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 					...(params.team !== undefined ? { team: params.team } : {}),
 					...(params.lifetime !== undefined ? { lifetime: params.lifetime as Lifetime } : {}),
 					...(params.task !== undefined ? { task: params.task } : {}),
+					...(params.background !== undefined ? { background: params.background } : {}),
 					inherit: {
 						...(ctx.model ? { modelRef: `${ctx.model.provider}/${ctx.model.id}` } : {}),
 					},
@@ -135,6 +140,11 @@ const SendParams = Type.Object({
 				"and there is no way to hold mail back from a dormant agent without waking it",
 		}),
 	),
+	background: Type.Optional(
+		Type.Boolean({
+			description: "Explicitly detach an uncorrelated task message from the current completion barrier",
+		}),
+	),
 	correlationId: Type.Optional(
 		Type.String({
 			description:
@@ -154,8 +164,8 @@ export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendPara
 		description:
 			"Send a message to a subagent's mailbox — plain instruction, or answer/escalation-deny " +
 			"(correlationId set). Mail never interrupts a running turn: it is delivered at the " +
-			"recipient's next turn boundary, or wakes it immediately if dormant. " +
-			"Replies/questions from the agent arrive later as mail in your own digest.",
+			"recipient's next turn boundary, or wakes it immediately if dormant. Uncorrelated sends " +
+			"are required by the current completion barrier unless background:true.",
 		parameters: SendParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const core = getCore(ctx);
@@ -165,6 +175,7 @@ export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendPara
 					text: params.text,
 					...(params.when !== undefined ? { when: params.when } : {}),
 					...(params.correlationId !== undefined ? { correlationId: params.correlationId } : {}),
+					...(params.background !== undefined ? { background: params.background } : {}),
 				});
 				return jsonResult({
 					delivery: result.delivery,
@@ -266,6 +277,9 @@ export function createStatusTool(getCore: GetCore): ToolDefinition<typeof Status
 
 const CollectParams = Type.Object({
 	to: Type.String({ description: "Agent address <type>/<id>" }),
+	background: Type.Optional(
+		Type.Boolean({ description: "Explicitly detach this collect request from the current completion barrier" }),
+	),
 	schema: Type.Any({
 		description:
 			"JSON schema the result must conform to. Validation supports ONLY this subset: type, " +
@@ -280,15 +294,14 @@ export function createCollectTool(getCore: GetCore): ToolDefinition<typeof Colle
 		name: "subagent_collect",
 		label: "Collect from subagent",
 		description:
-			"Request a schema-conforming final result from a subagent. NON-BLOCKING: this only " +
-			"sends the collect request; the result arrives later as a report whose data is validated " +
-			"against the schema. Keep working, or call subagent_await with waitFor:\"collect\" and " +
-			"the returned requestId when the result must be present before your response.",
+			"Request a schema-conforming result from a subagent. The tool call is non-blocking, but " +
+			"the current user turn waits for the validated report unless background:true. " +
+			"subagent_await remains available for explicit/manual anchor joins.",
 		parameters: CollectParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const core = getCore(ctx);
 			try {
-				return jsonResult(await core.collect(params.to, params.schema));
+				return jsonResult(await core.collect(params.to, params.schema, params.background));
 			} catch (error) {
 				return errorResult(error);
 			}

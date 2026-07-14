@@ -1,5 +1,6 @@
 ---
 name: software-implementation-planning
+plan-template: true
 description: Author software implementation plans that hold up in execution — requirements confirmed and numbered, every API claim verified in real source with file:line citations, reuse before invention, lifecycle and failure designed explicitly, destructive operations made safe and precise, an honest risk ledger, and a numbered end-to-end verification script. Use whenever writing an implementation or design plan for a feature, refactor, migration, extension, or any nontrivial code change.
 ---
 

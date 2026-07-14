@@ -1,8 +1,8 @@
 /**
  * tui/picker.ts — the /agents editor-local picker (05-tui-spec §2, D17/D22).
  *
- * Rows grouped by team, then (solo). Per row: state glyph (● running /
- * ◐ queued / ○ dormant / ⚠ waiting), address, ctx%, unread badge. A collapsed
+ * Rows grouped by team, then (solo). Per row: Nerd Font state glyph ( running /
+ *  queued /  dormant /  waiting), address, ctx%, unread badge. A collapsed
  * `▸ .archive (n)` section at the bottom lists retired agents (D13
  * post-mortem promise) — Enter on the header expands it; Enter on an archived
  * row opens the read-only viewer.
@@ -36,10 +36,10 @@ export type PickerRow =
 	| { kind: "archived"; info: ArchivedAgentInfo };
 
 export const STATE_GLYPHS: Record<RosterEntry["state"], string> = {
-	running: "●",
-	queued: "◐",
-	dormant: "○",
-	waiting: "⚠",
+	running: "", // nf-fa-circle
+	queued: "", // nf-fa-hourglass_half
+	dormant: "", // nf-fa-circle_o
+	waiting: "", // nf-fa-warning
 };
 
 export interface BuildPickerRowsOptions {
@@ -115,7 +115,7 @@ export function pickerRowText(row: PickerRow): string {
 			return `${row.expanded ? "▾" : "▸"} .archive (${row.count})`;
 		case "archived": {
 			const when = row.info.retiredAt ? ` · retired ${row.info.retiredAt.slice(0, 10)}` : "";
-			return `  ✝ ${row.info.address}${when}`;
+			return `   ${row.info.address}${when}`; // nf-fa-archive
 		}
 	}
 }

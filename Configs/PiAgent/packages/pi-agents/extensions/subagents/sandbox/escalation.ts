@@ -7,7 +7,7 @@
  *   (a) persists a pending escalation record under
  *       <subagents>/.main/escalations/<id>.json (path from store/layout.ts),
  *   (b) sends an `escalation` envelope to main through the existing mail
- *       machinery (auto-wakes an idle main per D16 so the MAIN AGENT can
+ *       machinery (surfaced by the active barrier or next real user turn so the MAIN AGENT can
  *       react/deny/re-plan — but per D10 only the HUMAN ever approves),
  *   (c) parks the agent in `waiting` (onWaiting hook: registry state +
  *       scheduler-slot release) and BLOCKS the tool call as a promise — a

@@ -1,38 +1,24 @@
 /**
- * rails/autonomy.ts — the D21 autonomy budget: the master, shape-agnostic
- * runaway rail. ONE pool per main session, consumed by autonomous subagent
- * turns. Main-agent mailbox wakeups are intentionally outside this pool:
+ * rails/autonomy.ts — session-wide autonomy accounting and warning thresholds.
  *
- *   autonomousTurns  (default 40)   — counted when an autonomous turn starts
- *   autonomousTokens (default 500k) — per-turn SessionStats deltas, fed by the
- *                                     runtime after each turn
- *
- * Interactive/RPC input resets the pool (index.ts uses the source-aware input
- * event so extension-generated turns cannot refill it).
- *
- * PAUSE, NEVER KILL (D21 rule 3): tripping destroys nothing. Consumers check
- * `paused` before STARTING work — running turns finish (and may keep counting
- * tokens past the cap; status shows the overage), no new autonomous turns
- * start, mail queues on disk. resume()/reset() refills the pool and fires
- * "resumed" so the runtime can drain queued mailboxes; the paused status +
- * queued counts feed the Phase 6 banner/widget.
- *
- * In-memory and fs-free; limits are read LIVE off the provided object (core
- * hands its mutable settings object in), so settings edits apply immediately.
+ * The counters remain useful visibility rails, but crossing them NEVER pauses
+ * or kills work. Every new subagent turn may start; the runtime emits a
+ * targeted limit-warning event for the agent whose turn/token delta crossed a
+ * threshold. Real user input resets the counters for the next user-turn group.
  */
 
 export const DEFAULT_AUTONOMOUS_TURNS = 40;
 export const DEFAULT_AUTONOMOUS_TOKENS = 500_000;
 
-/** The two pool limits (core's settings object satisfies this shape). */
 export interface AutonomyLimits {
 	autonomousTurns: number;
 	autonomousTokens: number;
 }
 
 export interface AutonomyStatus {
-	paused: boolean;
-	/** Which limit tripped the pause; null while running. */
+	/** Compatibility field: autonomy thresholds are warning-only, never paused. */
+	paused: false;
+	/** Most recently crossed threshold in this accounting window. */
 	trippedBy: "turns" | "tokens" | null;
 	turnsUsed: number;
 	turnsBudget: number;
@@ -40,16 +26,18 @@ export interface AutonomyStatus {
 	tokensBudget: number;
 }
 
-export type AutonomyEventKind = "paused" | "resumed";
+export type AutonomyEventKind = "warning" | "reset";
 export type AutonomyListener = (event: AutonomyEventKind, status: AutonomyStatus) => void;
 export type AutonomySnapshot = Pick<AutonomyStatus, "trippedBy" | "turnsUsed" | "tokensUsed">;
+export type AutonomyThreshold = "turns" | "tokens";
 
 export class AutonomyBudget {
-	/** Read live so settings edits apply without rebuilding the budget. */
 	private readonly _limits: AutonomyLimits;
 	private _turnsUsed = 0;
 	private _tokensUsed = 0;
-	private _trippedBy: "turns" | "tokens" | null = null;
+	private _trippedBy: AutonomyThreshold | null = null;
+	private _turnsWarned = false;
+	private _tokensWarned = false;
 	private readonly _listeners = new Set<AutonomyListener>();
 	private readonly _onChange: ((snapshot: AutonomySnapshot) => void) | undefined;
 
@@ -64,28 +52,26 @@ export class AutonomyBudget {
 		};
 		if (Number.isInteger(initial?.turnsUsed) && initial!.turnsUsed! >= 0) this._turnsUsed = initial!.turnsUsed!;
 		if (Number.isFinite(initial?.tokensUsed) && initial!.tokensUsed! >= 0) this._tokensUsed = initial!.tokensUsed!;
-		if (initial?.trippedBy === "turns" || initial?.trippedBy === "tokens") {
-			this._trippedBy = initial.trippedBy;
-		} else if (this._turnsUsed >= this._limits.autonomousTurns) {
-			this._trippedBy = "turns";
-		} else if (this._tokensUsed >= this._limits.autonomousTokens) {
-			this._trippedBy = "tokens";
-		}
+		this._turnsWarned = this._turnsUsed >= this._limits.autonomousTurns;
+		this._tokensWarned = this._tokensUsed >= this._limits.autonomousTokens;
+		if (initial?.trippedBy === "turns" || initial?.trippedBy === "tokens") this._trippedBy = initial.trippedBy;
+		else if (this._tokensWarned) this._trippedBy = "tokens";
+		else if (this._turnsWarned) this._trippedBy = "turns";
 		this._onChange = onChange;
 	}
 
-	get paused(): boolean {
-		return this._trippedBy !== null;
+	get paused(): false {
+		return false;
 	}
 
-	/** May a NEW autonomous turn start right now? (Running turns never checked.) */
-	canStart(): boolean {
-		return !this.paused;
+	/** Warning thresholds never block a new autonomous turn. */
+	canStart(): true {
+		return true;
 	}
 
 	status(): AutonomyStatus {
 		return {
-			paused: this.paused,
+			paused: false,
 			trippedBy: this._trippedBy,
 			turnsUsed: this._turnsUsed,
 			turnsBudget: this._limits.autonomousTurns,
@@ -94,59 +80,50 @@ export class AutonomyBudget {
 		};
 	}
 
-	/**
-	 * An autonomous turn is starting: consume one turn from the pool. Callers
-	 * gate on canStart() FIRST — a consumption that reaches the cap pauses the
-	 * system but the turn that consumed it still runs to completion.
-	 */
-	noteTurnStart(): void {
+	/** Returns the newly crossed threshold, or null when no new warning fired. */
+	noteTurnStart(): AutonomyThreshold | null {
 		this._turnsUsed++;
-		if (this._trippedBy === null && this._turnsUsed >= this._limits.autonomousTurns) {
-			this._trip("turns");
-		} else {
-			this._changed();
+		if (!this._turnsWarned && this._turnsUsed >= this._limits.autonomousTurns) {
+			this._turnsWarned = true;
+			return this._warn("turns");
 		}
+		this._changed();
+		return null;
 	}
 
-	/** Per-turn token delta from the runtime's SessionStats accounting. */
-	noteTokens(delta: number): void {
-		if (!Number.isFinite(delta) || delta <= 0) return;
+	/** Returns the newly crossed threshold, or null when no new warning fired. */
+	noteTokens(delta: number): AutonomyThreshold | null {
+		if (!Number.isFinite(delta) || delta <= 0) return null;
 		this._tokensUsed += delta;
-		if (this._trippedBy === null && this._tokensUsed >= this._limits.autonomousTokens) {
-			this._trip("tokens");
-		} else {
-			this._changed();
+		if (!this._tokensWarned && this._tokensUsed >= this._limits.autonomousTokens) {
+			this._tokensWarned = true;
+			return this._warn("tokens");
 		}
+		this._changed();
+		return null;
 	}
 
-	/**
-	 * User input arrived: refill the pool. If the system was paused this also
-	 * resumes it (fires "resumed" so the runtime drains queued mailboxes).
-	 */
+	/** Start a fresh accounting window on genuine user input. */
 	reset(): void {
-		const wasPaused = this.paused;
 		this._turnsUsed = 0;
 		this._tokensUsed = 0;
 		this._trippedBy = null;
+		this._turnsWarned = false;
+		this._tokensWarned = false;
 		this._changed();
-		if (wasPaused) this._emit("resumed");
+		this._emit("reset");
 	}
 
-	/** Manual resume (Phase 6 banner keypress): same refill-and-drain as reset. */
-	resume(): void {
-		this.reset();
-	}
-
-	/** Subscribe to pause/resume transitions. Returns the unsubscribe function. */
 	subscribe(listener: AutonomyListener): () => void {
 		this._listeners.add(listener);
 		return () => this._listeners.delete(listener);
 	}
 
-	private _trip(by: "turns" | "tokens"): void {
+	private _warn(by: AutonomyThreshold): AutonomyThreshold {
 		this._trippedBy = by;
 		this._changed();
-		this._emit("paused");
+		this._emit("warning");
+		return by;
 	}
 
 	private _changed(): void {
@@ -157,7 +134,7 @@ export class AutonomyBudget {
 				tokensUsed: this._tokensUsed,
 			});
 		} catch {
-			// Persistence is a durability aid; a failed write must not break a turn.
+			// Persistence is diagnostic; accounting must not break a turn.
 		}
 	}
 
@@ -167,7 +144,7 @@ export class AutonomyBudget {
 			try {
 				listener(event, status);
 			} catch {
-				// Listeners must never break the rail.
+				// Warning listeners never control execution.
 			}
 		}
 	}

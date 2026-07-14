@@ -4,25 +4,12 @@
  *   󰚩 2 running · 1 waiting · 󰇮 3 · 󰔛 budget 12/40
  *
  * Segments appear only when non-zero: running count · waiting (agents blocked
- * on a human escalation) · unread queued main mail (D16 quiet reports) ·
- * autonomy budget (only once >50% of either pool axis is consumed). When a
- * D21 rail trips the whole widget becomes a single paused BANNER line (with
- * the queued-mail count); at zero agents the widget renders nothing at all —
- * the extension is silent when unused.
+ * on a human escalation) · unread queued main mail · session threshold use
+ * (only once >50% of either axis is consumed). At zero agents it is silent.
+ * Targeted threshold warnings live in index.ts's separate non-blocking widget.
  *
- * The cached snapshot is consumed by index.ts and published as plain text through
- * setStatus(); pi-status-line owns its styling and dynamic footer position.
- *
- * Data flow: rendering is synchronous but roster state is behind an async
- * facade call, so the widget renders from a cached snapshot that is refreshed
- * (a) on every runtime event, (b) on autonomy pause/resume, and (c) by a
- * cheap poll for the figures no event covers (mail counts are directory
- * scans). Refreshes that change nothing don't request a render.
- *
- * No-nested-SGR constraint (hard-won): the paused banner is ONE padded line
- * wrapped in a single bg+fg pair ending in \x1b[0m — the band interior is
- * plain text, never theme.fg()-styled fragments (a nested reset would kill
- * the background for the rest of the line).
+ * The cached snapshot is published as plain text through setStatus();
+ * pi-status-line owns styling and dynamic footer placement.
  */
 
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
@@ -30,16 +17,13 @@ import type { SubagentsCore } from "../core.ts";
 
 /** Nerd Font symbols used consistently across the agent status surfaces. */
 export const AGENTS_ICON = "󰚩"; // nf-md-robot
-export const BUDGET_ICON = "󰔛"; // nf-md-timer_sand — approaching a limit, not paused
-export const PAUSED_ICON = ""; // nf-fa-pause_circle_o — the limit has actually tripped
+export const BUDGET_ICON = "󰔛"; // nf-md-timer_sand — approaching a warning threshold
 export const MAIL_ICON = "󰇮"; // nf-md-email
 
 // Structural slice of the SDK Theme — lets the render fns run under a fake
 // theme in the component harness while accepting the real Theme unchanged.
 export interface WidgetTheme {
 	fg(color: string, text: string): string;
-	getFgAnsi(color: string): string;
-	getBgAnsi(color: string): string;
 }
 
 /** Everything one render pass needs, snapshotted (see module header). */
@@ -51,10 +35,6 @@ export interface WidgetSnapshot {
 	waiting: number;
 	/** Unread envelopes in the MAIN mailbox (📬, D16 quiet reports). */
 	unread: number;
-	/** Unprocessed envelopes across all subagent mailboxes (paused banner). */
-	queuedMail: number;
-	paused: boolean;
-	trippedBy: "turns" | "tokens" | null;
 	turnsUsed: number;
 	turnsBudget: number;
 	tokensUsed: number;
@@ -67,9 +47,6 @@ export function emptySnapshot(): WidgetSnapshot {
 		running: 0,
 		waiting: 0,
 		unread: 0,
-		queuedMail: 0,
-		paused: false,
-		trippedBy: null,
 		turnsUsed: 0,
 		turnsBudget: 0,
 		tokensUsed: 0,
@@ -86,9 +63,6 @@ export async function takeSnapshot(core: SubagentsCore): Promise<WidgetSnapshot>
 		running: roster.filter((entry) => entry.state === "running" || entry.state === "queued").length,
 		waiting: roster.filter((entry) => entry.state === "waiting").length,
 		unread: core.mainUnreadCount(),
-		queuedMail: core.queuedMailCount(),
-		paused: autonomy.paused,
-		trippedBy: autonomy.trippedBy,
 		turnsUsed: autonomy.turnsUsed,
 		turnsBudget: autonomy.turnsBudget,
 		tokensUsed: autonomy.tokensUsed,
@@ -127,22 +101,9 @@ export function widgetSegments(snap: WidgetSnapshot): string[] {
 	return segments;
 }
 
-/** The limit and usage that caused an actual pause. */
-export function autonomyLimitText(snap: WidgetSnapshot): string {
-	return snap.trippedBy === "tokens"
-		? `tokens ${formatTokens(snap.tokensUsed)}/${formatTokens(snap.tokensBudget)}`
-		: `turns ${snap.turnsUsed}/${snap.turnsBudget}`;
-}
-
-/**
- * Production shared-footer text. The timer-sand icon means budget consumption;
- * the pause-circle appears only after the rail has actually tripped.
- */
+/** Production shared-footer text. */
 export function widgetStatusText(snap: WidgetSnapshot): string | undefined {
 	if (snap.agentCount === 0) return undefined;
-	if (snap.paused) {
-		return `${AGENTS_ICON} ${PAUSED_ICON} paused · ${autonomyLimitText(snap)} · ${MAIL_ICON} ${snap.queuedMail + snap.unread} queued · /agents resume`;
-	}
 	const segments = widgetSegments(snap);
 	return segments.length > 0 ? `${AGENTS_ICON} ${segments.join(" · ")}` : undefined;
 }
@@ -162,25 +123,6 @@ function clipTo(text: string, width: number): string {
 	return truncateToWidth(text, width).replace(/\x1b\[[0-9;]*m/g, "");
 }
 
-/** Fit plain text to EXACTLY the width: clip when too long, pad when short. */
-function fitTo(text: string, width: number): string {
-	const clipped = clipTo(text, width);
-	const visible = visibleWidth(clipped);
-	return visible >= width ? clipped : clipped + " ".repeat(width - visible);
-}
-
-/**
- * The paused banner (D21 rail tripped): one full-width band in a SINGLE
- * bg+fg SGR pair, plain-text interior, one reset at the end.
- */
-export function renderPausedBanner(snap: WidgetSnapshot, theme: WidgetTheme, width: number): string {
-	const by = autonomyLimitText(snap);
-	const mail = snap.queuedMail + snap.unread;
-	const text = ` ${PAUSED_ICON} subagents paused — autonomy budget spent (${by}) · ${MAIL_ICON} ${mail} queued · /agents resume or your next message resumes `;
-	// Truncate BEFORE wrapping in the single bg+fg pair: the interior stays
-	// plain text (no nested SGR) and the line can never exceed the terminal.
-	return `${theme.getBgAnsi("toolErrorBg")}${theme.getFgAnsi("warning")}${fitTo(text, width)}\x1b[0m`;
-}
 
 /**
  * The widget's lines for one render pass. [] = hidden (zero agents, or an
@@ -188,7 +130,6 @@ export function renderPausedBanner(snap: WidgetSnapshot, theme: WidgetTheme, wid
  */
 export function renderWidgetLines(snap: WidgetSnapshot, theme: WidgetTheme, width: number): string[] {
 	if (snap.agentCount === 0) return [];
-	if (snap.paused) return [renderPausedBanner(snap, theme, width)];
 	const segments = widgetSegments(snap);
 	if (segments.length === 0) return [];
 	const line = `${AGENTS_ICON} ${segments.join(" · ")}`;
@@ -218,8 +159,8 @@ export interface CreateWidgetControllerOptions {
 }
 
 /**
- * Owns the snapshot cache: refreshes on runtime events, autonomy transitions,
- * and a cheap poll; calls onChange (→ tui.requestRender) only on real change.
+ * Owns the snapshot cache: refreshes on runtime/accounting events and a cheap
+ * poll; calls onChange (→ tui.requestRender) only on real change.
  */
 export function createWidgetController(options: CreateWidgetControllerOptions): WidgetController {
 	const { core, onChange } = options;

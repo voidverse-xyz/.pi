@@ -1,7 +1,7 @@
 /**
  * tui/escalation-modal.ts — the D10 human gate's editor-local prompt (05-tui-spec §4).
  *
- *   ⚠ refactorer/auth requests approval
+ *    refactorer/auth requests approval
  *     bash: git push origin main
  *     blocked by: writePaths (mutation outside src/auth/**)
  *     [a]pprove once  [d]eny  [D]eny with note  [v]iew session
@@ -33,7 +33,7 @@ export type EscalationDecision =
 /** Plain-text modal body (harness asserts on these). */
 export function escalationLines(record: EscalationRecord): string[] {
 	return [
-		`⚠ ${record.agent} requests approval`,
+		` ${record.agent} requests approval`,
 		`  ${record.tool}: ${record.inputSummary}`,
 		`  blocked by: ${record.reason}`,
 		"  [a]pprove once  [d]eny  [D]eny with note  [v]iew session",
@@ -136,7 +136,7 @@ export function createEscalationModal(options: EscalationModalOptions): ModalCom
 			// Same visual grammar as pi-safety confirmations: colored divider,
 			// warning header, padded command/reason body, actions, closing divider.
 			lines.push(divider);
-			addWrapped("", `⚠ ${record.agent} requests approval`, "warning", 2);
+			addWrapped("", ` ${record.agent} requests approval`, "warning", 2);
 			lines.push("");
 			const toolPrefix = record.tool === "bash" ? "  $ " : `  ${record.tool}: `;
 			addWrapped(theme.fg("dim", toolPrefix), record.inputSummary, "text", 6);

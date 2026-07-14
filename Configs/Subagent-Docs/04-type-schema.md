@@ -51,9 +51,9 @@ You are a refactoring specialist. You own a specific purview of the codebase...
 | readOnly | | false | shorthand hard override: no edit/write; bash restricted to non-mutating |
 | writePaths | | cwd | glob scope for mutations — territory. Reads unrestricted (readPaths deferred until a real need) |
 | denyPaths | | [] | globs where mutation is forbidden even inside writePaths |
-| maxTokensTotal | | global setting | D15 hard ceiling → error envelope + interrupt |
-| maxTurnMinutes | | global setting | single-turn runtime cap |
-| maxContextCompactions | | global setting | chronic-saturation ceiling (D15) |
+| maxTokensTotal | | global setting | D27 whole-life warning threshold; execution continues |
+| maxTurnMinutes | | global setting | running-time warning threshold; execution continues |
+| maxContextCompactions | | global setting | chronic-saturation warning threshold; execution continues |
 
 NOT in frontmatter (by design): lifetime (spawn-only, main-agent decision — D20),
 team/comm config (membership is spawn-time; powers are matrix-fixed — 01), escalation

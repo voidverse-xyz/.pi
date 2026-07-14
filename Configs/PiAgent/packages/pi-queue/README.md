@@ -9,7 +9,7 @@ Plain interactive messages submitted during an active run are held as separate, 
 - **Enter** → steer at the next turn boundary
 - **Alt+Enter** → follow up after the current agent run
 
-An above-editor widget appears only while entries are pending. Managed entries are journaled into the current session, so `/reload`, resume, forks, and session switches restore the correct branch-local state instead of losing or carrying messages between sessions.
+A compact pending-message card appears above Pi's working indicator while entries are pending. Its header shows the delivery mode and message count, followed by concise numbered previews and controls. Managed entries are journaled into the current session, so `/reload`, resume, forks, and session switches restore the correct branch-local state instead of losing or carrying messages between sessions.
 
 Registered extension commands execute before input interception. Other slash inputs are intentionally left to Pi's native path so skills and prompt templates still expand correctly; those inputs are not manageable through this extension.
 

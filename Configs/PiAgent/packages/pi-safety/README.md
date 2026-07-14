@@ -11,11 +11,11 @@ Risk-based confirmation gates for **main-agent** `bash` tool calls. User-entered
 /safety off
 ```
 
-| Mode | Behavior |
-|---|---|
-| `max` (default) | Confirm everything except commands conservatively proven read-only |
-| `on` | Confirm commands classified as destructive |
-| `off` | Do not confirm Bash calls |
+| Mode | Behavior | Status foreground |
+|---|---|---|
+| `max` (default) | Confirm everything except commands conservatively proven read-only | Red |
+| `on` | Confirm commands classified as destructive | White |
+| `off` | Do not confirm Bash calls | Grey |
 
 The selected mode is stored in `~/.pi/agent/safety.json`. Invalid or unreadable configuration fails back to `max` with a warning. `/safety-log` shows the 20 most recent decisions.
 

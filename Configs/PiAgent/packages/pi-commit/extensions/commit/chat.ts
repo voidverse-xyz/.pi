@@ -381,7 +381,7 @@ function createChatPanel(opts: ChatPanelOptions): Component {
 		if (streaming) {
 			renderTurn("agent", streaming.text || (streaming.status === "running" ? "…thinking…" : ""));
 			if (streaming.status === "running") {
-				out.push(pad(` ${theme.fg("dim", "    ▌ streaming…")}`, innerW));
+				out.push(pad(` ${theme.fg("dim", "    󰔟 streaming…")}`, innerW)); // nf-md-loading
 			}
 		}
 		if (out.length === 0) {

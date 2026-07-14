@@ -2,17 +2,17 @@
  * tui/viewer.ts — the full-screen session viewer (05-tui-spec §3, D8/D17).
  *
  * Header strip:  refactorer/auth · billing-refactor · running · ctx 61% ·
- *                142k · $0.84 · ↻9
+ *                142k · $0.84 ·  9
  * Transcript:    the agent's REAL Pi session JSONL replayed with Pi's own
  *                components (AssistantMessageComponent / UserMessageComponent
  *                / ToolExecutionComponent), then live-tailed: appended JSONL
  *                is re-read from a byte offset on runtime events + a cheap
  *                1s size poll while the viewer is open.
  * Envelopes:     inter-agent traffic renders as distinct compact entries —
- *                inbound wake digests collapse to `📨 ← main: question "..."`
+ *                inbound wake digests collapse to `󰇮 ← main: question "..."`
  *                lines instead of a wall of digest markdown, and the mail
  *                tools (send_message / report / ask) render as
- *                `📨 → refactorer/api: question "..."` instead of a tool box.
+ *                `󰇮 → refactorer/api: question "..."` instead of a tool box.
  * Input line:    the human is the SUPERUSER (01-power-matrix): Enter = mail
  *                via core.sendAsUser (turn-boundary delivery; the runtime
  *                already drops the D17 FYI report to main), alt+Enter = steer
@@ -38,6 +38,7 @@ import type { Component, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { Editor, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ArchivedAgentInfo, SubagentsCore } from "../core.ts";
 import type { AgentDetail } from "../runtime/types.ts";
+import { MAIL_ICON } from "./widget.ts";
 
 // ---------------------------------------------------------------------------
 // Pure formatting (harness-testable)
@@ -66,7 +67,7 @@ export interface HeaderInfo {
 	turns: number;
 }
 
-/** `refactorer/auth · billing-refactor · running · ctx 61% · 142k · $0.84 · ↻9` */
+/** `refactorer/auth · billing-refactor · running · ctx 61% · 142k · $0.84 ·  9` */
 export function headerStripText(info: HeaderInfo): string {
 	const parts = [info.address];
 	if (info.team) parts.push(info.team);
@@ -74,7 +75,7 @@ export function headerStripText(info: HeaderInfo): string {
 	parts.push(`ctx ${Math.round(info.contextPercent)}%`);
 	parts.push(formatTokensShort(info.tokens));
 	parts.push(`$${info.cost.toFixed(2)}`);
-	parts.push(`↻${info.turns}`);
+	parts.push(` ${info.turns}`); // nf-fa-history — accumulated turns, not refresh
 	return parts.join(" · ");
 }
 
@@ -96,10 +97,10 @@ function preview(text: string): string {
 	return trimmed.length > PREVIEW_MAX ? `${trimmed.slice(0, PREVIEW_MAX - 1)}…` : trimmed;
 }
 
-/** `📨 → refactorer/api: question "..."` (05-tui-spec §3). */
+/** `󰇮 → refactorer/api: question "..."` (05-tui-spec §3). */
 export function envelopeEntryText(entry: EnvelopeEntry): string {
 	const arrow = entry.direction === "out" ? "→" : "←";
-	return `📨 ${arrow} ${entry.peer}: ${entry.type} "${entry.preview}"`;
+	return `${MAIL_ICON} ${arrow} ${entry.peer}: ${entry.type} "${entry.preview}"`;
 }
 
 /** True when a user-role prompt is a mail-digest turn, not real user text. */
@@ -216,7 +217,7 @@ export function appendEntryComponents(
 		if (isWakeDigestText(text)) {
 			const entries = parseDigestEntries(text);
 			if (entries.length === 0) {
-				state.components.push(new LineComponent("📨 wake digest", (line) => theme.fg("muted", line)));
+				state.components.push(new LineComponent(`${MAIL_ICON} wake digest`, (line) => theme.fg("muted", line)));
 			}
 			for (const env of entries) {
 				state.components.push(new LineComponent(envelopeEntryText(env), (line) => theme.fg("muted", line)));

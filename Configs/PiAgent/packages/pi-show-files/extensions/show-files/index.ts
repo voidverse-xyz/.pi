@@ -28,6 +28,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type FileSpec, type PresentedFile, resolveFiles } from "./files.ts";
+
+const ICON_SUCCESS = ""; // nf-fa-check
 import { createShowFilesPanel, type ShowFilesOutcome } from "./panel.ts";
 
 // ---------------------------------------------------------------------------
@@ -277,7 +279,7 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 			const lines: string[] = [];
 			const openedTxt =
 				details.opened.length > 0 ? `opened ${details.opened.length}/${details.shown.length}` : "nothing opened";
-			let head = `${theme.fg("success", "✓ ")}${theme.fg("accent", details.title)}${theme.fg("muted", ` — ${openedTxt}`)}`;
+			let head = `${theme.fg("success", `${ICON_SUCCESS} `)}${theme.fg("accent", details.title)}${theme.fg("muted", ` — ${openedTxt}`)}`;
 			if (details.missing.length > 0) head += theme.fg("warning", ` · ${details.missing.length} missing`);
 			if (details.forwarded) head += theme.fg("dim", " · via parent");
 			lines.push(head);

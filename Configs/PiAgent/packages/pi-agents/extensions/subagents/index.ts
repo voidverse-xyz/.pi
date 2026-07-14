@@ -6,18 +6,16 @@
  * (03-tool-surface.md): spawn, send, steer, status, collect, interrupt,
  * retire — and wires the MAIN agent's mailbox into the host session:
  *
- *  - Every envelope type sent to `main` lands in .main/mailbox/ and wakes an
- *    idle main agent. Mail arriving mid-turn waits for `agent_settled`, where
- *    Pi is genuinely idle, then starts a fresh turn with the digest embedded.
- *  - Aborting any main-agent run durably latches automatic mailbox wakeups
- *    off across reload/restart. The next interactive/RPC input clears it; queued mail is then
- *    included in that user's turn and subsequent mail auto-wakes normally.
- *  - Main auto-wakes are intentionally independent of D21 autonomy budgets.
- *    Those turn/token rails continue to govern subagent work only.
- *  - settings.autoWake=false remains an explicit manual-mode override.
- *  - Main-mail durability (at-least-once): drains are parked in .delivering/
- *    until their digest is verified in the active main session JSONL. Crash
- *    recovery requeues unverified injections at session start.
+ *  - Main mail never auto-wakes an idle host. Unrelated queued mail joins the
+ *    next genuine user turn.
+ *  - Task-bearing spawn/send/collect calls and transitive peer delegations form
+ *    a current-user-turn completion group. Candidate finals are suppressed;
+ *    durable results/attention continue the same run as follow-up messages.
+ *  - Main-mail durability (at-least-once): claims are parked in .delivering/
+ *    until verified in the active main session JSONL. Crash recovery requeues
+ *    unverified claims at session start.
+ *  - All token/time/compaction limits are warning-only. A non-blocking widget
+ *    can interrupt only the affected subagent turn or dismiss the warning.
  *
  * Phase 6 (05-tui-spec): ambient status, /agents picker,
  * full-screen session viewer (alt+j quick-switch), and the escalation modal
@@ -39,13 +37,13 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	createCore,
-	mainAutoWakeBlockedFor,
 	MAIN_MAIL_CUSTOM_TYPE,
 	runGcSweepFor,
-	setMainAutoWakeBlockedFor,
+	type RequiredTaskAnchor,
 	type ScopeLocator,
 	type SubagentsCore,
 } from "./core.ts";
+import type { AwaitResult, RuntimeEvent } from "./runtime/types.ts";
 import { createLayout } from "./store/layout.ts";
 import {
 	adoptLegacyState,
@@ -68,31 +66,21 @@ import { createPicker, type PickerResult } from "./tui/picker.ts";
 import { createViewer, type ViewerOptions, type ViewerResult } from "./tui/viewer.ts";
 import { createWidgetController, widgetStatusText, type WidgetController } from "./tui/widget.ts";
 
-// The digest-message customType prefix ("subagent-mail" / "subagent-mail-wake").
-// Lives in core.ts because reconciliation greps the main session JSONL for it
+// The digest-message customType prefix. Lives in core.ts because
+// reconciliation greps the main session JSONL for it
 // to verify a digest actually landed (main-mailbox at-least-once).
 const MAIL_CUSTOM_TYPE = MAIN_MAIL_CUSTOM_TYPE;
-const WAKE_TRIGGER_TEXT = "[subagent mail] New subagent mail arrived — the digest follows.";
 const STATUS_KEY = "subagents";
+const WARNING_WIDGET_KEY = "subagent-limit-warning";
+const STOP_WARNING_KEY = "alt+ctrl+x";
+const IGNORE_WARNING_KEY = "alt+ctrl+i";
 
 export default function (pi: ExtensionAPI) {
 	let core: SubagentsCore | undefined;
 	let activeScope: (ScopeLocator & { persisted: boolean; ephemeralRoot?: string }) | undefined;
-	/** Host-session streaming state used to defer mail until a settled boundary. */
-	let mainBusy = false;
-	/** Durable abort latch: only interactive/RPC user input re-enables wakeups. */
-	let autoWakeBlockedByAbort = false;
 	/** Last UI-capable context seen (event handlers get no ctx from runtime events). */
 	let uiCtx: ExtensionContext | undefined;
-	/**
-	 * The host session manager, captured from event contexts so triggerWake
-	 * (called from runtime callbacks that carry no ctx) can name the ACTIVE
-	 * main session JSONL when draining — the target reconciliation later
-	 * verifies against (main-mailbox at-least-once). Optional-chained
-	 * everywhere: harness stubs may omit it, and a non-persisted session has
-	 * no file (getSessionFile() undefined) — both fall back to the
-	 * finalize-at-compose-time path.
-	 */
+	/** Active host session JSONL for durable mailbox/required-await claims. */
 	let sessionMgr: ExtensionContext["sessionManager"] | undefined;
 	const currentSessionFile = (): string | null => sessionMgr?.getSessionFile?.() ?? null;
 	/** One TUI surface at a time (picker/viewer/modal never stack). */
@@ -103,6 +91,10 @@ export default function (pi: ExtensionAPI) {
 	let widget: WidgetController | undefined;
 	/** Last settings warning surfaced to the user — de-dupes the notify (Finding 12). */
 	let lastSettingsWarning = "";
+	type LimitWarning = Extract<RuntimeEvent, { type: "limit-warning" }> & { id: string };
+	const limitWarnings: LimitWarning[] = [];
+	let warningSequence = 0;
+	let barrierAbort: AbortController | undefined;
 
 	const scopeFor = (ctx: ExtensionContext): ScopeLocator & { persisted: boolean } => {
 		const sessionId = ctx.sessionManager.getSessionId();
@@ -114,19 +106,12 @@ export default function (pi: ExtensionAPI) {
 	const getCore = (ctx: ExtensionContext): SubagentsCore => {
 		if (!core) {
 			const scope = scopeFor(ctx);
-			autoWakeBlockedByAbort = mainAutoWakeBlockedFor(ctx.cwd, scope);
 			core = createCore({
 				cwd: ctx.cwd,
 				sessionId: scope.sessionId,
 				persisted: scope.persisted,
 				...(scope.stateContainerRoot !== undefined ? { stateContainerRoot: scope.stateContainerRoot } : {}),
 				modelRegistry: ctx.modelRegistry,
-				onMainMail: (_envelope) => {
-					// Every envelope type wakes an idle main agent unless the user has
-					// aborted a run. Subagent autonomy budgets do not gate main wakeups.
-					if (!core?.settings.autoWake || autoWakeBlockedByAbort || mainBusy) return;
-					triggerWake();
-				},
 			});
 			// Gate project-local subagent types on the host's live trust decision.
 			// Trust uncertainty fails closed: local type files are executable model
@@ -143,53 +128,102 @@ export default function (pi: ExtensionAPI) {
 			// present (a live TUI); otherwise it queues behind the widget's ⚠
 			// segment (picker open / alt+e surfaces the oldest pending).
 			core.runtime.onEvent((event) => {
-				if (event.type !== "escalation-created") return;
 				const ctx2 = uiCtx;
-				if (ctx2?.hasUI) void surfaceEscalations(ctx2);
+				if (event.type === "escalation-created") {
+					if (ctx2?.hasUI) void surfaceEscalations(ctx2);
+					return;
+				}
+				if (event.type === "limit-warning") {
+					limitWarnings.push({ ...event, id: `limit-${++warningSequence}` });
+					publishLimitWarning();
+				}
 			});
 		}
 		return core;
 	};
 
-	/**
-	 * Start a main-agent turn with the mailbox digest embedded in the trigger.
-	 * Re-check every gate here so a queued callback cannot race an abort latch.
-	 */
-	const triggerWake = (): void => {
-		const current = core;
-		if (!current || !current.settings.autoWake || autoWakeBlockedByAbort || mainBusy) return;
-		try {
-			const digest = current.drainMainMail(currentSessionFile());
-			if (digest === null) return; // raced — someone else drained the box
-			mainBusy = true; // suppress double-triggers until agent_start lands
-			pi.sendMessage(
-				{
-					customType: `${MAIL_CUSTOM_TYPE}-wake`,
-					content: `${WAKE_TRIGGER_TEXT}\n\n${digest}`,
-					display: true,
-				},
-				{ triggerTurn: true },
-			);
-			current.commitMainMailDrain();
-		} catch (error) {
-			current.rollbackMainMailDrain();
-			mainBusy = false;
-			const ctx = uiCtx;
-			if (ctx?.hasUI) {
-				ctx.ui.notify(
-					`Could not inject subagent mail; it was safely requeued: ${error instanceof Error ? error.message : String(error)}`,
-					"warning",
-				);
-			}
-		}
-	};
 
 	const releaseCore = async (): Promise<void> => {
 		const current = core;
 		core = undefined;
+		barrierAbort?.abort();
+		barrierAbort = undefined;
 		widget?.dispose();
 		widget = undefined;
+		uiCtx?.ui?.setWidget?.(WARNING_WIDGET_KEY, undefined);
 		if (current) await current.dispose();
+	};
+
+	const formatLimit = (warning: LimitWarning): string => {
+		const unit = warning.limit.includes("Tokens") || warning.limit === "maxTokensTotal"
+			? "tokens"
+			: warning.limit.includes("Minutes")
+				? "minutes"
+				: warning.limit.includes("Compactions")
+					? "compactions"
+					: "turns";
+		return `${warning.limit}: ${warning.observed}/${warning.threshold} ${unit}`;
+	};
+
+	const publishLimitWarning = (): void => {
+		const ctx = uiCtx;
+		if (!ctx?.hasUI || ctx.mode !== "tui") return;
+		const warning = limitWarnings[0];
+		if (!warning) {
+			ctx.ui.setWidget(WARNING_WIDGET_KEY, undefined);
+			return;
+		}
+		ctx.ui.setWidget(
+			WARNING_WIDGET_KEY,
+			[
+				`⚠ Subagent limit warning — ${warning.address}`,
+				`${formatLimit(warning)}. The agent is still running.`,
+				`${STOP_WARNING_KEY} interrupt only this subagent turn · ${IGNORE_WARNING_KEY} ignore`,
+			],
+			{ placement: "aboveWorking" },
+		);
+	};
+
+	const awaitNextRequiredOutcome = async (
+		ctx: ExtensionContext,
+		current: SubagentsCore,
+	): Promise<Array<{ task: RequiredTaskAnchor; result: AwaitResult }> | null> => {
+		for (;;) {
+			const tasks = current.pendingRequiredTasks();
+			if (tasks.length === 0) return null;
+			const controller = new AbortController();
+			barrierAbort = controller;
+			const waits = tasks.map(async (task) => ({
+				task,
+				result: await current.awaitResult({
+					to: task.to,
+					waitFor: task.waitFor,
+					anchorId: task.anchorId,
+					timeoutSeconds: 900,
+					sessionFile: currentSessionFile(),
+					signal: controller.signal,
+				}),
+			}));
+			try {
+				await Promise.race(waits);
+				controller.abort();
+				const settled = await Promise.allSettled(waits);
+				const ready = settled
+					.filter((item): item is PromiseFulfilledResult<{ task: RequiredTaskAnchor; result: AwaitResult }> => item.status === "fulfilled")
+					.map((item) => item.value)
+					.filter((item) => item.result.status !== "timeout");
+				if (ready.length === 0) continue;
+				return ready;
+			} catch {
+				controller.abort();
+				await Promise.allSettled(waits);
+				if (core !== current || ctx.signal?.aborted) return null;
+				// A targeted warning action may have cancelled one task. Re-read the
+				// group and continue waiting for every remaining required anchor.
+			} finally {
+				if (barrierAbort === controller) barrierAbort = undefined;
+			}
+		}
 	};
 
 	// -----------------------------------------------------------------------
@@ -320,36 +354,14 @@ export default function (pi: ExtensionAPI) {
 		await retryDeferredEscalations(ctx);
 	};
 
-	/**
-	 * The D21 subagent-autonomy resume affordance: refill the agent pool
-	 * without changing the main-agent abort latch. Main wakeups do not consume
-	 * or obey this pool.
-	 */
-	const resumeAutonomy = (ctx: ExtensionCommandContext): void => {
-		const current = getCore(ctx);
-		if (!current.autonomy.paused) {
-			ctx.ui.notify("Subagent autonomy pool is not paused — nothing to resume.", "info");
-			return;
-		}
-		current.autonomy.resume();
-		if (!autoWakeBlockedByAbort && current.settings.autoWake && !mainBusy && current.mainHasPendingMail()) {
-			triggerWake();
-		}
-		ctx.ui.notify("Subagent autonomy pool refilled — queued agent mail is draining.", "info");
-	};
-
-	// /agents [<type>/<id> | resume | adopt-legacy | rollback-legacy] — picker, viewer,
-	// autonomy refill, or human-only cwd-wide state adoption.
-	// the D21 pool (Phase 7; the paused status names this subcommand).
+	// /agents [<type>/<id> | adopt-legacy | rollback-legacy] — picker, viewer,
+	// or human-only cwd-wide state adoption.
 	pi.registerCommand("agents", {
 		description:
-			"Session-owned agent roster; jump to an agent, resume autonomy, or adopt/rollback legacy cwd-wide state",
+			"Session-owned agent roster; jump to an agent or adopt/rollback legacy cwd-wide state",
 		getArgumentCompletions: async (prefix) => {
 			const trimmed = prefix.trim();
 			const items: Array<{ value: string; label: string }> = [];
-			if ("resume".startsWith(trimmed) && core?.autonomy.paused) {
-				items.push({ value: "resume", label: "resume — refill the autonomy pool, drain queued mail" });
-			}
 			if ("adopt-legacy".startsWith(trimmed)) {
 				items.push({ value: "adopt-legacy", label: "adopt-legacy — assign old cwd-wide state to this session" });
 			}
@@ -373,10 +385,6 @@ export default function (pi: ExtensionAPI) {
 		},
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			uiCtx = ctx;
-			if (args.trim() === "resume") {
-				resumeAutonomy(ctx);
-				return;
-			}
 			if (args.trim() === "adopt-legacy") {
 				const scope = scopeFor(ctx);
 				if (!scope.persisted) {
@@ -506,6 +514,34 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerShortcut(STOP_WARNING_KEY, {
+		description: "Subagents: interrupt the warned agent turn",
+		handler: async (ctx) => {
+			uiCtx = ctx;
+			const warning = limitWarnings.shift();
+			if (!warning) return;
+			const current = getCore(ctx);
+			const result = await current.interrupt(warning.address, warning.turnId);
+			if (result.interrupted) barrierAbort?.abort();
+			publishLimitWarning();
+			ctx.ui.notify(
+				result.interrupted
+					? `Interrupted ${warning.address}'s turn; other agents and main continue.`
+					: `${warning.address}'s warned turn had already ended; nothing else was interrupted.`,
+				"warning",
+			);
+		},
+	});
+
+	pi.registerShortcut(IGNORE_WARNING_KEY, {
+		description: "Subagents: dismiss the current limit warning",
+		handler: async (ctx) => {
+			uiCtx = ctx;
+			limitWarnings.shift();
+			publishLimitWarning();
+		},
+	});
+
 	// The eight-tool surface (03-tool-surface.md).
 	pi.registerTool(createSpawnTool(getCore));
 	pi.registerTool(createSendTool(getCore));
@@ -516,26 +552,23 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool(createInterruptTool(getCore));
 	pi.registerTool(createRetireTool(getCore));
 
-	// Only real user input clears an abort latch. Extension-injected input must
-	// not silently restart an autonomous mail cycle the user explicitly stopped.
+	// A genuine idle user input starts one required-task group. Follow-up/steer
+	// input stays in the existing group, and extension continuations never reset it.
 	pi.on("input", async (event, ctx) => {
 		if (event.source !== "interactive" && event.source !== "rpc") return;
-		autoWakeBlockedByAbort = false;
-		setMainAutoWakeBlockedFor(ctx.cwd, scopeFor(ctx), false);
-		// D21 agent budgets are user-attention rails too. Reset them here, where
-		// the source is known, never in before_agent_start (extension-generated
-		// sendUserMessage turns also fire that later hook).
-		core?.autonomy.reset();
+		const current = getCore(ctx);
+		current.autonomy.reset();
+		if (event.streamingBehavior === undefined) current.beginRequiredTaskGroup();
 	});
 
-	// Main-mailbox delivery at real user turns: queued mail joins the next user
-	// prompt. Auto-woken turns carry their digest inline and never use this hook.
+	// There is no main auto-wake. Queued mailbox traffic joins a genuine user
+	// turn, while required task results are consumed by the in-turn barrier.
 	pi.on("before_agent_start", async (_event, ctx) => {
 		sessionMgr = ctx?.sessionManager ?? sessionMgr;
 		if (!core) return;
 		// Phase 7: settings files are re-read at every real user turn — edits
 		// to ~/.pi/agent/subagents.json / <project>/.pi/subagents.json apply
-		// live (the budget and ceiling checks read the same mutable object).
+		// live (warning checks read the same mutable object).
 		// Finding 12: a malformed file now RETAINS its last-known-good layer
 		// (store/settings.ts) instead of failing open to defaults; surface the
 		// warning so the user learns why an edit didn't take. De-duplicated so a
@@ -548,9 +581,6 @@ export default function (pi: ExtensionAPI) {
 			}
 			lastSettingsWarning = joinedWarnings;
 		}
-		// While abort-latched, extension-started turns cannot drain or revive the
-		// main mailbox. The input hook above clears the latch for real user input.
-		if (autoWakeBlockedByAbort) return;
 		try {
 			const digest = core.drainMainMail(currentSessionFile());
 			if (digest === null) return;
@@ -568,38 +598,69 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	pi.on("agent_start", async () => {
-		mainBusy = true;
+	// Suppress a premature user-visible final while required anchors are still
+	// outstanding. agent_end below waits directly and queues the actual result
+	// as a continuation of this same main run.
+	pi.on("message_end", async (event) => {
+		if (event.message.role !== "assistant") return;
+		const message = event.message as typeof event.message & { stopReason?: string };
+		const pending = core?.pendingRequiredTasks() ?? [];
+		if (message.stopReason !== "stop" || pending.length === 0) return;
+		return {
+			message: {
+				...event.message,
+				content: [{
+					type: "text",
+					text: `Waiting for ${pending.length} required subagent task${pending.length === 1 ? "" : "s"} before completing this user turn.`,
+				}],
+			},
+		};
 	});
-	// Pi exposes an aborted stop reason, not the abort's source. Any aborted
-	// main run therefore latches mailbox auto-wake off until real user input.
+
 	pi.on("agent_end", async (event, ctx) => {
+		sessionMgr = ctx?.sessionManager ?? sessionMgr;
 		const lastAssistant = [...(event.messages ?? [])]
 			.reverse()
 			.find((message) => message.role === "assistant") as { stopReason?: string } | undefined;
+		const current = core;
+		if (!current) return;
 		if (lastAssistant?.stopReason === "aborted") {
-			autoWakeBlockedByAbort = true;
-			setMainAutoWakeBlockedFor(ctx.cwd, scopeFor(ctx), true);
+			barrierAbort?.abort();
+			// Preserve required anchors. The next real input resumes the same
+			// completion group rather than silently detaching delegated work.
+			return;
+		}
+		if (lastAssistant?.stopReason !== "stop" || current.pendingRequiredTasks().length === 0) return;
+		const outcomes = await awaitNextRequiredOutcome(ctx, current);
+		if (!outcomes) return;
+		for (const outcome of outcomes) {
+			pi.sendMessage(
+				{
+					customType: "subagent_await-required",
+					content:
+						`[required subagent result for the current user turn]\n\n` +
+						`${JSON.stringify(outcome.result, null, 2)}\n\n` +
+						(outcome.result.status === "attention"
+							? "Resolve this attention now, then continue waiting. Use ask_user if human input is required. Do not finish the user turn while required tasks remain."
+							: "Incorporate this result. The completion barrier will continue waiting for every remaining required task."),
+					display: true,
+				},
+				{ deliverAs: "followUp" },
+			);
 		}
 	});
-	// Turn boundary (D11): mail held during the host turn gets its wake now.
-	// agent_settled fires once per run, after retries/compaction/queued
-	// continuations resolve AND after isStreaming goes false — so triggerWake's
-	// sendMessage(triggerTurn) genuinely starts a new main-agent turn (it emits
-	// no interactive/RPC input event, keeping the D21 reset user-only).
-	// mainBusy stays true through the agent_end→agent_settled gap so onMainMail
-	// can never steer a wake into a run that is still settling.
+
 	pi.on("agent_settled", async (_event, ctx) => {
 		sessionMgr = ctx?.sessionManager ?? sessionMgr;
-		mainBusy = false;
-		if (core?.settings.autoWake && !autoWakeBlockedByAbort && core.mainHasPendingMail()) triggerWake();
+		if (core?.pendingRequiredTasks().length === 0) core.clearRequiredTaskGroup();
 	});
 
 	// New/resumed/forked session → fresh wiring on next tool call (cwd or
 	// registry may differ); shutdown → abort + release every live agent
 	// session. Registry/teams/JSONL/mailboxes persist on disk — that's the design.
 	pi.on("session_start", async (event, ctx) => {
-		mainBusy = false;
+		limitWarnings.splice(0);
+		warningSequence = 0;
 		const previousScope = activeScope;
 		await releaseCore();
 		const sessionId = ctx.sessionManager.getSessionId();
@@ -673,12 +734,6 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (ctx.hasUI && core) installWidget(ctx);
-		if (ctx.hasUI && core) {
-			const current = core;
-			if (current.settings.autoWake && !autoWakeBlockedByAbort && !mainBusy && current.mainHasPendingMail()) {
-				triggerWake();
-			}
-		}
 
 		const cwd = ctx.cwd;
 		const scope = activeScope;
@@ -694,9 +749,10 @@ export default function (pi: ExtensionAPI) {
 		timer.unref?.();
 	});
 	pi.on("session_shutdown", async () => {
-		uiCtx?.ui.setStatus(STATUS_KEY, undefined);
-		uiCtx = undefined;
+		uiCtx?.ui?.setStatus(STATUS_KEY, undefined);
+		uiCtx?.ui?.setWidget?.(WARNING_WIDGET_KEY, undefined);
 		await releaseCore();
+		uiCtx = undefined;
 		if (activeScope?.ephemeralRoot !== undefined) {
 			rmSync(activeScope.ephemeralRoot, { recursive: true, force: true });
 		}

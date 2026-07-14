@@ -17,6 +17,18 @@ import {
 } from "@earendil-works/pi-tui";
 import { createRoot, flatten, loadChildren, type TreeNode } from "./picker-tree.ts";
 
+const ICON_COMPLETE = "󰄲"; // nf-md-checkbox_marked
+const ICON_SKIPPED = "󰍶"; // nf-md-minus_box
+const ICON_PENDING = "󰄱"; // nf-md-checkbox_blank_outline
+const ICON_INVALID = ""; // nf-fa-warning
+const ICON_CHECK = ""; // nf-fa-check
+const ICON_EDIT = ""; // nf-fa-pencil
+const ICON_ERROR = ""; // nf-fa-times_circle
+const ICON_CHECKBOX_ON = "󰄲"; // nf-md-checkbox_marked
+const ICON_CHECKBOX_OFF = "󰄱"; // nf-md-checkbox_blank_outline
+const ICON_RADIO_ON = "󰐾"; // nf-md-radiobox_marked
+const ICON_RADIO_OFF = "󰐽"; // nf-md-radiobox_blank
+
 export type InputType = "text" | "radio" | "multi" | "file";
 export type FileKind = "file" | "directory" | "any";
 
@@ -896,12 +908,12 @@ export function showUserInputs(
 				const skippedOptional = inputs[i].optional && !hasResponse(i);
 				const valid = isAnswered(i);
 				const invalid = hasResponse(i) && validationError(i) !== null;
-				const box = valid ? "■" : skippedOptional ? "◌" : "□";
+				const box = valid ? ICON_COMPLETE : skippedOptional ? ICON_SKIPPED : invalid ? ICON_INVALID : ICON_PENDING;
 				const color = valid ? "success" : skippedOptional ? "dim" : invalid ? "warning" : "muted";
 				const label = ` ${box} ${inputs[i].title} `;
 				tabs.push(`${active ? theme.bg("selectedBg", theme.fg("text", label)) : theme.fg(color, label)} `);
 			}
-			const submitText = " ✓ Submit ";
+			const submitText = ` ${ICON_CHECK} Submit `;
 			tabs.push(
 				`${
 					currentTab === submitTab
@@ -999,9 +1011,9 @@ export function showUserInputs(
 							// is the action that changes it.
 							add("     ", theme.fg("text", s.textValue) + optionSuffix(!s.textEdited && !!inp.defaultText, false));
 							lines.push("");
-							add(editPrefix, theme.fg(editColor, "Edit ✎"));
+							add(editPrefix, theme.fg(editColor, `${ICON_EDIT} Edit`));
 						} else {
-							add(editPrefix, theme.fg(editColor, "Type your answer ✎"));
+							add(editPrefix, theme.fg(editColor, `${ICON_EDIT} Type your answer`));
 						}
 					}
 					renderInlineError(idx, add);
@@ -1022,7 +1034,7 @@ export function showUserInputs(
 					const opt = inp.options[i];
 					const cursor = s.cursor === i;
 					const chosen = s.selected.has(i);
-					const mark = inp.type === "multi" ? (chosen ? "[x]" : "[ ]") : chosen ? "(●)" : "( )";
+					const mark = inp.type === "multi" ? (chosen ? ICON_CHECKBOX_ON : ICON_CHECKBOX_OFF) : chosen ? ICON_RADIO_ON : ICON_RADIO_OFF;
 					const prefix = cursor ? theme.fg("accent", "> ") : "  ";
 					const color = cursor ? "accent" : "text";
 					const suffix = optionSuffix(!s.selectionEdited && !!inp.defaultSelections?.has(i), opt.recommended === true);
@@ -1035,7 +1047,7 @@ export function showUserInputs(
 					const rowIdx = somethingElseRow(idx);
 					const cursor = s.cursor === rowIdx;
 					const chosen = s.customSelected;
-					const mark = inp.type === "multi" ? (chosen ? "[x]" : "[ ]") : chosen ? "(●)" : "( )";
+					const mark = inp.type === "multi" ? (chosen ? ICON_CHECKBOX_ON : ICON_CHECKBOX_OFF) : chosen ? ICON_RADIO_ON : ICON_RADIO_OFF;
 					const prefix = cursor ? theme.fg("accent", "> ") : "  ";
 					const label = s.customValue ? `Something else: ${s.customValue}` : "Something else…";
 					add(prefix, `${theme.fg(chosen ? "success" : "dim", mark)} ${theme.fg(cursor ? "accent" : "text", label)}`);
@@ -1057,7 +1069,7 @@ export function showUserInputs(
 				if (pickerOpen) renderPicker(idx, rw, add);
 
 				const typePrefix = s.cursor === 1 ? theme.fg("accent", "> ") : "  ";
-				const typeLabel = s.textValue ? "✎ Path" : "✎ Type a path…";
+				const typeLabel = s.textValue ? `${ICON_EDIT} Path` : `${ICON_EDIT} Type a path…`;
 				add(typePrefix, theme.fg(s.cursor === 1 ? "accent" : "dim", typeLabel));
 				if (editing && editing.kind === "text" && editing.inputIdx === idx) {
 					add("   ", theme.fg("muted", "Path:"));
@@ -1099,7 +1111,7 @@ export function showUserInputs(
 				const err = validationError(idx);
 				if (err) {
 					lines.push("");
-					add(" ", theme.fg("warning", `✗ ${err}`));
+					add(" ", theme.fg("warning", `${ICON_ERROR} ${err}`));
 				}
 			}
 
@@ -1139,7 +1151,7 @@ export function showUserInputs(
 				// Optional Notes section (submitCursor row 0).
 				const noteCursor = submitCursor === 0;
 				const notePrefix = noteCursor ? theme.fg("accent", "> ") : "  ";
-				const noteLabel = notes ? "Notes ✎" : "Add notes… ✎";
+				const noteLabel = notes ? `${ICON_EDIT} Notes` : `${ICON_EDIT} Add notes…`;
 				add(notePrefix, theme.fg(noteCursor ? "accent" : "dim", noteLabel));
 				if (notes && !(editing && editing.kind === "notes")) {
 					add("     ", theme.fg("muted", notes));
@@ -1155,7 +1167,7 @@ export function showUserInputs(
 				const canGo = canSubmit();
 				const submitPrefix = submitFocused ? theme.fg("accent", "> ") : "  ";
 				const submitColor = submitFocused ? "accent" : canGo ? "success" : "dim";
-				add(submitPrefix, theme.fg(submitColor, "Submit ✓"));
+				add(submitPrefix, theme.fg(submitColor, `${ICON_CHECK} Submit`));
 
 				if (!canGo) {
 					const missing = inputs

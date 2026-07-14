@@ -15,6 +15,7 @@ const TOGGLE_KEY = "alt+q";
 const MAX_PREVIEW_ENTRIES = 5;
 const MAX_ENTRIES = 100;
 const MAX_TOTAL_TEXT = 256 * 1024;
+const ICON_IMAGE = ""; // nf-fa-image
 
 interface QueueEntry {
 	id: string;
@@ -122,26 +123,45 @@ export default function queueExtension(pi: ExtensionAPI): void {
 	function widgetLines(theme: Theme, width: number): string[] {
 		if (entries.length === 0 || width < 1) return [];
 		const fit = (value: string) => truncateToWidth(value, width, "…");
-		const label = mode === "steer"
-			? theme.fg("accent", `Steering (${entries.length})`)
-			: theme.fg("success", `Queued (${entries.length})`);
-		const output = [fit(label)];
-		for (const [index, entry] of entries.slice(0, MAX_PREVIEW_ENTRIES).entries()) {
-			const firstLine = entry.text.split("\n")[0]?.trim() || "(image only)";
-			const imageMark = entry.images?.length ? theme.fg("warning", " ⧉") : "";
-			output.push(fit(theme.fg("dim", ` ${index + 1}. `) + theme.fg("text", firstLine) + imageMark));
+		const count = `${entries.length} pending`;
+		const modeLabel = mode === "steer" ? "Steer next turn" : "Follow up after run";
+		const modeColor = mode === "steer" ? "accent" : "success";
+		const output = [
+			fit(
+				theme.fg(modeColor, theme.bold(modeLabel)) +
+					theme.fg("dim", " · ") +
+					theme.fg("muted", count),
+			),
+			"",
+		];
+
+		const visibleEntries = entries.slice(0, MAX_PREVIEW_ENTRIES);
+		for (const [index, entry] of visibleEntries.entries()) {
+			const preview = entry.text.replace(/\s+/g, " ").trim() || "Image only";
+			const imageCount = entry.images?.length ?? 0;
+			const imageMark = imageCount > 0
+				? theme.fg("warning", `  ${ICON_IMAGE} ${imageCount}`)
+				: "";
+			output.push(fit(
+				theme.fg("dim", `${String(index + 1).padStart(2)}  `) +
+					theme.fg("text", preview) +
+					imageMark,
+			));
+			if (index < visibleEntries.length - 1) output.push("");
 		}
 		if (entries.length > MAX_PREVIEW_ENTRIES) {
-			output.push(fit(theme.fg("dim", `    … +${entries.length - MAX_PREVIEW_ENTRIES} more`)));
+			output.push(fit(theme.fg("dim", `    +${entries.length - MAX_PREVIEW_ENTRIES} more`)));
 		}
-		const toggleLabel = mode === "steer" ? "queue" : "steer";
+
+		const toggleLabel = mode === "steer" ? "follow up" : "steer";
+		output.push("");
 		output.push(fit(
-			theme.fg("dim", "↳ ") +
-				theme.fg("warning", CANCEL_KEY) +
-				theme.fg("dim", " cancel last · ") +
+			theme.fg("warning", CANCEL_KEY) +
+				theme.fg("dim", " cancel latest   ") +
 				theme.fg("warning", TOGGLE_KEY) +
-				theme.fg("dim", ` switch to ${toggleLabel} · `) +
-				theme.fg("warning", "/queue"),
+				theme.fg("dim", ` ${toggleLabel}   `) +
+				theme.fg("warning", "/queue") +
+				theme.fg("dim", " manage"),
 		));
 		return output;
 	}
@@ -153,15 +173,15 @@ export default function queueExtension(pi: ExtensionAPI): void {
 			() => ({
 				invalidate() {},
 				render(width: number): string[] {
-					if (width < 6) return widgetLines(ctx.ui.theme, Math.max(1, width));
-					const rendered = widgetLines(ctx.ui.theme, Math.max(1, width - 4));
+					if (width < 4) return widgetLines(ctx.ui.theme, Math.max(1, width));
+					const rendered = widgetLines(ctx.ui.theme, Math.max(1, width - 2));
 					if (rendered.length === 0) return [];
-					const box = new Box(1, 1, (text: string) => ctx.ui.theme.bg("customMessageBg", text));
+					const box = new Box(1, 1, (text: string) => ctx.ui.theme.bg("userMessageBg", text));
 					box.addChild(new Text(rendered.join("\n"), 0, 0));
-					return [...box.render(width), ""];
+					return box.render(width);
 				},
 			}),
-			{ placement: "aboveEditor" },
+			{ placement: "aboveWorking" },
 		);
 	}
 
@@ -172,7 +192,7 @@ export default function queueExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		onQueueChange = null;
-		if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET_KEY, undefined, { placement: "aboveEditor" });
+		if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET_KEY, undefined, { placement: "aboveWorking" });
 	});
 
 	function contentFor(entry: QueueEntry): string | ({ type: "text"; text: string } | ImageContent)[] {

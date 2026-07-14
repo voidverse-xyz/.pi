@@ -17,9 +17,9 @@
  *      envelope still readable in main's mailbox.
  *  (e) subagent_collect round-trip with schema validation (valid + violating).
  *  (f) bounce on retired address (error envelope back to the sender).
- *  (ext) index.ts wiring: every mail type auto-wakes the idle main agent;
- *        an aborted main run latches wakeups off until interactive/RPC input;
- *        mid-turn mail waits for agent_settled and main answers wake askers.
+ *  (ext) index.ts wiring: idle main mail never auto-wakes; required direct and
+ *        peer-delegated tasks stay joined across attention/interruption; warning
+ *        widgets support exact-turn stop, stale-action fencing, and ignore.
  *
  * Run: node smoke-phase3.mjs
  */
@@ -33,7 +33,6 @@ import { EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
 const piSdk = await jiti.import(join(PI_PKG, "dist/index.js"));
 const piAi = await jiti.import(join(PI_PKG, "node_modules/@earendil-works/pi-ai/dist/index.js"));
 const { createLayout } = await jiti.import(join(EXT, "store/layout.ts"));
-const { mainAutoWakeBlockedFor } = await jiti.import(join(EXT, "core.ts"));
 const { readRegistry } = await jiti.import(join(EXT, "store/registry.ts"));
 const { readTeams } = await jiti.import(join(EXT, "store/teams.ts"));
 const { InProcessRuntime, readOutstandingQuestions } = await jiti.import(join(EXT, "runtime/in-process.ts"));
@@ -110,6 +109,7 @@ function mockStream(model, context) {
 			}
 		}
 		if (spec.gate) await spec.gate;
+		if (spec.delayMs) await new Promise((resolve) => setTimeout(resolve, spec.delayMs));
 		const usage = {
 			input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15,
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 },
@@ -725,60 +725,45 @@ await test("peer send to a retired address bounces an error envelope back to the
 });
 
 // ---------------------------------------------------------------------------
-// (ext) index.ts wiring — all-mail auto-wake + abort latch through a stubbed pi
+// (ext) index.ts wiring — required-task barrier, no auto-wake, warning controls
 // ---------------------------------------------------------------------------
 console.log("(ext) host wiring (D24):");
-await test("all mail auto-wakes; abort latches wakeups off until real user input", async () => {
-	// Fresh world for the extension test; index.ts derives home from os.homedir().
+await test("main stays in-turn for required tasks and never auto-wakes from mail", async () => {
 	const project2 = join(scratch, "project2");
 	mkdirSync(join(project2, ".pi", "subagents"), { recursive: true });
 	writeFileSync(join(project2, ".pi", "subagents", "worker.md"), readFileSync(join(project, ".pi", "subagents", "worker.md")));
-	writeFileSync(join(project2, ".pi", "subagents.json"), `${JSON.stringify({ autonomousTokens: 1_000_000 })}\n`);
 	const prevHome = process.env.HOME;
 	process.env.HOME = home;
 
 	const handlers = {};
 	const registeredTools = new Map();
 	const sentMessages = [];
-	// Faithful-enough host stub: it models AgentSession's streaming flag and
-	// records the delivery MODE the real SDK would pick for each sendMessage
-	// (agent-session.js sendCustomMessage): "nextTurn" queues for the next
-	// prompt; while isStreaming it STEERS (or followUp) into the running turn;
-	// only isStreaming=false + triggerTurn starts a genuinely new turn.
+	const hostSessionFile = join(home, ".pi", "agent", "sessions", "host-test-session.jsonl");
+	mkdirSync(join(home, ".pi", "agent", "sessions"), { recursive: true });
+	writeFileSync(hostSessionFile, `${JSON.stringify({ type: "session", version: 1 })}\n`);
 	const stubPi = {
 		isStreaming: false,
 		on: (event, handler) => (handlers[event] ??= []).push(handler),
 		registerTool: (tool) => registeredTools.set(tool.name, tool),
 		sendMessage: (message, options) => {
-			const mode =
-				options?.deliverAs === "nextTurn" ? "nextTurn"
+			const mode = options?.deliverAs === "nextTurn" ? "nextTurn"
 				: stubPi.isStreaming ? (options?.deliverAs === "followUp" ? "followUp" : "steer")
-				: options?.triggerTurn ? "newTurn"
-				: "append";
+				: options?.triggerTurn ? "newTurn" : "append";
 			sentMessages.push({ message, options, mode });
+			writeFileSync(
+				hostSessionFile,
+				`${JSON.stringify({ type: "custom-message", customType: message.customType, content: message.content })}\n`,
+				{ flag: "a" },
+			);
 		},
-		// Phase 6 registers TUI surfaces at load; the smoke drives none of them.
 		registerCommand: () => {},
 		registerShortcut: () => {},
 	};
 	extensionFactory(stubPi);
-	// Emulate ONE host agent run with the REAL SDK's event ordering: agent_end
-	// is emitted while isStreaming is still true (_isAgentRunActive is cleared
-	// only in _emitAgentSettled, AFTER agent_end); agent_settled fires once the
-	// run has fully settled and isStreaming is false.
-	const fireHostTurn = async (ctx, messages = []) => {
-		stubPi.isStreaming = true;
-		for (const h of handlers.agent_start ?? []) await h({ type: "agent_start" }, ctx);
-		for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages }, ctx);
-		stubPi.isStreaming = false;
-		for (const h of handlers.agent_settled ?? []) await h({ type: "agent_settled" }, ctx);
-	};
 	assert.deepEqual(
 		[...registeredTools.keys()].sort(),
 		["subagent_await", "subagent_collect", "subagent_interrupt", "subagent_retire", "subagent_send", "subagent_spawn", "subagent_status", "subagent_steer"],
-		"the full eight-tool surface is registered",
 	);
-
 	const ctx = {
 		cwd: project2,
 		modelRegistry,
@@ -786,12 +771,14 @@ await test("all mail auto-wakes; abort latches wakeups off until real user input
 		isProjectTrusted: () => true,
 		sessionManager: {
 			getSessionId: () => "test-session-2",
-			getSessionFile: () => join(home, ".pi", "agent", "sessions", "host-test-session.jsonl"),
+			getSessionFile: () => hostSessionFile,
 		},
 	};
-	const layout2 = createLayout(project2, { home, sessionId: "test-session-2" });
+	for (const h of handlers.session_start ?? []) await h({ reason: "startup" }, ctx);
+	for (const h of handlers.input ?? []) {
+		await h({ type: "input", text: "delegate and wait", source: "interactive", streamingBehavior: undefined }, ctx);
+	}
 
-	// Subagent asks main a question via the ask tool.
 	scripts.push({
 		match: (c) => c.agent === "worker/main" && c.lastUserText.includes("EXT_TASK"),
 		reply: () => ({ tools: [{ name: "ask", args: { text: "Main, which branch? EXT_QUESTION" } }] }),
@@ -802,152 +789,206 @@ await test("all mail auto-wakes; abort latches wakeups off until real user input
 	});
 	scripts.push({
 		match: (c) => c.agent === "worker/main" && c.lastUserText.includes("EXT_ANSWER"),
-		reply: () => ({ text: "EXT_DONE_ACK" }),
-	});
-
-	const spawnTool = registeredTools.get("subagent_spawn");
-	await spawnTool.execute("t1", { type: "worker", task: "EXT_TASK: work on the thing" }, undefined, undefined, ctx);
-	// wait for the question to hit main's mailbox → auto-wake trigger
-	const start = Date.now();
-	while (sentMessages.length === 0) {
-		if (Date.now() - start > 20000) throw new Error("timeout waiting for auto-wake");
-		await sleep(15);
-	}
-	assert.equal(sentMessages[0].options.triggerTurn, true, "question auto-woke idle main (D24)");
-	assert.equal(sentMessages[0].mode, "newTurn", "idle wake starts a real turn (isStreaming=false + triggerTurn)");
-	assert.match(sentMessages[0].message.customType, /subagent-mail/);
-
-	// Phase-6 carried-forward fix: the digest is EMBEDDED in the wake trigger
-	// message (auto-woken sendMessage/triggerTurn turns never fire
-	// before_agent_start, so a digest deferred to that hook stranded until the
-	// next real user turn while agent_end kept re-triggering — a rail-bounded
-	// self-wake loop). The mailbox is therefore drained AT TRIGGER TIME.
-	const wakeContent = sentMessages[0].message.content;
-	assert.match(wakeContent, /Wake digest/);
-	assert.match(wakeContent, /question from `worker\/main`/);
-	assert.match(wakeContent, /EXT_QUESTION/);
-	const corr = /correlationId "(msg_[0-9A-Z]{26})"/.exec(wakeContent)?.[1];
-	assert.ok(corr, "digest tells main how to answer");
-	assert.equal(mailbox.pendingCount(layout2.mainMailboxDir), 0, "main mail drained at trigger time");
-	// A real user turn starting now finds nothing left to inject.
-	for (const h of handlers.input ?? []) await h({ type: "input", text: "user check", source: "interactive" }, ctx);
-	assert.equal(await handlers.before_agent_start[0]({}, ctx), undefined, "no double-injection");
-
-	// M4: before the answer exists, the unanswered question is recoverable via
-	// subagent_status detail (outstandingQuestions) — even if main's own
-	// context lost the digest.
-	const statusTool = registeredTools.get("subagent_status");
-	const detailRes = await statusTool.execute("tq", { address: "worker/main" }, undefined, undefined, ctx);
-	const detailJson = JSON.parse(detailRes.content[0].text);
-	assert.ok(
-		detailJson.outstandingQuestions.some((q) => q.id === corr && q.text.includes("EXT_QUESTION")),
-		"unanswered question listed in peek detail",
-	);
-
-	// main answers via subagent_send(correlationId) → asker wakes with the quote
-	const sendTool = registeredTools.get("subagent_send");
-	const answerRes = await sendTool.execute("t2", { to: "worker/main", text: "Use branch main-2. EXT_ANSWER", correlationId: corr }, undefined, undefined, ctx);
-	const answerJson = JSON.parse(answerRes.content[0].text);
-	assert.deepEqual(Object.keys(answerJson).sort(), ["delivery", "disposition", "envelopeId", "recipientState"], "spec-exact send result");
-	assert.ok(["woken", "held", "queued"].includes(answerJson.disposition), "Deliverer disposition surfaced");
-	{
-		const s2 = Date.now();
-		while (!llmCalls.some((c) => c.agent === "worker/main" && c.lastUserText.includes("EXT_ANSWER"))) {
-			if (Date.now() - s2 > 20000) throw new Error("timeout waiting for asker wake");
-			await sleep(15);
-		}
-	}
-	const wake = llmCalls.find((c) => c.agent === "worker/main" && c.lastUserText.includes("EXT_ANSWER"));
-	assert.match(wake.lastUserText, /You asked/);
-	assert.match(wake.lastUserText, /EXT_QUESTION/);
-
-	const assistantMessage = (stopReason = "stop") => ({
-		role: "assistant", api: "mock-api", provider: "mock", model: "mock-1",
-		content: [{ type: "text", text: "worked on the digest" }],
-		stopReason, timestamp: Date.now(),
-	});
-
-	// Reports now wake too. This one arrives while the first wake turn is still
-	// active, so it waits for the settled boundary rather than interrupting.
-	scripts.push({
-		match: (c) => c.agent === "worker/main" && c.lastUserText.includes("EXT_REPORT_TASK"),
-		reply: () => ({ tools: [{ name: "report", args: { text: "progress: 50% EXT_PROGRESS" } }] }),
-	});
-	const beforeReport = sentMessages.length;
-	await sendTool.execute("t3", { to: "worker/main", text: "EXT_REPORT_TASK: send a progress report" }, undefined, undefined, ctx);
-	while (mailbox.pendingCount(layout2.mainMailboxDir) === 0) await sleep(15);
-	assert.equal(sentMessages.length, beforeReport, "mid-turn report does not interrupt");
-	await fireHostTurn(ctx, [assistantMessage()]);
-	assert.equal(sentMessages.length, beforeReport + 1, "report auto-woke at the settled boundary");
-	assert.match(sentMessages.at(-1).message.content, /EXT_PROGRESS/);
-	assert.equal(sentMessages.at(-1).mode, "newTurn");
-
-	// Any mail arriving mid-turn wakes at agent_settled, never agent_end (where
-	// Pi still reports streaming and triggerTurn would become a steer).
-	scripts.push({
-		match: (c) => c.agent === "worker/main" && c.lastUserText.includes("EXT_TASK2"),
-		reply: () => ({ tools: [{ name: "ask", args: { text: "Main, held until the boundary? MIDTURN_Q_MARKER" } }] }),
+		reply: () => ({ tools: [{ name: "send_message", args: { to: "worker/child", text: "CHILD_TASK: delegated work" } }] }),
 	});
 	scripts.push({
 		match: (c) => c.agent === "worker/main" && c.lastRole === "toolResult",
-		reply: () => ({ text: "checkpoint: waiting on main (2)." }),
+		reply: () => ({ tools: [{ name: "report", args: { text: "EXT_FINAL", final: true } }] }),
 	});
-	const beforeMidturn = sentMessages.length;
-	stubPi.isStreaming = true;
-	for (const h of handlers.agent_start ?? []) await h({ type: "agent_start" }, ctx);
-	await sendTool.execute("t4", { to: "worker/main", text: "EXT_TASK2: ask main something mid-turn" }, undefined, undefined, ctx);
-	while (!mailbox.readPending(layout2.mainMailboxDir).some((p) => p.envelope.type === "question")) await sleep(15);
-	for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages: [assistantMessage()] }, ctx);
-	assert.equal(sentMessages.length, beforeMidturn, "no wake at agent_end while streaming");
-	stubPi.isStreaming = false;
-	for (const h of handlers.agent_settled ?? []) await h({ type: "agent_settled" }, ctx);
-	assert.equal(sentMessages.length, beforeMidturn + 1, "boundary wake fired at agent_settled");
-	assert.equal(sentMessages.at(-1).mode, "newTurn");
-	assert.match(sentMessages.at(-1).message.content, /MIDTURN_Q_MARKER/);
-
-	// Abort the newly woken main turn while another report arrives. The report
-	// remains pending, and both direct delivery and the settled re-check honor
-	// the abort latch.
 	scripts.push({
-		match: (c) => c.agent === "worker/main" && c.lastUserText.includes("ABORT_LATCH_REPORT"),
-		reply: () => ({ tools: [{ name: "report", args: { text: "ABORT_HELD_MARKER" } }] }),
+		match: (c) => c.agent === "worker/child" && c.lastUserText.includes("CHILD_TASK"),
+		reply: () => ({ tools: [{ name: "report", args: { text: "CHILD_FINAL", final: true } }] }),
 	});
+
+	const spawnTool = registeredTools.get("subagent_spawn");
+	await spawnTool.execute("child", { type: "worker", id: "child", team: "ext" }, undefined, undefined, ctx);
+	await spawnTool.execute("t1", { type: "worker", team: "ext", task: "EXT_TASK: work on the thing" }, undefined, undefined, ctx);
+	const layout2 = createLayout(project2, { home, sessionId: "test-session-2" });
+	for (let i = 0; i < 400 && !mailbox.readPending(layout2.mainMailboxDir).some((p) => p.envelope.type === "question"); i++) await sleep(15);
+	assert.equal(sentMessages.length, 0, "subagent mail never starts a separate main auto-wake turn");
+	const aborted = {
+		role: "assistant", api: "mock-api", provider: "mock", model: "mock-1",
+		content: [{ type: "text", text: "interrupted" }], stopReason: "aborted", timestamp: Date.now(),
+	};
+	for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages: [aborted] }, ctx);
+	for (const h of handlers.input ?? []) {
+		await h({ type: "input", text: "continue after interruption", source: "interactive", streamingBehavior: undefined }, ctx);
+	}
+
+	let attemptedFinal = {
+		role: "assistant", api: "mock-api", provider: "mock", model: "mock-1",
+		content: [{ type: "text", text: "premature completion" }], stopReason: "stop", timestamp: Date.now(),
+	};
+	for (const h of handlers.message_end ?? []) {
+		const replacement = await h({ type: "message_end", message: attemptedFinal }, ctx);
+		if (replacement?.message) attemptedFinal = replacement.message;
+	}
+	assert.match(attemptedFinal.content[0].text, /Waiting for 1 required subagent task/, "main interruption preserved the unfinished group");
+
 	stubPi.isStreaming = true;
-	for (const h of handlers.agent_start ?? []) await h({ type: "agent_start" }, ctx);
-	await sendTool.execute("t5", { to: "worker/main", text: "ABORT_LATCH_REPORT" }, undefined, undefined, ctx);
-	while (!mailbox.readPending(layout2.mainMailboxDir).some((p) => p.envelope.payload.text.includes("ABORT_HELD_MARKER"))) await sleep(15);
-	const beforeAbort = sentMessages.length;
-	for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages: [assistantMessage("aborted")] }, ctx);
-	stubPi.isStreaming = false;
-	for (const h of handlers.agent_settled ?? []) await h({ type: "agent_settled" }, ctx);
-	assert.equal(sentMessages.length, beforeAbort, "aborted run latched auto-wake off");
-	assert.equal(mainAutoWakeBlockedFor(project2, { sessionId: "test-session-2" }), true, "abort latch persisted for reload/restart");
+	for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages: [attemptedFinal] }, ctx);
+	assert.equal(sentMessages.length, 1);
+	assert.equal(sentMessages[0].mode, "followUp", "required attention continues the same main run");
+	assert.match(sentMessages[0].message.content, /EXT_QUESTION/);
+	const attention = JSON.parse(sentMessages[0].message.content.match(/\{[\s\S]*\}/)[0]);
+	const questionId = attention.attention.id;
 
-	// Extension-generated input cannot clear the latch or drain queued main mail.
-	for (const h of handlers.input ?? []) await h({ type: "input", text: "synthetic", source: "extension" }, ctx);
-	assert.equal(await handlers.before_agent_start[0]({}, ctx), undefined, "extension turn cannot drain abort-held mail");
-	assert.ok(mailbox.pendingCount(layout2.mainMailboxDir) > 0, "mail remains pending behind abort latch");
+	const sendTool = registeredTools.get("subagent_send");
+	await sendTool.execute("t2", {
+		to: "worker/main", text: "Use branch main-2. EXT_ANSWER", correlationId: questionId,
+	}, undefined, undefined, ctx);
+	for (let i = 0; i < 400 && !["EXT_FINAL", "CHILD_FINAL"].every((text) => mailbox.readPending(layout2.mainMailboxDir).some((p) => p.envelope.payload.text === text)); i++) await sleep(15);
+	assert.equal(sentMessages.length, 1, "parent and peer-delegated finals do not auto-wake main");
 
-	// The next real user message clears the latch and receives the held digest.
-	for (const h of handlers.input ?? []) await h({ type: "input", text: "continue", source: "interactive" }, ctx);
-	assert.equal(mainAutoWakeBlockedFor(project2, { sessionId: "test-session-2" }), false, "real user input durably cleared the latch");
-	const injected = await handlers.before_agent_start[0]({}, ctx);
-	assert.match(injected.message.content, /ABORT_HELD_MARKER/, "real user input drained abort-held mail");
-	await fireHostTurn(ctx, [assistantMessage()]);
+	for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages: [attemptedFinal] }, ctx);
+	for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages: [attemptedFinal] }, ctx);
+	assert.equal(sentMessages.length, 3);
+	assert.ok(sentMessages.slice(1).every((item) => item.mode === "followUp"));
+	assert.match(sentMessages.slice(1).map((item) => item.message.content).join("\n"), /EXT_FINAL/);
+	assert.match(sentMessages.slice(1).map((item) => item.message.content).join("\n"), /CHILD_FINAL/);
 
-	// Once reset, reports immediately auto-wake again while main is idle.
 	scripts.push({
-		match: (c) => c.agent === "worker/main" && c.lastUserText.includes("AFTER_ABORT_RESET"),
-		reply: () => ({ tools: [{ name: "report", args: { text: "RESET_WAKE_MARKER" } }] }),
+		match: (c) => c.agent === "worker/background" && c.lastUserText.includes("DETACHED_TASK"),
+		reply: () => ({ text: "intentionally no final report" }),
 	});
-	const beforeResetWake = sentMessages.length;
-	await sendTool.execute("t6", { to: "worker/main", text: "AFTER_ABORT_RESET" }, undefined, undefined, ctx);
-	while (sentMessages.length === beforeResetWake) await sleep(15);
-	assert.match(sentMessages.at(-1).message.content, /RESET_WAKE_MARKER/, "all-mail auto-wake resumed after user input");
+	await spawnTool.execute("background", {
+		type: "worker", id: "background", task: "DETACHED_TASK", background: true,
+	}, undefined, undefined, ctx);
+	let realFinal = { ...attemptedFinal, content: [{ type: "text", text: "all required work incorporated" }] };
+	for (const h of handlers.message_end ?? []) {
+		const replacement = await h({ type: "message_end", message: realFinal }, ctx);
+		if (replacement?.message) realFinal = replacement.message;
+	}
+	assert.equal(realFinal.content[0].text, "all required work incorporated", "completion is allowed after every anchor settles");
+	for (const h of handlers.agent_settled ?? []) await h({ type: "agent_settled" }, ctx);
+	for (const h of handlers.session_shutdown ?? []) await h({ reason: "quit" }, ctx);
+	process.env.HOME = prevHome;
+});
 
-	// D17: user → subagent FYI. Reach the runtime through a fresh core-level path:
-	// sendAsUser is a runtime power; exercised in the runtime section below.
+// ---------------------------------------------------------------------------
+await test("limit widget is non-blocking; stop is targeted and ignore lets work continue", async () => {
+	const project3 = join(scratch, "project3");
+	mkdirSync(join(project3, ".pi", "subagents"), { recursive: true });
+	writeFileSync(join(project3, ".pi", "subagents", "worker.md"), readFileSync(join(project, ".pi", "subagents", "worker.md")));
+	writeFileSync(join(project3, ".pi", "subagents.json"), JSON.stringify({ maxTurnMinutes: 0.001 }));
+	const prevHome = process.env.HOME;
+	process.env.HOME = home;
+	const handlers = {};
+	const tools = new Map();
+	const shortcuts = new Map();
+	const widgets = new Map();
+	const notifications = [];
+	const sentMessages = [];
+	const sessionFile = join(home, ".pi", "agent", "sessions", "warning-widget-session.jsonl");
+	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 1 })}\n`);
+	const stubPi = {
+		isStreaming: true,
+		on: (event, handler) => (handlers[event] ??= []).push(handler),
+		registerTool: (tool) => tools.set(tool.name, tool),
+		registerCommand: () => {},
+		registerShortcut: (key, def) => shortcuts.set(key, def),
+		sendMessage: (message, options) => sentMessages.push({ message, options }),
+	};
+	extensionFactory(stubPi);
+	const ctx = {
+		cwd: project3, modelRegistry, model: modelRegistry.find("mock", "mock-1"),
+		isProjectTrusted: () => true, hasUI: true, mode: "tui",
+		signal: new AbortController().signal,
+		sessionManager: { getSessionId: () => "warning-widget", getSessionFile: () => sessionFile },
+		ui: {
+			setStatus: () => {},
+			setWidget: (key, content, options) => widgets.set(key, { content, options }),
+			notify: (text, level) => notifications.push({ text, level }),
+		},
+	};
+	for (const h of handlers.session_start ?? []) await h({ reason: "startup" }, ctx);
+	for (const h of handlers.input ?? []) await h({ source: "interactive", streamingBehavior: undefined }, ctx);
 
+	scripts.push({
+		match: (c) => c.agent === "worker/warn" && c.lastUserText.includes("WARN_STOP"),
+		reply: () => ({ text: "late response", delayMs: 500 }),
+	});
+	await tools.get("subagent_spawn").execute("warn", { type: "worker", id: "warn", task: "WARN_STOP" }, undefined, undefined, ctx);
+	for (let i = 0; i < 200 && !widgets.get("subagent-limit-warning")?.content?.join(" ").includes("worker/warn"); i++) await sleep(10);
+	const firstCard = widgets.get("subagent-limit-warning");
+	assert.match(firstCard.content.join(" "), /agent is still running/i);
+	assert.equal(firstCard.options.placement, "aboveWorking");
+	await shortcuts.get("alt+ctrl+x").handler(ctx);
+	assert.ok(notifications.some((item) => /Interrupted worker\/warn's turn/.test(item.text)));
+	const layout3 = createLayout(project3, { home, sessionId: "warning-widget" });
+	for (let i = 0; i < 200 && readRegistry(layout3.registryFile).agents["worker/warn"]?.state !== "dormant"; i++) await sleep(10);
+	assert.equal(readRegistry(layout3.registryFile).agents["worker/warn"]?.state, "dormant");
+
+	scripts.push({
+		match: (c) => c.agent === "worker/ignore" && c.lastUserText.includes("WARN_IGNORE"),
+		reply: () => ({ tools: [{ name: "report", args: { text: "IGNORE_FINAL", final: true } }], delayMs: 180 }),
+	});
+	await tools.get("subagent_spawn").execute("ignore", {
+		type: "worker", id: "ignore", task: "WARN_IGNORE", background: true,
+	}, undefined, undefined, ctx);
+	for (let i = 0; i < 200 && !widgets.get("subagent-limit-warning")?.content?.join(" ").includes("worker/ignore"); i++) await sleep(10);
+	await shortcuts.get("alt+ctrl+i").handler(ctx);
+	assert.equal(widgets.get("subagent-limit-warning").content, undefined, "ignore dismisses the card without capturing input");
+	for (let i = 0; i < 300 && !mailbox.readPending(layout3.mainMailboxDir).some((p) => p.envelope.payload.text === "IGNORE_FINAL"); i++) await sleep(10);
+	assert.ok(mailbox.readPending(layout3.mainMailboxDir).some((p) => p.envelope.payload.text === "IGNORE_FINAL"), "ignored agent continued to final");
+
+	// A delayed action on an old warning must not interrupt a newer turn at the
+	// same address. The runtime turnId fence makes the first x a stale no-op.
+	scripts.push({
+		match: (c) => c.agent === "worker/stale" && c.lastUserText.includes("STALE_FIRST"),
+		reply: () => ({ tools: [{ name: "report", args: { text: "STALE_FIRST_FINAL", final: true } }], delayMs: 120 }),
+	});
+	await tools.get("subagent_spawn").execute("stale-1", {
+		type: "worker", id: "stale", task: "STALE_FIRST", background: true,
+	}, undefined, undefined, ctx);
+	for (let i = 0; i < 200 && !widgets.get("subagent-limit-warning")?.content?.join(" ").includes("worker/stale"); i++) await sleep(10);
+	for (let i = 0; i < 300 && !mailbox.readPending(layout3.mainMailboxDir).some((p) => p.envelope.payload.text === "STALE_FIRST_FINAL"); i++) await sleep(10);
+	scripts.push({
+		match: (c) => c.agent === "worker/stale" && c.lastUserText.includes("STALE_SECOND"),
+		reply: () => ({ tools: [{ name: "report", args: { text: "STALE_SECOND_FINAL", final: true } }], delayMs: 220 }),
+	});
+	await tools.get("subagent_send").execute("stale-2", {
+		to: "worker/stale", text: "STALE_SECOND", background: true,
+	}, undefined, undefined, ctx);
+	for (let i = 0; i < 200 && readRegistry(layout3.registryFile).agents["worker/stale"]?.state !== "running"; i++) await sleep(10);
+	await shortcuts.get("alt+ctrl+x").handler(ctx);
+	assert.ok(notifications.some((item) => /warned turn had already ended/.test(item.text)));
+	for (let i = 0; i < 300 && !mailbox.readPending(layout3.mainMailboxDir).some((p) => p.envelope.payload.text === "STALE_SECOND_FINAL"); i++) await sleep(10);
+	assert.ok(mailbox.readPending(layout3.mainMailboxDir).some((p) => p.envelope.payload.text === "STALE_SECOND_FINAL"), "stale warning did not interrupt the newer turn");
+	if (widgets.get("subagent-limit-warning")?.content !== undefined) {
+		await shortcuts.get("alt+ctrl+i").handler(ctx);
+	}
+
+	// If an older unfinished assignment exists at the same address, stopping a
+	// warned newer turn cancels only the task actually present in that turn.
+	scripts.push({
+		match: (c) => c.agent === "worker/multi" && c.lastUserText.includes("MULTI_A"),
+		reply: () => ({ text: "A remains unfinished" }),
+	});
+	await tools.get("subagent_spawn").execute("multi-a", {
+		type: "worker", id: "multi", task: "MULTI_A",
+	}, undefined, undefined, ctx);
+	for (let i = 0; i < 200 && readRegistry(layout3.registryFile).agents["worker/multi"]?.state !== "dormant"; i++) await sleep(10);
+	scripts.push({
+		match: (c) => c.agent === "worker/multi" && c.lastUserText.includes("MULTI_B"),
+		reply: () => ({ text: "B late", delayMs: 400 }),
+	});
+	await tools.get("subagent_send").execute("multi-b", {
+		to: "worker/multi", text: "MULTI_B",
+	}, undefined, undefined, ctx);
+	for (let i = 0; i < 200 && !widgets.get("subagent-limit-warning")?.content?.join(" ").includes("worker/multi"); i++) await sleep(10);
+	await shortcuts.get("alt+ctrl+x").handler(ctx);
+	let candidate = {
+		role: "assistant", api: "mock-api", provider: "mock", model: "mock-1",
+		content: [{ type: "text", text: "candidate" }], stopReason: "stop", timestamp: Date.now(),
+	};
+	for (const h of handlers.message_end ?? []) {
+		const out = await h({ type: "message_end", message: candidate }, ctx);
+		if (out?.message) candidate = out.message;
+	}
+	assert.match(candidate.content[0].text, /Waiting for 1 required subagent task/, "older task A remained joined; only warned task B was cancelled");
+
+	assert.equal(sentMessages.length, 0, "neither warning nor report auto-woke main");
 	for (const h of handlers.session_shutdown ?? []) await h({}, ctx);
 	process.env.HOME = prevHome;
 });

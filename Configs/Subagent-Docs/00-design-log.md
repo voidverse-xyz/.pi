@@ -376,6 +376,26 @@ them back as cleanup noise, but still bounces peer mail so peers cannot strand.
 Delegated review completion must not be claimed before the anchored report is
 received; verdict/findings precede orchestration details.
 
+### D27 — Current-turn completion barrier; warning-only limits (2026-07-14)
+Supersedes D24's notification-driven main auto-wake and D21/D15 execution stops.
+Every task anchor created by spawn, uncorrelated main send, collect, or transitive
+uncorrelated peer delegation during the current user turn is required by default.
+Before main can publish a final response, the host waits for exact correlated
+final/error/retirement outcomes and feeds results or attention back with Pi
+`followUp` delivery inside the same run. Questions, escalations, provider/tool
+waits, scheduler contention, main interruption, and missing final reports remain
+joined. `background:true` is the only explicit per-call detachment. Persistent
+agent lifetimes are never themselves joined.
+
+Main mail remains durable but never auto-wakes an idle host; unrelated mail joins
+the next genuine user turn. `/agents resume`, the abort latch, and paused-autonomy
+queue draining are removed. Session turn/token and per-agent lifetime/time/
+compaction values are warning thresholds only: crossing emits a one-shot targeted
+warning while execution continues. A persistent non-blocking TUI widget offers
+`alt+ctrl+x` to interrupt only the affected subagent turn and `alt+ctrl+i` to
+ignore. Only manual interruption/retirement, fatal runtime failure, host shutdown,
+or host crash stops work.
+
 ## Proposed (under discussion)
 
 ### P1 — Disk-backed actor model

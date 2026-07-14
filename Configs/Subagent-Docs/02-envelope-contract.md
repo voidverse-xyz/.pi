@@ -41,7 +41,7 @@ system, regardless of direction (main→sub, sub→sub, sub→main).
 | answer | main→sub, sub→sub | reply; correlationId REQUIRED |
 | report | sub→main | progress or final result (`payload.final:true`; final auto-retires a oneshot, D13/D26) |
 | escalation | sub→main→user | tool call blocked by type policy; only a HUMAN may approve (D10) |
-| error | sub→main | crashed, budget exhausted, stuck |
+| error | sub→main | fatal runtime/tool failure or explicit delivery failure; warning thresholds do not emit errors |
 
 ## Delivery rules
 
@@ -54,7 +54,10 @@ system, regardless of direction (main→sub, sub→sub, sub→main).
 5. Wake digest: the runtime composes the wake injection deterministically — each
    answer is delivered with its original question quoted (correlationId lookup),
    followed by all other mail queued during dormancy, ordered by id (D14).
-6. Mailbox on disk: one file per envelope under the recipient's dir
+6. An uncorrelated peer `message` sent by an agent already in the current required
+   group is a transitive task assignment. The recipient's final report to main
+   correlates to that peer envelope id, so parent completion cannot hide child work.
+7. Mailbox on disk: one file per envelope under the recipient's dir
    (`owners/<main-session-id>/<type>/<id>/mailbox/<msg-id>.json`); processed mail
    moves to `mailbox/.done/` (kept for audit, GC'd with the same N-day policy as
    .archive). Main mailbox is under that same owning session scope.

@@ -67,6 +67,9 @@ import type { PresentedFile } from "./files.ts";
 import { htmlToText, renderableKind, type RenderableKind } from "./rendered.ts";
 
 const MAX_PREVIEW_BYTES = 512 * 1024;
+const ICON_LOADING = ""; // nf-fa-spinner
+const ICON_SUCCESS = ""; // nf-fa-check
+const ICON_WARNING = ""; // nf-fa-warning
 // Only the file header is needed to read image dimensions — avoid base64-ing a
 // whole (possibly multi-MB) image just to show a metadata card.
 const IMAGE_HEADER_BYTES = 128 * 1024;
@@ -1309,15 +1312,15 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		const push = (s: string) => lines.push(truncateToWidth(s, inner, "…"));
 		const s = htmlSnap;
 		if (s.status === "pending") {
-			push(` ${theme.fg("muted", "⟳ Rendering browser snapshot…")}`);
+			push(` ${theme.fg("muted", `${ICON_LOADING} Rendering browser snapshot…`)}`);
 		} else if (s.status === "done") {
-			push(` ${theme.fg("success", "✓ Rendered")}${theme.fg("dim", "  ·  o open in browser  ·  r raw source")}`);
+			push(` ${theme.fg("success", `${ICON_SUCCESS} Rendered`)}${theme.fg("dim", "  ·  o open in browser  ·  r raw source")}`);
 			const dim = s.width && s.height ? `${s.width}×${s.height}px  ·  ` : "";
 			push(` ${theme.fg("dim", `snapshot (can't show inline): ${dim}${s.path}`)}`);
 		} else if (s.status === "unavailable") {
-			push(` ${theme.fg("warning", "⚠ No headless browser — best-effort text.")}${theme.fg("dim", "  ·  o open in browser")}`);
+			push(` ${theme.fg("warning", `${ICON_WARNING} No headless browser — best-effort text.`)}${theme.fg("dim", "  ·  o open in browser")}`);
 		} else if (s.status === "failed") {
-			push(` ${theme.fg("warning", "⚠ Browser render failed — best-effort text.")}${theme.fg("dim", "  ·  o open in browser")}`);
+			push(` ${theme.fg("warning", `${ICON_WARNING} Browser render failed — best-effort text.`)}${theme.fg("dim", "  ·  o open in browser")}`);
 			push(` ${theme.fg("dim", truncateToWidth(s.error, Math.max(10, inner - 2), "…"))}`);
 		}
 		if (lines.length > 0) push(theme.fg("borderMuted", ` ${"·".repeat(Math.max(1, Math.min(inner - 2, 40)))}`));
@@ -1544,7 +1547,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			footer.push(pad(theme.fg("accent", ` ${searchLabel}`) + theme.fg("dim", "  (Enter keep, Esc cancel)"), innerW));
 			for (const l of searchEditor.render(Math.max(10, innerW - 2))) footer.push(pad(` ${l}`, innerW));
 		} else {
-			const noteInfo = note ? ` · note ✓` : "";
+			const noteInfo = note ? ` · note ${ICON_SUCCESS}` : "";
 			const hasSel = previewKind === "file" && !rendered && selAnchor !== null;
 			// What `a` will add at the cursor's current spot, so the hint isn't a lie.
 			const inRegion = previewKind === "file" && !rendered && regionAt(cursorLine) !== null;

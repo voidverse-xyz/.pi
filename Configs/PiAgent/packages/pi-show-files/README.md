@@ -41,11 +41,11 @@ errors immediately instead of showing an empty panel.
   outbound requests are forced through an unreachable loopback proxy, with DNS
   resolution and background networking blocked as additional layers; the browser
   is spawned with an argv array (never a shell). A banner reports the result:
-  - **rendered ok** → `✓ Rendered · o open in browser` plus the snapshot PNG path
+  - **rendered ok** → ` Rendered · o open in browser` plus the snapshot PNG path
     and pixel dimensions. The snapshot *can't* paint inline (terminal overlay — see
     Images below), so the pane shows the best-effort text and `o` opens the page in
     your system browser for full fidelity (CSS, layout, tables, embedded images).
-  - **no browser / render failed** → a clear `⚠ … best-effort text` notice, with
+  - **no browser / render failed** → a clear ` … best-effort text` notice, with
     `o` still offered to open the page in your browser.
   Either way you get readable text (a dependency-free tag strip), never a blank
   pane, and `r` still toggles to raw source. Images embedded in the HTML are only

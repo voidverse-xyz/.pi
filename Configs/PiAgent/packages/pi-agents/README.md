@@ -29,11 +29,11 @@ human. Design docs are authoritative:
 
 | Tool | Power |
 |------|-------|
-| `subagent_spawn` | Get-or-create `<type>/<id>` (existing = wake, memory intact; `created:false`). `team` joins/creates a team; `lifetime:"oneshot"` = disposable (auto `tmp-<short>` id — oneshots never take an explicit id); `task` = first message and returns `taskEnvelopeId` |
-| `subagent_send` | Mail to an agent and return `envelopeId`: send (`when:"now"`), queue (`when:"after-turn"`), answer (`correlationId` = the question's envelope id). Never interrupts a running turn |
+| `subagent_spawn` | Get-or-create `<type>/<id>` (existing = wake, memory intact; `created:false`). `team` joins/creates a team; `lifetime:"oneshot"` = disposable (auto `tmp-<short>` id — oneshots never take an explicit id); `task` = first message and returns `taskEnvelopeId`. Task-bearing calls join the current user-turn completion barrier unless `background:true` |
+| `subagent_send` | Mail to an agent and return `envelopeId`: send (`when:"now"`), queue (`when:"after-turn"`), answer (`correlationId` = the question's envelope id). Uncorrelated sends join the completion barrier unless `background:true`. Never interrupts a running turn |
 | `subagent_steer` | Inject into a RUNNING turn (main-agent-only; `steered:false` if idle) |
 | `subagent_status` | Roster (state, lifetime, teams, vitals: ctx %, tokens, cost, turns) or per-agent detail + transcript tail. Read-only |
-| `subagent_collect` | Non-blocking: sends a collect request carrying a JSON schema and returns `requestId`; the result is validated on arrival |
+| `subagent_collect` | Sends a collect request carrying a JSON schema and returns `requestId`; the result is validated on arrival. The tool call itself is non-blocking, but the current user turn waits unless `background:true` |
 | `subagent_await` | Cancellably wait for a final report correlated to `taskEnvelopeId`/`envelopeId`, or a collect result correlated to `requestId`. Searches pending/parked/finalized durable mail; questions/escalations/errors return generation-fenced `attention`; timeout consumes nothing |
 | `subagent_interrupt` | Abort the current turn; agent stays alive, goes dormant |
 | `subagent_retire` | The ONLY destructive tool: deregister, scrub from teams, move the dir to `.archive/` (post-mortem viewable, GC'd after N days) |
@@ -66,8 +66,8 @@ tools: [read, grep, edit, bash] # allowlist; omit = all coding tools
 readOnly: false                 # true strips every mutator (beats tools/writePaths)
 writePaths: ["src/auth/**"]     # mutations outside → escalation to the human
 denyPaths: ["migrations/**"]    # beats writePaths
-maxTokensTotal: 500000          # whole-life budget ceilings (optional)
-maxTurnMinutes: 15
+maxTokensTotal: 500000          # whole-life warning thresholds (optional)
+maxTurnMinutes: 15              # warnings never stop the agent
 maxContextCompactions: 3
 ---
 
@@ -95,7 +95,7 @@ Unlimited existence, capped concurrency (`maxConcurrent` turn slots; extra
 turns queue, visibly). `dormant` = asleep with open mailbox and intact
 memory — the normal end-of-turn state. **Persistent** agents are never
 auto-retired. **Oneshots** ("named = persistent, anonymous = disposable")
-auto-retire after their final report, error, or budget ceiling; the dir moves
+auto-retire after their final report or a fatal runtime error; warning thresholds never retire them. The dir moves
 to `.archive/<type>/<id>/` and stays viewable until GC (default 7 days).
 
 Mutable state is owned by the current main Pi session; project type libraries
@@ -137,40 +137,38 @@ address as reusable; startup completes any crash-interrupted funeral.
   tree or any type-definition dir (self-retuning / mail forging), realpath-
   anchored against symlink tricks. Path-qualified shell executables never
   inherit trust from a safe basename; they require human review.
-- **Rails** (D21): a **subagent autonomy pool** (`autonomousTurns` /
-  `autonomousTokens`) caps autonomous agent turns; **maxHops** (default 8)
-  kills question ping-pong. Main-agent mailbox wakeups do not consume or obey
-  this pool. Tripping **pauses, never kills**: agent turns finish, agent mail
-  queues on disk, and your next message or `/agents resume` refills and drains.
-  Counters are persisted inside the owning session scope across reload/resume.
-- **Budget ceilings** (D15): per-type (frontmatter) or global (settings)
-  `maxTokensTotal` / `maxTurnMinutes` / `maxContextCompactions`. Crossing
-  emits an error envelope + interrupt; persistent agents park dormant for the
-  main agent to decide, oneshots get the funeral. Token totals are
-  **whole-life**: cumulative across wakes and session-file rotations
-  (persisted in registry vitals).
+- **Rails** (D21): session thresholds (`autonomousTurns` /
+  `autonomousTokens`) emit one warning per user-input accounting window;
+  **maxHops** (default 8) still terminates question ping-pong. Thresholds never
+  pause, abort, retire, or queue otherwise-runnable work. Counters persist in
+  the owning session scope and reset on genuine user input.
+- **Per-agent thresholds** (D15): per-type (frontmatter) or global (settings)
+  `maxTokensTotal` / `maxTurnMinutes` / `maxContextCompactions`. Crossing emits
+  a targeted warning while the agent continues. Token totals are **whole-life**:
+  cumulative across wakes and session-file rotations (persisted in registry
+  vitals). Only a human interrupt, explicit retirement, fatal runtime error, or
+  host shutdown stops work.
 
 ## TUI (05-tui-spec)
 
 - Plain compact status producer: `󰚩 2 running · 1 waiting · 󰇮 3 · 󰔛 budget
   21/40` (Nerd Font icons; non-zero segments only; hidden when idle).
   `pi-status-line` styles and places it on footer line 1-left; tool-monitor moves
-  to line 2 while it is visible. The timer-sand means budget consumption, not a
-  pause. When a rail actually trips,
-  it becomes `󰚩  paused · tokens 512k/500k · 󰇮 2 queued · /agents resume`.
+  to line 2 while it is visible. The timer-sand means threshold consumption,
+  not a pause. Crossing a threshold opens a persistent non-blocking widget for
+  the affected agent: `alt+ctrl+x` interrupts only that agent's current turn;
+  `alt+ctrl+i` dismisses the warning and lets it continue.
 - `/agents` — compact roster picker shown in the main input area, grouped by
   team (`Enter` view, `x` interrupt, `X` retire with confirm, `Esc`), with a
   collapsed `.archive (n)` section. Selecting an agent opens its full-screen viewer.
 - `/agents <type>/<id>` — jump straight into the session viewer.
-- `/agents resume` — refill the autonomy pool and drain queued mail
-  without sending a message.
 - `/agents adopt-legacy` — human-confirmed assignment of inactive cwd-wide
   state into the current empty persisted session scope.
 - `/agents rollback-legacy` — restore the inactive backup only if the adopted
   scope's fingerprint has not diverged.
 - `alt+j` — cycle main → agent 1 → … → main through the full-screen viewer
-  (Pi-native transcript replay + live tail; envelope traffic as compact 📨
-  entries). The input line is the agent's *user*: `Enter` mails at the turn
+  (Pi-native transcript replay + live tail; envelope traffic as compact Nerd
+  Font `󰇮` entries). The input line is the agent's *user*: `Enter` mails at the turn
   boundary, `alt+Enter` steers mid-turn, `x` (empty editor) interrupts.
   Direct user→subagent messages drop an FYI report to the main agent.
 - `alt+e` — review pending escalations in a compact prompt at the main input:
@@ -190,22 +188,22 @@ merged field by field:
 
 ```json
 {
-	"autoWake": true,          // every main-mail type wakes; abort pauses until user input
 	"maxConcurrent": 5,        // D13 running-turn slots (applies at session start / reload)
 	"maxHops": 8,              // D21 chain-depth cap
-	"autonomousTurns": 40,     // D21 pool: autonomous turns since last user input
+	"autonomousTurns": 40,     // warning threshold since last user input
 	"autonomousTokens": 500000,
 	"archiveGcDays": 7,        // retention for .archive/, mailbox .done/, resolved escalations
-	"maxTokensTotal": null,    // optional global ceiling defaults (frontmatter overrides
-	"maxTurnMinutes": null,    //   per type; null/omitted = unlimited)
+	"maxTokensTotal": null,    // optional global warning defaults (frontmatter overrides
+	"maxTurnMinutes": null,    //   per type; null/omitted = no warning)
 	"maxContextCompactions": null
 }
 ```
 
-With `autoWake: true`, every envelope type wakes an idle main agent. Aborting
-any main-agent run durably suppresses mailbox wakeups across `/reload` and process
-restart; the next interactive or RPC user message re-enables them. Pi exposes the
-aborted result, not whether Esc or another abort source caused it.
+Main mail never auto-wakes an idle host. A real user turn drains queued mail;
+required task results instead continue the same main run through the completion
+barrier. Questions, escalations, provider waits, peer delegations, interruptions,
+and missing finals stay joined. Set `background:true` only for an intentional
+explicit detachment.
 
 Files are re-read at every real user turn, so edits apply **live** (only
 `maxConcurrent` waits for the next session/reload). Unknown keys and bad
@@ -216,7 +214,7 @@ mail, resolved escalation records) runs automatically on session start.
 
 ```
 cd packages/pi-agents
-./test/e2e/run.sh
+bash test/e2e/run.sh
 ```
 
 One command: strict typecheck (tsc — resolved from PATH or installed
@@ -232,5 +230,6 @@ if it lives somewhere unusual). Individual files run standalone:
 ## Design docs
 
 `Configs/Subagent-Docs/` — the design log and six specs (01–06) are the source
-of truth; deviations are marked `// DEVIATION:` in
-the source.
+of truth; deviations are marked `// DEVIATION:` in the source. For a visual,
+dark-mode tour of the complete current system, open
+`Configs/Subagent-Docs/pi-agents-current-implementation.html`.

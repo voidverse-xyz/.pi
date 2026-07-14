@@ -17,7 +17,7 @@
  * (CreateCoreOptions.settings, used by harnesses).
  *
  * Live semantics: core keeps ONE mutable settings object that the runtime
- * reads per turn (autonomy limits, ceilings, autoWake). applySettingsInto()
+ * reads per turn (session and per-agent warning thresholds). applySettingsInto()
  * re-reads the files into that same object — index.ts calls it at every real
  * user turn, so file edits apply without /reload. Exceptions (bound at core
  * creation, i.e. next session / /reload): maxConcurrent (the scheduler is
@@ -25,13 +25,13 @@
  *
  * Validation is lenient-but-honest: unknown keys and mistyped values are
  * skipped with a human-readable warning, never thrown — a typo in a config
- * file must not take the extension down. `null` on an optional ceiling field
+ * file must not take the extension down. `null` on an optional warning-threshold field
  * explicitly clears it back to "unlimited".
  *
  * FAIL-CLOSED on a WHOLE-FILE read/parse failure (Finding 12): a temporarily
  * malformed file (mid-edit save, transient unreadable) must NOT collapse to an
  * empty layer — that would silently replace restrictive live values with the
- * doc defaults and drop optional ceilings. Instead the LAST-KNOWN-GOOD parse of
+ * doc defaults and drop optional warning thresholds. Instead the LAST-KNOWN-GOOD parse of
  * that exact file (cached per absolute path) is retained until the file becomes
  * readable/valid again; only an intentionally MISSING file (ENOENT) removes the
  * layer. The degraded read still returns a warning so the host can surface it.
@@ -47,12 +47,6 @@ import type { Layout } from "./layout.ts";
 const DEFAULT_MAX_CONCURRENT = 5;
 
 export interface SubagentsSettings {
-	/**
-	 * Every pending main-mail envelope starts a main-agent turn when idle.
-	 * false = fully manual queueing. An aborted main run durably overrides true
-	 * across reload/restart until the next interactive/RPC user message.
-	 */
-	autoWake: boolean;
 	/** D13 running-turn slot cap. Default 5. Applied at core creation. */
 	maxConcurrent: number;
 	/** D21 causal-chain depth cap. Default 8. */
@@ -64,8 +58,8 @@ export interface SubagentsSettings {
 	/** N-day retention for .archive/, mailbox .done/, resolved escalations. Default 7. */
 	archiveGcDays: number;
 	/**
-	 * D15 global ceiling defaults — frontmatter overrides field by field; an
-	 * unset field means unlimited. Read live per subagent turn.
+	 * D15/D27 global warning defaults — frontmatter overrides field by field;
+	 * an unset field means no warning. Read live per subagent turn.
 	 */
 	maxTokensTotal?: number;
 	maxTurnMinutes?: number;
@@ -75,7 +69,6 @@ export interface SubagentsSettings {
 /** Doc defaults (D13/D16/D21, archive GC per D13). */
 export function defaultSettings(): SubagentsSettings {
 	return {
-		autoWake: true,
 		maxConcurrent: DEFAULT_MAX_CONCURRENT,
 		maxHops: DEFAULT_MAX_HOPS,
 		autonomousTurns: DEFAULT_AUTONOMOUS_TURNS,
@@ -91,7 +84,6 @@ export function defaultSettings(): SubagentsSettings {
 type FieldKind = "boolean" | "positive-int" | "positive-number" | "optional-positive-number";
 
 const FIELDS: Record<keyof SubagentsSettings, FieldKind> = {
-	autoWake: "boolean",
 	maxConcurrent: "positive-int",
 	maxHops: "positive-int",
 	autonomousTurns: "positive-int",
@@ -236,7 +228,7 @@ const lastKnownGoodByFile = new Map<string, SettingsPatch>();
 
 /**
  * Re-read both files INTO an existing live settings object (the one the
- * autonomy budget and ceiling checks read per turn), preserving programmatic
+ * session/per-agent warning checks read per turn), preserving programmatic
  * overrides given at core creation. Returns warnings.
  *
  * Finding 12: a source whose whole-file read/parse FAILED (`degraded`) does NOT

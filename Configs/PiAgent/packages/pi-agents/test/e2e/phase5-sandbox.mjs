@@ -1180,54 +1180,49 @@ const eventsB = [];
 coreB.runtime.onEvent((e) => eventsB.push(e));
 const mainErrorsB = () => mailbox.readPending(layoutB.mainMailboxDir).map((p) => p.envelope).filter((e) => e.type === "error");
 
-await test("maxTokensTotal (frontmatter): error envelope + no further turns; envelope sent once", async () => {
-	scripts.push({
-		match: (c) => c.agent === "capped/main" && c.lastUserText.includes("CAP_MSG_1"),
-		reply: () => ({ text: "burned 15 tokens." }),
-	});
+await test("maxTokensTotal (frontmatter): warns once and later turns continue", async () => {
+	for (let i = 1; i <= 2; i++) {
+		scripts.push({
+			match: (c) => c.agent === "capped/main" && c.lastUserText.includes(`CAP_MSG_${i}`),
+			reply: () => ({ text: `burned tokens in turn ${i}.` }),
+		});
+	}
 	await coreB.spawn({ type: "capped", id: "main", task: "CAP_MSG_1" });
-	await waitUntil(() => mainErrorsB().some((e) => e.from === "capped/main" && /maxTokensTotal/.test(e.payload.text)), "ceiling error envelope");
-	const record = readRegistry(layoutB.registryFile).agents["capped/main"];
-	assert.ok(record, "persistent agent NOT auto-retired (main decides)");
-	assert.equal(record.state, "dormant");
-
-	// further mail queues but never starts a turn (pre-check) and never re-mails
-	const callsBefore = llmCalls.filter((c) => c.agent === "capped/main").length;
+	await waitUntil(() => eventsB.some((e) => e.type === "limit-warning" && e.address === "capped/main" && e.limit === "maxTokensTotal"), "token warning");
+	await waitUntil(() => eventsB.some((e) => e.type === "turn-finished" && e.address === "capped/main"), "first capped turn");
 	await coreB.send({ to: "capped/main", text: "CAP_MSG_2" });
-	await sleep(400);
-	assert.equal(llmCalls.filter((c) => c.agent === "capped/main").length, callsBefore, "no turn past the ceiling");
-	assert.equal(mailbox.pendingCount(layoutB.mailboxDir("capped", "main")), 1, "mail parked on disk");
-	assert.equal(mainErrorsB().filter((e) => e.from === "capped/main" && /ceiling/i.test(e.payload.text)).length, 1, "exactly one ceiling envelope");
+	await waitUntil(() => llmCalls.filter((c) => c.agent === "capped/main").length >= 2, "second capped turn starts");
+	await waitUntil(() => eventsB.filter((e) => e.type === "turn-finished" && e.address === "capped/main").length >= 2, "second capped turn finishes");
+	assert.equal(eventsB.filter((e) => e.type === "limit-warning" && e.address === "capped/main" && e.limit === "maxTokensTotal").length, 1);
+	assert.equal(mailbox.pendingCount(layoutB.mailboxDir("capped", "main")), 0);
+	assert.equal(mainErrorsB().filter((e) => e.from === "capped/main").length, 0, "warning is not a fatal error envelope");
 });
 
-await test("oneshot over a ceiling AUTO-RETIRES (D13 funeral); envelope survives in main's mailbox", async () => {
+await test("oneshot over a ceiling stays alive until final, interrupt, or explicit retirement", async () => {
 	scripts.push({
 		match: (c) => c.agent?.startsWith("capped/tmp-") && c.lastUserText.includes("CAP_ONESHOT"),
-		reply: () => ({ text: "oneshot burned its budget." }),
+		reply: () => ({ text: "oneshot crossed its warning threshold." }),
 	});
 	const { address } = await coreB.spawn({ type: "capped", lifetime: "oneshot", task: "CAP_ONESHOT: go" });
-	await waitUntil(() => eventsB.some((e) => e.type === "agent-retired" && e.address === address), "oneshot funeral");
-	assert.equal(readRegistry(layoutB.registryFile).agents[address], undefined, "deregistered");
-	const [type, id] = address.split("/");
-	assert.ok(existsSync(layoutB.archiveDir(type, id)), "archived for post-mortem");
-	assert.ok(mainErrorsB().some((e) => e.from === address && /maxTokensTotal/.test(e.payload.text)), "ceiling envelope survives the agent");
+	await waitUntil(() => eventsB.some((e) => e.type === "limit-warning" && e.address === address), "oneshot warning");
+	await waitUntil(() => eventsB.some((e) => e.type === "turn-finished" && e.address === address), "oneshot turn finishes");
+	assert.ok(readRegistry(layoutB.registryFile).agents[address], "warning did not auto-retire the oneshot");
+	assert.ok(!eventsB.some((e) => e.type === "agent-retired" && e.address === address));
+	await coreB.retire(address);
+	assert.equal(readRegistry(layoutB.registryFile).agents[address], undefined);
 });
 
-await test("maxTurnMinutes: a runaway turn is aborted by the timer; error envelope names the ceiling", async () => {
+await test("maxTurnMinutes warns during a long turn but does not abort it", async () => {
 	scripts.push({
 		match: (c) => c.agent === "slow/main" && c.lastUserText.includes("SLOW_GO"),
-		reply: () => ({ text: "too late.", delayMs: 1500 }),
+		reply: () => ({ text: "completed after warning.", delayMs: 700 }),
 	});
-	await coreB.spawn({ type: "slow", task: "SLOW_GO: take forever" });
-	await waitUntil(
-		() => mainErrorsB().some((e) => e.from === "slow/main" && /maxTurnMinutes/.test(e.payload.text)),
-		"turn-minutes ceiling envelope",
-	);
-	assert.match(
-		mainErrorsB().find((e) => e.from === "slow/main").payload.text,
-		/interrupted/,
-	);
-	await waitUntil(() => readRegistry(layoutB.registryFile).agents["slow/main"]?.state === "dormant", "agent parked dormant");
+	await coreB.spawn({ type: "slow", task: "SLOW_GO: take a while" });
+	await waitUntil(() => eventsB.some((e) => e.type === "limit-warning" && e.address === "slow/main" && e.limit === "maxTurnMinutes"), "turn-minutes warning");
+	await waitUntil(() => eventsB.some((e) => e.type === "turn-finished" && e.address === "slow/main"), "long turn completion");
+	assert.ok(llmCalls.some((c) => c.agent === "slow/main"));
+	assert.equal(mainErrorsB().filter((e) => e.from === "slow/main").length, 0);
+	assert.equal(readRegistry(layoutB.registryFile).agents["slow/main"]?.state, "dormant");
 });
 
 await test("oneshot turn CRASH auto-retires with a fatal error envelope (deferred Phase-3 item)", async () => {
@@ -1259,11 +1254,15 @@ await test("settings default ceiling applies when frontmatter is silent; core.es
 		match: (c) => c.agent === "worker/solo" && c.lastUserText.includes("SETTINGS_CAP"),
 		reply: () => ({ text: "one turn is all you get." }),
 	});
+	const events = [];
+	coreC.runtime.onEvent((event) => events.push(event));
 	await coreC.spawn({ type: "worker", id: "solo", task: "SETTINGS_CAP: go" });
 	await waitUntil(
-		() => mailbox.readPending(coreC.layout.mainMailboxDir).some((p) => p.envelope.type === "error" && /maxTokensTotal/.test(p.envelope.payload.text)),
-		"settings-level ceiling envelope",
+		() => events.some((event) => event.type === "limit-warning" && event.address === "worker/solo" && event.limit === "maxTokensTotal"),
+		"settings-level token warning",
 	);
+	await waitUntil(() => events.some((event) => event.type === "turn-finished" && event.address === "worker/solo"), "settings-capped turn completion");
+	assert.equal(mailbox.readPending(coreC.layout.mainMailboxDir).filter((p) => p.envelope.type === "error").length, 0);
 	await coreC.dispose();
 });
 

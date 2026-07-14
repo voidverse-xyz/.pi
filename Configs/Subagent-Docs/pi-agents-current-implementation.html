@@ -1,0 +1,1205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>pi-agents — Features & Current Architecture</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #080b12;
+      --panel: #0f1420;
+      --panel-2: #151c2b;
+      --panel-3: #1a2335;
+      --line: #26324a;
+      --line-soft: #1c2639;
+      --text: #e8edf7;
+      --muted: #9eabc1;
+      --dim: #75839b;
+      --cyan: #62d9ff;
+      --cyan-soft: rgba(98, 217, 255, .12);
+      --violet: #ad8cff;
+      --violet-soft: rgba(173, 140, 255, .12);
+      --green: #76e6a7;
+      --green-soft: rgba(118, 230, 167, .11);
+      --amber: #ffc96b;
+      --amber-soft: rgba(255, 201, 107, .11);
+      --red: #ff7f91;
+      --red-soft: rgba(255, 127, 145, .11);
+      --shadow: 0 18px 60px rgba(0, 0, 0, .34);
+      --radius: 14px;
+      --nav-width: 286px;
+      --content-width: 1120px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 22px; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 82% 0%, rgba(98, 217, 255, .08), transparent 29rem),
+        radial-gradient(circle at 0% 35%, rgba(173, 140, 255, .075), transparent 31rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.62;
+    }
+
+    a { color: var(--cyan); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, pre, .mono {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+    code {
+      padding: .12rem .34rem;
+      border: 1px solid var(--line-soft);
+      border-radius: 5px;
+      background: #0a101a;
+      color: #dce8ff;
+      font-size: .91em;
+    }
+    pre {
+      overflow: auto;
+      margin: 1rem 0;
+      padding: 1rem 1.1rem;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #090e17;
+      color: #d6e4ff;
+      line-height: 1.5;
+      box-shadow: inset 0 1px rgba(255,255,255,.02);
+    }
+    pre code { padding: 0; border: 0; background: transparent; font-size: .88rem; }
+
+    .skip-link {
+      position: fixed;
+      z-index: 100;
+      left: 1rem;
+      top: -4rem;
+      padding: .6rem .9rem;
+      border-radius: 8px;
+      background: var(--cyan);
+      color: #061018;
+      font-weight: 800;
+    }
+    .skip-link:focus { top: 1rem; }
+
+    .layout { display: grid; grid-template-columns: var(--nav-width) minmax(0, 1fr); min-height: 100vh; }
+    aside {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+      padding: 1.3rem 1rem 2rem;
+      border-right: 1px solid var(--line-soft);
+      background: rgba(9, 13, 22, .91);
+      backdrop-filter: blur(18px);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: .72rem;
+      padding: .55rem .55rem 1rem;
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 38px;
+      height: 38px;
+      border: 1px solid rgba(98,217,255,.42);
+      border-radius: 10px;
+      background: linear-gradient(145deg, var(--cyan-soft), var(--violet-soft));
+      color: var(--cyan);
+      font-size: 1.2rem;
+      box-shadow: 0 0 24px rgba(98,217,255,.08);
+    }
+    .brand strong { display: block; font-size: .98rem; letter-spacing: .01em; }
+    .brand span { color: var(--muted); font-size: .74rem; }
+    nav { padding: .9rem 0; }
+    nav .group-label {
+      margin: 1.1rem .65rem .35rem;
+      color: var(--dim);
+      font-size: .67rem;
+      font-weight: 800;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    nav a {
+      display: block;
+      margin: .08rem 0;
+      padding: .43rem .66rem;
+      border-left: 2px solid transparent;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: .83rem;
+      transition: background .15s, color .15s, border-color .15s;
+    }
+    nav a:hover, nav a.active {
+      text-decoration: none;
+      color: var(--text);
+      border-left-color: var(--cyan);
+      background: var(--cyan-soft);
+    }
+    .nav-note {
+      margin: .9rem .55rem 0;
+      padding: .7rem;
+      border: 1px solid var(--line-soft);
+      border-radius: 9px;
+      color: var(--dim);
+      font-size: .72rem;
+      background: rgba(255,255,255,.015);
+    }
+
+    main { min-width: 0; }
+    .content { width: min(100% - 3rem, var(--content-width)); margin: 0 auto; padding: 3.2rem 0 7rem; }
+    .hero {
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 1.5rem;
+      padding: clamp(1.7rem, 4vw, 3.2rem);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: linear-gradient(145deg, rgba(21,28,43,.96), rgba(12,17,27,.97));
+      box-shadow: var(--shadow);
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      right: -7rem;
+      top: -9rem;
+      width: 25rem;
+      height: 25rem;
+      border: 1px solid rgba(98,217,255,.14);
+      border-radius: 50%;
+      box-shadow: 0 0 0 3rem rgba(98,217,255,.018), 0 0 0 7rem rgba(173,140,255,.012);
+      pointer-events: none;
+    }
+    .eyebrow {
+      color: var(--cyan);
+      font-size: .73rem;
+      font-weight: 900;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1, h2, h3, h4 { line-height: 1.18; }
+    h1 { max-width: 780px; margin: .6rem 0 1rem; font-size: clamp(2.2rem, 6vw, 4.7rem); letter-spacing: -.055em; }
+    h1 span { color: var(--cyan); }
+    .hero .lede { max-width: 790px; margin: 0; color: var(--muted); font-size: clamp(1rem, 2vw, 1.18rem); }
+    .hero-meta { display: flex; flex-wrap: wrap; gap: .55rem; margin-top: 1.45rem; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: .35rem;
+      padding: .33rem .62rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(255,255,255,.025);
+      color: var(--muted);
+      font-size: .75rem;
+      font-weight: 700;
+    }
+    .chip.good { border-color: rgba(118,230,167,.3); color: var(--green); background: var(--green-soft); }
+
+    section {
+      margin: 1.2rem 0;
+      padding: clamp(1.2rem, 3vw, 2rem);
+      border: 1px solid var(--line-soft);
+      border-radius: var(--radius);
+      background: rgba(15, 20, 32, .86);
+      box-shadow: 0 8px 30px rgba(0,0,0,.15);
+    }
+    section > h2 { margin: 0 0 .35rem; font-size: clamp(1.45rem, 3vw, 2.05rem); letter-spacing: -.025em; }
+    section > .section-lede { max-width: 850px; margin: 0 0 1.35rem; color: var(--muted); }
+    h3 { margin: 1.6rem 0 .55rem; font-size: 1.12rem; }
+    h4 { margin: 1rem 0 .4rem; font-size: .95rem; }
+    p { margin: .55rem 0 1rem; }
+    ul, ol { padding-left: 1.25rem; }
+    li { margin: .25rem 0; }
+    strong { color: #f6f8fc; }
+
+    .grid { display: grid; gap: .85rem; }
+    .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .card {
+      min-width: 0;
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: linear-gradient(155deg, rgba(26,35,53,.78), rgba(12,17,28,.8));
+    }
+    .card h3, .card h4 { margin-top: 0; }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .card .kicker { margin-bottom: .32rem; color: var(--cyan); font-size: .68rem; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; }
+    .stat { font-size: 1.6rem; font-weight: 850; letter-spacing: -.04em; }
+    .stat-label { color: var(--muted); font-size: .78rem; }
+
+    .callout {
+      margin: 1rem 0;
+      padding: .9rem 1rem;
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--cyan);
+      border-radius: 9px;
+      background: var(--cyan-soft);
+    }
+    .callout.warning { border-left-color: var(--amber); background: var(--amber-soft); }
+    .callout.danger { border-left-color: var(--red); background: var(--red-soft); }
+    .callout.good { border-left-color: var(--green); background: var(--green-soft); }
+    .callout strong:first-child { display: block; margin-bottom: .15rem; }
+
+    .table-wrap { overflow-x: auto; margin: 1rem 0; border: 1px solid var(--line); border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; min-width: 680px; background: rgba(9,14,23,.42); }
+    th, td { padding: .72rem .82rem; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; }
+    th { color: var(--cyan); background: rgba(98,217,255,.055); font-size: .74rem; letter-spacing: .05em; text-transform: uppercase; }
+    td { font-size: .86rem; }
+    tbody tr:last-child td { border-bottom: 0; }
+    tbody tr:hover { background: rgba(255,255,255,.018); }
+
+    .flow { display: grid; gap: .55rem; margin: 1rem 0; }
+    .flow.horizontal { grid-template-columns: repeat(5, minmax(120px, 1fr)); align-items: stretch; }
+    .flow-step {
+      position: relative;
+      padding: .82rem;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel-2);
+      font-size: .83rem;
+    }
+    .flow-step .n {
+      display: inline-grid;
+      place-items: center;
+      width: 1.45rem;
+      height: 1.45rem;
+      margin-right: .35rem;
+      border-radius: 50%;
+      background: var(--violet-soft);
+      color: var(--violet);
+      font-size: .72rem;
+      font-weight: 900;
+    }
+    .flow.horizontal .flow-step:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      z-index: 2;
+      right: -.58rem;
+      top: 50%;
+      color: var(--cyan);
+      transform: translate(50%, -50%);
+      font-weight: 900;
+    }
+
+    .arch-stack { display: grid; gap: .7rem; margin: 1.2rem 0; }
+    .arch-layer {
+      display: grid;
+      grid-template-columns: 165px 1fr;
+      gap: 1rem;
+      padding: .9rem 1rem;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel-2);
+    }
+    .arch-layer .label { color: var(--cyan); font-weight: 850; }
+    .arch-layer .modules { color: var(--muted); }
+
+    .state-row { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; margin: 1rem 0; }
+    .state {
+      padding: .43rem .72rem;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      font-size: .8rem;
+      font-weight: 800;
+    }
+    .arrow { color: var(--dim); font-weight: 900; }
+    .state.running { color: var(--green); border-color: rgba(118,230,167,.3); }
+    .state.waiting { color: var(--amber); border-color: rgba(255,201,107,.3); }
+    .state.retired { color: var(--red); border-color: rgba(255,127,145,.3); }
+
+    details { margin: .65rem 0; border: 1px solid var(--line); border-radius: 9px; background: rgba(9,14,23,.42); }
+    summary { cursor: pointer; padding: .75rem .9rem; color: #dfe8f8; font-weight: 800; }
+    details > div { padding: 0 .9rem .9rem; color: var(--muted); }
+
+    .path { overflow-wrap: anywhere; color: #bad6ff; }
+    .yes { color: var(--green); font-weight: 800; }
+    .no { color: var(--red); font-weight: 800; }
+    .conditional { color: var(--amber); font-weight: 800; }
+    .muted { color: var(--muted); }
+    .small { font-size: .8rem; }
+
+    footer { margin-top: 1.2rem; padding: 1.4rem; color: var(--dim); text-align: center; font-size: .78rem; }
+    #nav-toggle { display: none; }
+
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      aside { position: fixed; z-index: 50; width: min(86vw, var(--nav-width)); transform: translateX(-105%); transition: transform .2s; box-shadow: var(--shadow); }
+      body.nav-open aside { transform: translateX(0); }
+      #nav-toggle {
+        display: grid;
+        place-items: center;
+        position: fixed;
+        z-index: 60;
+        right: 1rem;
+        bottom: 1rem;
+        width: 46px;
+        height: 46px;
+        border: 1px solid var(--line);
+        border-radius: 50%;
+        background: var(--panel-3);
+        color: var(--cyan);
+        box-shadow: var(--shadow);
+        font-size: 1.2rem;
+      }
+      .content { width: min(100% - 1.4rem, var(--content-width)); padding-top: 1rem; }
+      .grid.three, .grid.four { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .flow.horizontal { grid-template-columns: 1fr; }
+      .flow.horizontal .flow-step:not(:last-child)::after { content: "↓"; right: 50%; top: auto; bottom: -.69rem; transform: translate(50%, 50%); }
+    }
+    @media (max-width: 640px) {
+      .grid.two, .grid.three, .grid.four { grid-template-columns: 1fr; }
+      .arch-layer { grid-template-columns: 1fr; gap: .25rem; }
+      section { padding: 1rem; }
+      .hero { border-radius: 14px; }
+      h1 { font-size: 2.35rem; }
+    }
+    @media print {
+      :root { --bg: #fff; --panel: #fff; --panel-2: #f5f7fb; --text: #111827; --muted: #39465c; --line: #ccd4e0; --line-soft: #dde3ec; }
+      aside, #nav-toggle { display: none !important; }
+      .layout { display: block; }
+      .content { width: 100%; padding: 0; }
+      body { background: #fff; }
+      section, .hero, .card { box-shadow: none; break-inside: avoid; }
+      a { color: #075985; }
+    }
+  </style>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="layout">
+  <aside aria-label="Guide navigation">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">⌁</div>
+      <div><strong>pi-agents</strong><span>Current implementation guide</span></div>
+    </div>
+    <nav id="nav">
+      <div class="group-label">Start here</div>
+      <a href="#overview">Overview</a>
+      <a href="#mental-model">Mental model</a>
+      <a href="#feature-map">Feature map</a>
+      <div class="group-label">Behavior</div>
+      <a href="#tools">Tool surface</a>
+      <a href="#completion-barrier">Completion barrier</a>
+      <a href="#mail">Mail & delivery</a>
+      <a href="#lifecycle">Lifecycle & states</a>
+      <a href="#types">Types & context</a>
+      <a href="#sandbox">Sandbox & escalation</a>
+      <a href="#teams">Teams & causal rails</a>
+      <a href="#warnings">Warning-only thresholds</a>
+      <a href="#tui">TUI controls</a>
+      <div class="group-label">Internals</div>
+      <a href="#architecture">Architecture</a>
+      <a href="#storage">Session ownership & storage</a>
+      <a href="#durability">Durability & recovery</a>
+      <a href="#settings">Settings</a>
+      <a href="#code-map">Code map</a>
+      <a href="#examples">End-to-end examples</a>
+      <a href="#limits">Logic gaps & boundaries</a>
+    </nav>
+    <div class="nav-note">
+      Snapshot: <strong>2026-07-14</strong><br>
+      Reflects D27 behavior: no main auto-wake, required current-turn joins, and warning-only resource thresholds.
+    </div>
+  </aside>
+
+  <button id="nav-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false">☰</button>
+
+  <main id="main">
+    <div class="content">
+      <header class="hero">
+        <div class="eyebrow">Features + architecture</div>
+        <h1>How <span>pi-agents</span> works today</h1>
+        <p class="lede">
+          A standalone guide to the extension's user-facing behavior, task-join semantics, durable mailbox model,
+          safety boundaries, session ownership, runtime architecture, and failure recovery.
+        </p>
+        <div class="hero-meta">
+          <span class="chip good">✓ 8 main-agent tools</span>
+          <span class="chip good">✓ Real Pi AgentSession workers</span>
+          <span class="chip">Session-owned mutable state</span>
+          <span class="chip">Disk-backed mail</span>
+          <span class="chip">No notification auto-wake</span>
+        </div>
+      </header>
+
+      <section id="overview">
+        <h2>Overview</h2>
+        <p class="section-lede">The shortest accurate description of the current system.</p>
+        <div class="grid four">
+          <div class="card"><div class="kicker">Runtime</div><div class="stat">In-process</div><div class="stat-label">Each worker is a real Pi AgentSession inside the owning host process.</div></div>
+          <div class="card"><div class="kicker">Memory</div><div class="stat">Durable</div><div class="stat-label">Every identity writes Pi-native JSONL and resumes it on later wakes.</div></div>
+          <div class="card"><div class="kicker">Coordination</div><div class="stat">Mailbox</div><div class="stat-label">File-per-envelope delivery; mail never interrupts a running subagent turn.</div></div>
+          <div class="card"><div class="kicker">Ownership</div><div class="stat">Per main session</div><div class="stat-label">Two Pi conversations in one cwd get isolated mutable subagent worlds.</div></div>
+        </div>
+        <div class="callout good">
+          <strong>Core promise</strong>
+          If the main agent delegates required work during a user turn, the host prevents it from publishing a final response until the exact task anchors reach terminal outcomes—unless the call explicitly uses <code>background:true</code>.
+        </div>
+        <div class="callout warning">
+          <strong>Not a daemon</strong>
+          Subagents run only while their owning Pi host session is open. Their mail and memory remain on disk while the host is closed, but no independent service continues executing them.
+        </div>
+      </section>
+
+      <section id="mental-model">
+        <h2>Mental model</h2>
+        <p class="section-lede">Think of the extension as a small, session-scoped actor system.</p>
+        <div class="grid three">
+          <article class="card">
+            <div class="kicker">Identity</div>
+            <h3><code>&lt;type&gt;/&lt;id&gt;</code></h3>
+            <p>A stable address such as <code>reviewer/auth</code>. The type defines capabilities and role; the id names the instance's purview.</p>
+          </article>
+          <article class="card">
+            <div class="kicker">Private memory</div>
+            <h3>Pi session JSONL</h3>
+            <p>The transcript is not a summary database. It is an actual Pi session file that the SDK reopens, preserving the worker's conversation and tool history.</p>
+          </article>
+          <article class="card">
+            <div class="kicker">Communication</div>
+            <h3>Durable envelopes</h3>
+            <p>Tasks, questions, answers, reports, escalations, and errors are files routed through private mailboxes.</p>
+          </article>
+        </div>
+        <div class="arch-stack" aria-label="Mental model diagram">
+          <div class="arch-layer"><div class="label">Human</div><div class="modules">Approves escalations, edits type definitions, controls the TUI, and can directly message workers.</div></div>
+          <div class="arch-layer"><div class="label">Main Pi session</div><div class="modules">Delegates tasks, synthesizes results, denies—but cannot approve—blocked subagent operations.</div></div>
+          <div class="arch-layer"><div class="label">pi-agents host</div><div class="modules">Owns task joins, scheduling, mail routing, durable state, generation fences, and TUI status.</div></div>
+          <div class="arch-layer"><div class="label">Subagent sessions</div><div class="modules">Independent actor-like identities; one serialized turn per identity, parallelism across identities.</div></div>
+        </div>
+      </section>
+
+      <section id="feature-map">
+        <h2>Feature map</h2>
+        <p class="section-lede">What is implemented, at a glance.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Area</th><th>Current behavior</th><th>Key invariant</th></tr></thead>
+            <tbody>
+              <tr><td>Persistent workers</td><td>Get-or-create identities with resumable Pi JSONL memory</td><td>Named agents are persistent; anonymous oneshots get <code>tmp-&lt;random&gt;</code></td></tr>
+              <tr><td>Task completion</td><td>Current-turn anchors are joined automatically</td><td>Main cannot quietly finish around required work</td></tr>
+              <tr><td>Mail</td><td>Durable, ordered, at-least-once, boundary-delivered</td><td>Mail never steers or interrupts a running worker</td></tr>
+              <tr><td>Peer coordination</td><td>Shared-team messaging with transitive task tracking</td><td>Peers cannot spawn, steer, interrupt, retire, or inspect one another</td></tr>
+              <tr><td>Safety</td><td>Type-level tools/path policy plus human escalation</td><td>Approvals never flow downhill</td></tr>
+              <tr><td>Limits</td><td>Token/time/compaction thresholds warn only</td><td>Threshold crossings do not pause, abort, or retire execution</td></tr>
+              <tr><td>Concurrency</td><td>FIFO scheduler, default 5 running turns</td><td>One turn per identity; concurrency across identities only</td></tr>
+              <tr><td>Ownership</td><td>Mutable state belongs to one main Pi conversation</td><td>Same cwd does not imply shared workers</td></tr>
+              <tr><td>Retirement</td><td>Archive-first, team scrub, then address release</td><td>Address reuse is generation-fenced</td></tr>
+              <tr><td>Legacy migration</td><td>Explicit human adoption and guarded rollback</td><td>Old cwd-wide state is never silently assigned</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="tools">
+        <h2>Tool surface</h2>
+        <p class="section-lede">The main agent gets eight tools. Destructive and non-destructive powers stay deliberately separate.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Tool</th><th>Purpose</th><th>Completion behavior</th></tr></thead>
+            <tbody>
+              <tr><td><code>subagent_spawn</code></td><td>Get-or-create a worker; optionally set team, lifetime, and first task</td><td>A supplied task joins the group unless <code>background:true</code></td></tr>
+              <tr><td><code>subagent_send</code></td><td>Send/queue new work, answer a question, or deny an escalation by correlation</td><td>Uncorrelated send joins; correlated answer/deny creates no new task</td></tr>
+              <tr><td><code>subagent_steer</code></td><td>Redirect only a currently running turn</td><td>No task anchor; returns <code>steered:false</code> if idle</td></tr>
+              <tr><td><code>subagent_status</code></td><td>Roster or detailed status, vitals, transcript tail, outstanding questions</td><td>Read-only; never perturbs a worker</td></tr>
+              <tr><td><code>subagent_collect</code></td><td>Request structured data validated against a supported JSON Schema subset</td><td>Joins unless <code>background:true</code></td></tr>
+              <tr><td><code>subagent_await</code></td><td>Explicit cancellable wait on an exact task/collect anchor</td><td>Returns completed, attention, timeout, or retired</td></tr>
+              <tr><td><code>subagent_interrupt</code></td><td>Abort the current worker turn without destroying its identity</td><td>Only exact assignments in that turn become cancelled</td></tr>
+              <tr><td><code>subagent_retire</code></td><td>Archive and permanently deregister an identity</td><td>The only destructive tool</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Tools inside each subagent</h3>
+        <div class="grid three">
+          <div class="card"><h4><code>send_message</code></h4><p>Peer mail. <code>expectReply:true</code> creates a question; <code>correlationId</code> answers one.</p></div>
+          <div class="card"><h4><code>report</code></h4><p>Sends progress or a terminal <code>final:true</code> report to main. Structured collect data rides here.</p></div>
+          <div class="card"><h4><code>ask</code></h4><p>Asks main a non-blocking question. The worker ends its turn, goes dormant, and wakes with the answer quoted.</p></div>
+        </div>
+        <p class="muted small">Coding tools are separately filtered by the worker type: read, bash, edit, write, grep, find, and ls are available only when policy permits.</p>
+      </section>
+
+      <section id="completion-barrier">
+        <h2>Current-turn completion barrier</h2>
+        <p class="section-lede">This is the orchestration feature that prevents “I delegated a review” from being mistaken for “the review is complete.”</p>
+        <div class="flow horizontal" aria-label="Completion barrier flow">
+          <div class="flow-step"><span class="n">1</span><strong>User input</strong><br><span class="muted">A genuine interactive/RPC input opens a required-task group.</span></div>
+          <div class="flow-step"><span class="n">2</span><strong>Anchor creation</strong><br><span class="muted">Task-bearing spawn/send/collect calls record exact envelope ids.</span></div>
+          <div class="flow-step"><span class="n">3</span><strong>Candidate final</strong><br><span class="muted">If anchors remain, the visible answer becomes a waiting status.</span></div>
+          <div class="flow-step"><span class="n">4</span><strong>Durable await</strong><br><span class="muted">Host waits for reports or attention without detaching timed-out polling.</span></div>
+          <div class="flow-step"><span class="n">5</span><strong>Same-run follow-up</strong><br><span class="muted">Results are queued as Pi follow-ups; main incorporates them before finishing.</span></div>
+        </div>
+
+        <h3>What joins automatically</h3>
+        <ul>
+          <li>A spawn with a <code>task</code>.</li>
+          <li>An uncorrelated main-to-worker send.</li>
+          <li>A collect request.</li>
+          <li>An uncorrelated peer <code>message</code> sent by a worker already in the required graph—this makes delegation transitive.</li>
+        </ul>
+
+        <h3>What remains awaited</h3>
+        <div class="grid two">
+          <div class="card">
+            <h4>Temporary attention</h4>
+            <ul>
+              <li>Questions to main</li>
+              <li>Human escalations</li>
+              <li>Provider/tool waits</li>
+              <li>Scheduler contention</li>
+              <li>Main-turn interruption</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h4>Missing terminal evidence</h4>
+            <ul>
+              <li>Progress-only reports</li>
+              <li>Plain assistant text without <code>final:true</code></li>
+              <li>A dormant persistent worker whose task never finalized</li>
+              <li>Long-running tools or provider retries</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>Terminal outcomes</h3>
+        <ul>
+          <li>Exactly correlated <code>report</code> with <code>payload.final:true</code>.</li>
+          <li>Validated collect response correlated to its request id.</li>
+          <li>Fatal error evidence.</li>
+          <li>Retirement of the addressed generation.</li>
+          <li>Manual interruption of the exact turn assignments.</li>
+        </ul>
+
+        <h3>When main does not wait</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Case</th><th>Why no new required anchor</th></tr></thead>
+            <tbody>
+              <tr><td><code>background:true</code></td><td>Explicit per-call detachment for task-bearing spawn, uncorrelated send, or collect</td></tr>
+              <tr><td>Spawn without a task</td><td>Main tracks work, not a persistent identity's lifetime</td></tr>
+              <tr><td>Correlated answer or escalation denial</td><td>It continues an existing task rather than creating new work</td></tr>
+              <tr><td>Status, steer, interrupt, retire</td><td>Control/read operations do not create task assignments</td></tr>
+              <tr><td>Viewer user message</td><td>Direct human-to-worker channel is outside the main user-turn group</td></tr>
+              <tr><td>No active genuine user turn</td><td>Startup or extension-generated activity is not retroactively attached</td></tr>
+              <tr><td>Host/session teardown</td><td>The live in-memory join ends; durable mail and session state remain where applicable</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout warning">
+          <strong>Important scope detail</strong>
+          The required group is currently in memory. A host crash, shutdown, <code>/reload</code>, <code>/new</code>, or <code>/fork</code> ends that live join. Durable messages/results survive, but the old in-progress completion group itself is not reconstructed.
+        </div>
+      </section>
+
+      <section id="mail">
+        <h2>Mail and delivery</h2>
+        <p class="section-lede">All ordinary worker input is mail. Steering is intentionally a separate power.</p>
+        <h3>Envelope shape</h3>
+<pre><code>{
+  "id": "msg_&lt;ulid&gt;",
+  "from": "reviewer/auth",
+  "fromGenerationId": "gen_&lt;32-hex&gt;",
+  "to": "main",
+  "type": "report",
+  "correlationId": "msg_&lt;task-anchor&gt;",
+  "team": null,
+  "hops": 1,
+  "payload": { "text": "Review complete", "final": true },
+  "sentAt": "2026-07-14T17:00:00.000Z"
+}</code></pre>
+        <div class="grid three">
+          <div class="card"><h4>Types</h4><p><code>message</code>, <code>question</code>, <code>answer</code>, <code>report</code>, <code>escalation</code>, <code>error</code>.</p></div>
+          <div class="card"><h4>Ordering</h4><p>ULID ids provide deterministic mailbox order. Correlation ids link answers, final reports, and collects to exact causes.</p></div>
+          <div class="card"><h4>Generation fence</h4><p>Agent-originated mail stamps <code>fromGenerationId</code>, so a reused address cannot satisfy an older join.</p></div>
+        </div>
+
+        <h3>Subagent mailbox lifecycle</h3>
+        <div class="state-row">
+          <span class="state">pending file</span><span class="arrow">→</span>
+          <span class="state">delivery claimed</span><span class="arrow">→</span>
+          <span class="state running">Pi turn durably appended</span><span class="arrow">→</span>
+          <span class="state">mailbox/.done</span>
+        </div>
+        <p>The runtime marks mail done only after <code>prompt()</code> and <code>waitForIdle()</code> complete and the receiving session has durable transcript evidence. A crash before that point causes labeled re-delivery.</p>
+
+        <h3>Main mailbox lifecycle</h3>
+        <div class="state-row">
+          <span class="state">pending</span><span class="arrow">→</span>
+          <span class="state waiting">.delivering</span><span class="arrow">→</span>
+          <span class="state running">host JSONL marker verified</span><span class="arrow">→</span>
+          <span class="state">.done</span>
+        </div>
+        <p>Main delivery uses claim-first semantics. It parses complete host JSONL records structurally; a raw substring match cannot finalize mail. Await and ordinary digest delivery can register alternate accepted markers when they race.</p>
+        <div class="callout">
+          <strong>No main auto-wake</strong>
+          Mail arriving after main has finished does not start another main turn. Unrelated mail waits for the next genuine user turn. Required results are different: the active completion barrier feeds them into the same run as follow-ups.
+        </div>
+      </section>
+
+      <section id="lifecycle">
+        <h2>Worker lifecycle and states</h2>
+        <p class="section-lede">The registry has four live states; retirement removes the record entirely.</p>
+        <div class="state-row">
+          <span class="state">dormant</span><span class="arrow">→ mail/task →</span>
+          <span class="state">queued</span><span class="arrow">→ slot →</span>
+          <span class="state running">running</span><span class="arrow">→ turn ends →</span>
+          <span class="state">dormant</span>
+        </div>
+        <div class="state-row">
+          <span class="state running">running</span><span class="arrow">→ guarded tool →</span>
+          <span class="state waiting">waiting</span><span class="arrow">→ human decision →</span>
+          <span class="state running">running</span>
+        </div>
+        <div class="state-row">
+          <span class="state">any live state</span><span class="arrow">→ explicit/funeral →</span>
+          <span class="state retired">archived + deregistered</span>
+        </div>
+
+        <div class="grid two">
+          <div class="card">
+            <h3>Persistent</h3>
+            <ul>
+              <li>Meaningful id or default <code>main</code>.</li>
+              <li>Get-or-create returns <code>created:false</code> for an existing identity.</li>
+              <li>Never auto-retires merely because a turn ended or a warning threshold was crossed.</li>
+              <li>Memory remains available across wakes and host restarts.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Oneshot</h3>
+            <ul>
+              <li>No explicit id; runtime assigns a random <code>tmp-…</code> id.</li>
+              <li>Auto-retires after an exact final report or fatal runtime error.</li>
+              <li>Warning thresholds do not trigger its funeral.</li>
+              <li>Archived transcript remains available until retention GC.</li>
+            </ul>
+          </div>
+        </div>
+        <p><strong>Concurrency:</strong> <code>maxConcurrent</code> controls running-turn slots (default 5). Extra turns queue FIFO. This is a scheduling bound, not a resource threshold that cancels work.</p>
+      </section>
+
+      <section id="types">
+        <h2>Type definitions and context</h2>
+        <p class="section-lede">A type is the worker constitution: role, model, tools, path scope, and warning thresholds.</p>
+        <h3>Discovery</h3>
+<pre><code>~/.pi/agent/subagents/&lt;type&gt;.md      # global library
+&lt;project&gt;/.pi/subagents/&lt;type&gt;.md   # project library; wins by name</code></pre>
+        <p>Definitions must be independent regular files. Symlinks and multiply-linked files are rejected so an agent cannot retune itself through an unprotected alias.</p>
+        <h3>Example</h3>
+<pre><code>---
+name: reviewer
+description: Reviews authentication changes for correctness and security
+model: openai-codex/gpt-5.3-codex-spark
+thinking: high
+projectContext: true
+tools: [read, grep, find, ls]
+readOnly: true
+writePaths: ["src/auth/**"]
+denyPaths: ["src/auth/migrations/**"]
+maxTokensTotal: 30000
+maxTurnMinutes: 15
+maxContextCompactions: 2
+---
+You are a focused authentication reviewer. Report concrete findings.</code></pre>
+        <div class="callout">
+          <strong>Live resolution</strong>
+          The type is resolved again at wake. Editing a type changes future wakes while the identity's transcript remains intact. The registry records the resolved type-file hash for visibility.
+        </div>
+
+        <h3>Context composition</h3>
+        <ol>
+          <li>Pi's base agent system prompt.</li>
+          <li>Project context files such as <code>AGENTS.md</code>, when <code>projectContext:true</code>.</li>
+          <li>The type definition's Markdown body.</li>
+          <li>Runtime identity: exact address, lifetime, purview, team roster, and communication rules.</li>
+          <li>At each turn, a deterministic wake digest containing current mail and roster changes.</li>
+        </ol>
+        <p>Subagent resource discovery is otherwise disabled: they do not automatically inherit arbitrary extensions, skills, prompts, or themes.</p>
+      </section>
+
+      <section id="sandbox">
+        <h2>Sandbox and escalation</h2>
+        <p class="section-lede">Static policy grants normal capabilities; ambiguous or out-of-scope mutation moves upward to the human.</p>
+        <div class="grid three">
+          <div class="card"><div class="kicker">Tool filter</div><h3>Verb control</h3><p><code>tools</code> is an allowlist. <code>readOnly:true</code> strips mutators even if they appear in the list.</p></div>
+          <div class="card"><div class="kicker">Path policy</div><h3>Territory control</h3><p>Precedence is <code>readOnly &gt; denyPaths &gt; writePaths</code>, with realpath/symlink-aware checking.</p></div>
+          <div class="card"><div class="kicker">Bash classifier</div><h3>Intent control</h3><p>Mutating commands and operands are classified. Unknown or ambiguous mutation escalates rather than inheriting trust from a basename.</p></div>
+        </div>
+
+        <h3>Always-protected state</h3>
+        <ul>
+          <li>The session-owned subagent state tree: registry, mailboxes, leases, archives, and escalations.</li>
+          <li>Global/project type-definition directories and their sibling settings files.</li>
+          <li>Ancestors whose mutation could replace or remove a protected prefix.</li>
+        </ul>
+
+        <h3>Escalation flow</h3>
+        <div class="flow horizontal">
+          <div class="flow-step"><span class="n">1</span>Tool call violates/ambiguously exceeds type policy</div>
+          <div class="flow-step"><span class="n">2</span>Agent state becomes <code>waiting</code>; scheduler slot is released</div>
+          <div class="flow-step"><span class="n">3</span>Durable record + escalation envelope reach main/human</div>
+          <div class="flow-step"><span class="n">4</span>Human approves once or denies with optional note</div>
+          <div class="flow-step"><span class="n">5</span>Turn reacquires a slot and the guarded tool resumes/errors</div>
+        </div>
+        <div class="callout danger">
+          <strong>Approvals never flow downhill</strong>
+          Main may deny an escalation by sending a correlated note. Main can never approve it. Only the human TUI can grant a one-time exception.
+        </div>
+      </section>
+
+      <section id="teams">
+        <h2>Teams and causal rails</h2>
+        <p class="section-lede">Teams authorize peer communication without giving peers supervisory powers.</p>
+        <div class="grid two">
+          <div class="card">
+            <h3>Team rule</h3>
+            <p>Agent-to-agent mail is allowed only when sender and recipient share at least one team. The authorized team is stamped onto the envelope.</p>
+            <p>A teamless worker is solo: it can communicate with main but peer mail bounces.</p>
+          </div>
+          <div class="card">
+            <h3>Peer power limits</h3>
+            <p>Peers may send/queue mail. They cannot spawn, steer, interrupt, retire, inspect status, read transcripts, or approve escalations.</p>
+          </div>
+        </div>
+        <h3><code>maxHops</code>: the remaining hard causal guard</h3>
+        <p>Every message-triggered send increments causal depth. At the default depth 8, ordinary peer traffic bounces with guidance to report to main. Reports, escalations, and errors to main remain an escape route at any depth.</p>
+        <div class="callout warning">
+          <strong>Why this differs from resource thresholds</strong>
+          Token/time/compaction thresholds are warning-only. <code>maxHops</code> is a structural loop breaker for agent-to-agent ping-pong, so it still rejects over-depth causal traffic.
+        </div>
+      </section>
+
+      <section id="warnings">
+        <h2>Warning-only thresholds</h2>
+        <p class="section-lede">Resource thresholds inform the human; they do not act as hidden execution stops.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Threshold</th><th>Scope</th><th>Default/source</th><th>Behavior when crossed</th></tr></thead>
+            <tbody>
+              <tr><td><code>autonomousTurns</code></td><td>Owning main session accounting window</td><td>40</td><td>One warning; later turns continue</td></tr>
+              <tr><td><code>autonomousTokens</code></td><td>Owning main session accounting window</td><td>500,000</td><td>One warning; later work continues</td></tr>
+              <tr><td><code>maxTokensTotal</code></td><td>Agent whole-life vitals</td><td>Optional settings/type</td><td>Targeted warning only</td></tr>
+              <tr><td><code>maxTurnMinutes</code></td><td>One running turn, excluding human escalation wait time</td><td>Optional settings/type</td><td>Targeted warning only; timer does not abort</td></tr>
+              <tr><td><code>maxContextCompactions</code></td><td>Agent whole-life vitals</td><td>Optional settings/type</td><td>Targeted warning only</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>A genuine interactive/RPC user input resets the session turn/token accounting window. Direct viewer user input also opens a fresh window. Ordinary main-agent tool sends do not reset it.</p>
+
+        <h3>Non-blocking warning widget</h3>
+<pre><code>⚠ Subagent limit warning — reviewer/auth
+maxTurnMinutes: 15/15 minutes. The agent is still running.
+alt+ctrl+x interrupt only this subagent turn · alt+ctrl+i ignore</code></pre>
+        <ul>
+          <li><code>alt+ctrl+x</code> includes a runtime-unique <code>turnId</code>. A delayed/stale warning cannot interrupt a newer turn at the same address.</li>
+          <li>Only exact task anchors present in the interrupted turn are cancelled; older or queued tasks at the same address remain required.</li>
+          <li><code>alt+ctrl+i</code> dismisses the current card and lets execution continue.</li>
+          <li>Cards queue one at a time and do not capture the editor or block main.</li>
+        </ul>
+        <p>There is no <code>/agents resume</code> command and no paused-autonomy queue-drain state.</p>
+      </section>
+
+      <section id="tui">
+        <h2>TUI controls</h2>
+        <p class="section-lede">The extension adds visibility without turning ordinary observation into side effects.</p>
+        <div class="grid two">
+          <div class="card">
+            <h3>Ambient status</h3>
+            <p><code>󰚩 2 running · 1 waiting · 󰇮 3 · 󰔛 budget 21/40</code></p>
+            <p>Only non-zero segments appear; the status disappears when no agents exist or nothing is active.</p>
+          </div>
+          <div class="card">
+            <h3><code>/agents</code> picker</h3>
+            <p>Roster grouped by team, current state, context use, unread count, and a collapsible archive section.</p>
+            <p>Enter views; <code>x</code> interrupts; <code>X</code> confirms retirement.</p>
+          </div>
+          <div class="card">
+            <h3>Session viewer</h3>
+            <p>Pi-native transcript rendering plus compact mail entries. Enter mails as the human; <code>alt+Enter</code> steers a running turn.</p>
+            <p><code>alt+j</code> cycles main → workers → main.</p>
+          </div>
+          <div class="card">
+            <h3>Escalation prompt</h3>
+            <p><code>alt+e</code> reviews pending requests. <code>a</code> approves once; <code>d</code> denies; <code>D</code> denies with note; <code>v</code> views the session.</p>
+          </div>
+        </div>
+        <h3>Lifecycle commands</h3>
+        <ul>
+          <li><code>/agents &lt;type&gt;/&lt;id&gt;</code> — jump directly to one live session.</li>
+          <li><code>/agents adopt-legacy</code> — explicitly adopt inactive old cwd-wide state into the current empty persisted scope.</li>
+          <li><code>/agents rollback-legacy</code> — restore the retained backup only while the adopted scope has not diverged.</li>
+        </ul>
+      </section>
+
+      <section id="architecture">
+        <h2>Architecture</h2>
+        <p class="section-lede">The package is divided so durable state, runtime execution, policy, tools, and presentation have explicit boundaries.</p>
+        <div class="arch-stack">
+          <div class="arch-layer"><div class="label"><code>index.ts</code></div><div class="modules">Extension entry. Registers tools/commands/shortcuts, owns host event hooks, main completion barrier, mailbox injection, warning cards, and overlay coordination.</div></div>
+          <div class="arch-layer"><div class="label"><code>core.ts</code></div><div class="modules">Facade used by tools and TUI. Wires layout → settings → runtime, tracks required anchors, exposes durable await/drain, joins registry/teams/mail for read surfaces.</div></div>
+          <div class="arch-layer"><div class="label"><code>runtime/</code></div><div class="modules"><code>types.ts</code> is the swap-point interface. <code>in-process.ts</code> builds real AgentSessions, serializes per-agent turns, manages assignment correlation, vitals, generation fences, and funerals. <code>scheduler.ts</code> owns FIFO slots.</div></div>
+          <div class="arch-layer"><div class="label"><code>mail/</code></div><div class="modules">Envelope validation, file mailboxes, collect schema validation, routing/team/hop checks, deterministic wake digests, host claims, and delivery reconciliation.</div></div>
+          <div class="arch-layer"><div class="label"><code>store/</code></div><div class="modules">Single path authority, registry, teams, settings, archives/GC, process identity, host leases, session manifests, adoption, rollback, and locking.</div></div>
+          <div class="arch-layer"><div class="label"><code>sandbox/</code></div><div class="modules">Tool filtering, realpath-aware path policy, bash mutation classification, escalation persistence, wait/resume, and human decisions.</div></div>
+          <div class="arch-layer"><div class="label"><code>typedefs/ + context/</code></div><div class="modules">Restricted frontmatter parser, hardened discovery, type precedence, project context loading, identity/team prompt composition.</div></div>
+          <div class="arch-layer"><div class="label"><code>tools/ + tui/</code></div><div class="modules">Eight main tools, three subagent communication tools, status widget, picker, viewer, and escalation prompt.</div></div>
+        </div>
+
+        <h3>Dependency rule</h3>
+        <div class="callout">
+          Tools and TUI talk to <code>core.ts</code>, not directly to <code>runtime/in-process.ts</code>. The runtime is held behind <code>runtime/types.ts</code>, preserving a future daemon/RPC implementation path without rewriting upper layers.
+        </div>
+
+        <h3>One worker turn</h3>
+        <ol>
+          <li>Deliverer atomically writes an envelope to the recipient mailbox.</li>
+          <li>A dormant recipient is marked/scheduled; running or waiting recipients hold mail for the boundary.</li>
+          <li>Runtime obtains the per-agent chain, host lifecycle lock checks, generation fence, run-owner claim, and scheduler slot.</li>
+          <li>Pending envelopes are claimed; a deterministic wake digest is composed.</li>
+          <li>The worker's Pi AgentSession receives the digest as its user prompt.</li>
+          <li>Tool calls may send mail, report, ask, or block in a human escalation while releasing the scheduler slot.</li>
+          <li>After durable idle, triggering envelopes move to <code>.done</code>, vitals update, exact final assignments clear, and held mail schedules the next serialized turn.</li>
+        </ol>
+      </section>
+
+      <section id="storage">
+        <h2>Session ownership and storage</h2>
+        <p class="section-lede">Shared definitions remain project/global resources; mutable worker state belongs to one main Pi conversation.</p>
+<pre><code>~/.pi/agent/sessions/&lt;cwd-slug&gt;/
+  subagents-by-main-session-&lt;cwd-digest&gt;/
+    owners/&lt;main-session-id&gt;/
+      scope.json
+      .host-owner.json
+      autonomy.json
+      registry.json
+      teams.json
+      .main/
+        mailbox/
+          .delivering/
+          .done/
+          .await-anchors.json
+          .collect-requests.json
+        escalations/
+      .archive/&lt;type&gt;/&lt;id&gt;/
+      &lt;type&gt;/&lt;id&gt;/
+        &lt;timestamp&gt;_&lt;uuid&gt;.jsonl
+        .assignment-anchor
+        .retire-requested
+        mailbox/.done/
+        files/</code></pre>
+        <div class="grid two">
+          <div class="card"><h3>Shared</h3><ul><li>Project/global type libraries</li><li>Project/global extension settings</li><li>cwd and project trust</li><li>Project context files</li></ul></div>
+          <div class="card"><h3>Session-owned</h3><ul><li>Registry and teams</li><li>Agent transcripts and files</li><li>Mailboxes and await anchors</li><li>Escalations and archives</li><li>Accounting counters and ownership leases</li></ul></div>
+        </div>
+
+        <h3>Session transitions</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Host action</th><th>Mutable scope</th><th>Live required group</th></tr></thead>
+            <tbody>
+              <tr><td><code>/resume</code> / reopen persisted conversation</td><td>Same session-owned disk scope</td><td>Old in-memory group is not reconstructed</td></tr>
+              <tr><td><code>/reload</code></td><td>Same session-owned disk scope</td><td>Current live group ends and core is rebuilt</td></tr>
+              <tr><td><code>/new</code></td><td>Fresh empty scope</td><td>Fresh group</td></tr>
+              <tr><td><code>/fork</code> / clone</td><td>Fresh empty scope with explicit non-inheritance notice</td><td>Fresh group</td></tr>
+              <tr><td>Non-persisted session</td><td>Temporary directory</td><td>Oneshots only; removed at shutdown</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="durability">
+        <h2>Durability, locking, and recovery</h2>
+        <p class="section-lede">The implementation assumes crashes can occur between any two filesystem operations.</p>
+        <div class="grid two">
+          <div class="card">
+            <h3>Ownership fences</h3>
+            <ul>
+              <li>Host-scope lease prevents two live Pi processes from consuming one main-session scope.</li>
+              <li>Per-agent run-owner marker prevents two runtimes from appending one worker JSONL.</li>
+              <li>PID plus process-start identity prevents PID reuse from impersonating an old owner.</li>
+              <li>Random <code>generationId</code> fences address reuse.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Atomic publication</h3>
+            <ul>
+              <li>Registry/team updates use serialized atomic read-modify-write.</li>
+              <li>Locks publish complete owner records through private candidates and atomic hard-link publication.</li>
+              <li>Stale lock reclamation uses generation-specific directory leases to avoid unlink/ABA races.</li>
+              <li>Operational I/O uncertainty retries or fails closed.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Crash recovery</h3>
+            <ul>
+              <li>Stale running/queued/waiting states reconcile at startup.</li>
+              <li>Unverified host delivery is requeued only under exclusive host ownership.</li>
+              <li>Assignment anchors reconstruct when envelope delivery beat anchor persistence.</li>
+              <li>Orphaned escalations cancel unless a live foreign owner still holds the wait.</li>
+            </ul>
+          </div>
+          <div class="card">
+            <h3>Retirement recovery</h3>
+            <ul>
+              <li>Durable retirement intent records final/error evidence.</li>
+              <li>Archive/team scrub completes before deregistration publishes address reuse.</li>
+              <li>Startup completes crash-interrupted funerals.</li>
+              <li>Future mail bounces; already-held peer mail is not silently buried.</li>
+            </ul>
+          </div>
+        </div>
+
+        <h3>Legacy migration</h3>
+        <p>Old cwd-wide state is detected but never auto-assigned. Adoption requires a human command, an empty persisted target, shared adoption locking, exact inode validation, symlink rejection, a retained inactive backup, and a protocol activation boundary. Rollback succeeds only while the adopted state fingerprint has not diverged.</p>
+      </section>
+
+      <section id="settings">
+        <h2>Settings</h2>
+        <p class="section-lede">Settings are optional sidecar JSON files, merged field by field.</p>
+<pre><code>~/.pi/agent/subagents.json      # global
+&lt;project&gt;/.pi/subagents.json    # project override</code></pre>
+<pre><code>{
+  "maxConcurrent": 5,
+  "maxHops": 8,
+  "autonomousTurns": 40,
+  "autonomousTokens": 500000,
+  "archiveGcDays": 7,
+  "maxTokensTotal": null,
+  "maxTurnMinutes": null,
+  "maxContextCompactions": null
+}</code></pre>
+        <ul>
+          <li>Precedence: defaults → global → project → programmatic overrides.</li>
+          <li>All fields except <code>maxConcurrent</code> are re-read at every genuine user turn; scheduler capacity applies after core recreation/reload.</li>
+          <li>Unknown keys and invalid values warn instead of crashing the extension.</li>
+          <li>A malformed/unreadable file retains its last-known-good layer; an intentionally missing file removes that layer.</li>
+          <li><code>null</code> clears an optional per-agent warning threshold.</li>
+          <li>There is no <code>autoWake</code> setting.</li>
+        </ul>
+      </section>
+
+      <section id="code-map">
+        <h2>Code map</h2>
+        <p class="section-lede">Where to look when you want to change one behavior.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Question</th><th>Primary file(s)</th></tr></thead>
+            <tbody>
+              <tr><td>How does the main turn wait?</td><td class="path">extensions/subagents/index.ts · core.ts</td></tr>
+              <tr><td>How are agents created and run?</td><td class="path">runtime/in-process.ts · runtime/types.ts · runtime/scheduler.ts</td></tr>
+              <tr><td>How is mail represented/routed?</td><td class="path">mail/envelope.ts · mail/deliver.ts · mail/mailbox.ts · mail/digest.ts</td></tr>
+              <tr><td>How do exact await and collect work?</td><td class="path">core.ts · mail/collect.ts · mail/mailbox.ts</td></tr>
+              <tr><td>Where is every disk path defined?</td><td class="path">store/layout.ts</td></tr>
+              <tr><td>Where are registry, teams, archives?</td><td class="path">store/registry.ts · store/teams.ts · store/archive.ts</td></tr>
+              <tr><td>How is session ownership enforced?</td><td class="path">store/session-scope.ts · store/process-identity.ts</td></tr>
+              <tr><td>How are type files parsed/discovered?</td><td class="path">typedefs/parse.ts · typedefs/discover.ts</td></tr>
+              <tr><td>How is the worker system prompt composed?</td><td class="path">context/compose.ts</td></tr>
+              <tr><td>How are tool/path/bash restrictions applied?</td><td class="path">sandbox/tools-filter.ts · sandbox/paths.ts · sandbox/bash-guard.ts</td></tr>
+              <tr><td>How do human escalations work?</td><td class="path">sandbox/escalation.ts · tui/escalation-modal.ts</td></tr>
+              <tr><td>How do warning thresholds work?</td><td class="path">rails/autonomy.ts · runtime/in-process.ts · index.ts</td></tr>
+              <tr><td>What does the main/subagent model see?</td><td class="path">tools/main-agent.ts · tools/sub-agent.ts</td></tr>
+              <tr><td>How is TUI state displayed?</td><td class="path">tui/widget.ts · tui/picker.ts · tui/viewer.ts</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <details>
+          <summary>Architectural rule of thumb</summary>
+          <div>Paths belong in <code>store/layout.ts</code>. Runtime capabilities belong in <code>runtime/types.ts</code>. Tools/TUI should use the <code>core.ts</code> facade. Pure parsing/classification belongs in its focused module so it remains directly testable.</div>
+        </details>
+      </section>
+
+      <section id="examples">
+        <h2>End-to-end examples</h2>
+        <p class="section-lede">Concrete scenarios showing how the pieces compose.</p>
+        <details open>
+          <summary>Required delegated review</summary>
+          <div>
+            <ol>
+              <li>Main calls <code>subagent_spawn</code> with a review task.</li>
+              <li>Runtime writes a task envelope, records the assignment anchor, and wakes the reviewer.</li>
+              <li>Main attempts to finish; <code>message_end</code> replaces the answer with “Waiting for 1 required subagent task.”</li>
+              <li>Reviewer sends progress; progress is durable but does not settle the anchor.</li>
+              <li>Reviewer sends an exactly correlated <code>final:true</code> report.</li>
+              <li>Host await claims it, verifies delivery through the main JSONL marker, and injects it as a follow-up.</li>
+              <li>Main incorporates findings and may now publish its final response.</li>
+            </ol>
+          </div>
+        </details>
+        <details>
+          <summary>Peer delegation inside required work</summary>
+          <div>
+            <ol>
+              <li>Required worker A sends an uncorrelated task message to teammate B.</li>
+              <li>The runtime records B's assignment and the core adds B's envelope to the same required graph.</li>
+              <li>A's final does not hide B's outstanding task.</li>
+              <li>B's report to main auto-correlates to the peer assignment id.</li>
+              <li>Main receives both terminal outcomes before completion.</li>
+            </ol>
+          </div>
+        </details>
+        <details>
+          <summary>Worker asks main a question</summary>
+          <div>
+            <ol>
+              <li>Worker calls <code>ask</code> and ends its turn.</li>
+              <li>Await returns <code>attention</code> with the question, but the original task remains required.</li>
+              <li>Main answers with <code>subagent_send</code> and the question envelope id as <code>correlationId</code>.</li>
+              <li>The answer wakes the worker with its original question quoted.</li>
+              <li>The worker continues and eventually sends its final report.</li>
+            </ol>
+          </div>
+        </details>
+        <details>
+          <summary>Blocked write requiring a human</summary>
+          <div>
+            <ol>
+              <li>A write escapes <code>writePaths</code> or bash intent is ambiguous.</li>
+              <li>The tool pauses, worker becomes <code>waiting</code>, and its scheduler slot is released.</li>
+              <li>Main sees attention and can deny with a correlated note; only the human can approve once.</li>
+              <li>After decision, the worker reacquires a slot and its tool either proceeds or returns an error.</li>
+            </ol>
+          </div>
+        </details>
+        <details>
+          <summary>Explicit background work</summary>
+          <div>
+            <ol>
+              <li>Main uses <code>background:true</code> on task-bearing spawn/send/collect.</li>
+              <li>The envelope still routes normally and the worker still runs.</li>
+              <li>No current-turn required anchor is added.</li>
+              <li>The eventual result remains durable in main's mailbox but never auto-wakes an idle main session.</li>
+              <li>A later genuine user turn can drain it.</li>
+            </ol>
+          </div>
+        </details>
+      </section>
+
+      <section id="limits">
+        <h2>Known logic gaps and boundaries</h2>
+        <p class="section-lede">An honest register of the current implementation's open consistency gaps, missing controls, UX limitations, and intentional tradeoffs. “Known” is not a proof that no undiscovered defect exists.</p>
+
+        <h3>Highest-priority open gaps</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Gap</th><th>Current consequence</th><th>Likely correction</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Required group is memory-only</strong></td><td>Crash, shutdown, or <code>/reload</code> preserves mail and workers but loses which anchors were mandatory for the interrupted user turn.</td><td>Persist a group id plus exact anchors and safely rehydrate it with the owning main session.</td></tr>
+              <tr><td><strong>Host abort is not wired into the barrier controller</strong></td><td>If the user aborts while <code>agent_end</code> is already waiting, the internal await can remain blocked until its 900-second polling interval returns.</td><td>Forward <code>ctx.signal</code> into the active barrier <code>AbortController</code> and remove the listener in <code>finally</code>.</td></tr>
+              <tr><td><strong>Interrupted work is still durable mail</strong></td><td>Interrupt removes exact anchors from the live required group, but runtime intentionally requeues the triggering envelopes. A later wake can execute “cancelled” work and produce an unjoined result.</td><td>Choose one coherent contract: preserve the join on interrupt, or durably mark/quarantine exact triggering envelopes as cancelled.</td></tr>
+              <tr><td><strong>Multiple task messages can share one worker turn</strong></td><td>Auto-correlation is ambiguous—especially with peer tasks—and one final may settle only one anchor while another has no remaining wake trigger.</td><td>Deliver at most one task assignment per turn, or require/report one explicit result per trigger and schedule remaining assignment state.</td></tr>
+              <tr><td><strong>Peer questions are not independent joins</strong></td><td>A required parent is expected to stay open while awaiting a peer answer. If it incorrectly reports final early, the barrier can finish while the peer question remains outstanding.</td><td>Track peer-question completion explicitly, or reject parent final while its durable sent-question index is non-empty for that assignment.</td></tr>
+              <tr><td><strong>No post-delegation detach/cancel control</strong></td><td>A dormant task that never emits <code>final:true</code> can hold the turn forever; interrupt is a no-op when the agent is idle and retirement is destructive.</td><td>Add an explicit human-visible detach/cancel-anchor operation with durable audit evidence.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Semantic and coordination gaps</h3>
+        <div class="grid two">
+          <div class="card"><h3><code>message</code> conflates task and FYI</h3><p>An uncorrelated peer message from required work is treated as delegated work. Harmless informational chatter can therefore create a required anchor that never receives a final. There is no peer-side <code>background</code> flag or explicit <code>task</code>/<code>notice</code> distinction.</p></div>
+          <div class="card"><h3>Peer result routing is indirect</h3><p>A delegated child reports final to main, not automatically to its parent. If the parent needs the value, it must use the question/answer path or another message—whose intent is itself ambiguous.</p></div>
+          <div class="card"><h3><code>background:true</code> is model-controlled</h3><p>The main LLM can choose detachment without separate human authorization. This is explicit in the tool call, but not necessarily explicit to the human.</p></div>
+          <div class="card"><h3>Main's draft answer is replaced</h3><p>When the barrier catches a premature final, it replaces the full assistant draft with a generic waiting sentence. Useful synthesis already written in that draft is not preserved for the follow-up turn.</p></div>
+          <div class="card"><h3>Required graph has little user visibility</h3><p>The user sees a count but not a durable task-group view with anchor, owner, age, attention state, and reason it remains blocked.</p></div>
+          <div class="card"><h3>Urgent detached mail is intentionally quiet</h3><p>Errors, escalations, and reports outside an active required group do not auto-wake main. The TUI can surface human escalations, but headless main processing waits for another real input.</p></div>
+        </div>
+
+        <h3>Warnings and settings gaps</h3>
+        <ul>
+          <li><strong>Headless/RPC visibility:</strong> warning events are queued for the TUI widget; non-TUI modes have no equivalent structured warning/control channel and an unattended queue can grow.</li>
+          <li><strong>Post-turn wording:</strong> token/compaction warnings may be emitted after the turn ended, while the card always says “The agent is still running” and offers an interrupt that safely becomes a stale no-op.</li>
+          <li><strong>Session-wide attribution:</strong> the worker that happens to cross a global turn/token threshold is named in the warning even though consumption belongs to the whole session window.</li>
+          <li><strong>Ephemeral warning state:</strong> queued warnings and per-handle “already warned” state are not durable, so restart can lose cards or re-emit per-agent warnings.</li>
+          <li><strong>Partial-invalid settings edits:</strong> valid JSON with one mistyped field is treated as a successful layer without that field, so the previous field value can fall back to a lower layer/default. Last-known-good retention applies only to whole-file read/parse failures.</li>
+          <li><strong>Terminology drift:</strong> some internal comments/prompts and historical specs still say “budget exhaustion” or “ceiling,” although current resource thresholds do not stop execution.</li>
+        </ul>
+
+        <h3>Scale and data-shape gaps</h3>
+        <ul>
+          <li>Await text is bounded, but structured report/collect <code>data</code> can still be large and is serialized into a main follow-up, creating context/memory pressure.</li>
+          <li>Agent transcripts are long-lived Pi JSONL. Pi compaction helps model context, but disk history grows until retirement/manual cleanup.</li>
+          <li>Mailbox audit/quarantine, collect metadata, and generation-anchor retention share time-based GC. Very old explicit awaits eventually operate outside their original retained generation-index window.</li>
+          <li>The supported collect validator is intentionally a small JSON Schema subset; ignored keywords can make a caller believe a stronger schema was enforced unless it reads the tool contract.</li>
+        </ul>
+
+        <h3>Intentional architectural boundaries</h3>
+        <div class="grid two">
+          <div class="card">
+            <h3>Not an always-on daemon</h3>
+            <p>Closing the owning host stops in-process execution. Durable state lets the scope recover, but work does not continue on an independent service.</p>
+          </div>
+          <div class="card">
+            <h3>Live join is not crash-persisted</h3>
+            <p>Task/report anchors are durable, but the exact set designated “required for this live user turn” is currently in memory.</p>
+          </div>
+          <div class="card">
+            <h3>Persistent lifetime is never joined</h3>
+            <p>Main waits for exact assignments, not for the identity to cease existing. A persistent worker normally returns to <code>dormant</code>.</p>
+          </div>
+          <div class="card">
+            <h3>Supported collect schema is a subset</h3>
+            <p>Validation supports type, properties, required, items, enum, const, and <code>additionalProperties:false</code>. Other JSON Schema keywords are ignored.</p>
+          </div>
+          <div class="card">
+            <h3>Main cannot approve</h3>
+            <p>The orchestration model may deny a blocked operation but cannot grant new capability. This is a deliberate non-delegable human power.</p>
+          </div>
+          <div class="card">
+            <h3>Questions rely on parent correctness</h3>
+            <p>A peer question is not a separate final-report anchor; the parent's required assignment is expected to remain open until it has the answer and can honestly finalize.</p>
+          </div>
+        </div>
+        <div class="callout good">
+          <strong>Validated implementation</strong>
+          The current package passes strict TypeScript checking and all 11 e2e harnesses, including focused completion-barrier, no-auto-wake, warning-only execution, stale-warning fencing, targeted interruption, locking, retirement, migration, and durable-await coverage.
+        </div>
+      </section>
+
+      <footer>
+        pi-agents current implementation guide · Generated from the repository implementation and D27 design state · 2026-07-14
+      </footer>
+    </div>
+  </main>
+</div>
+<script>
+  (() => {
+    const body = document.body;
+    const button = document.getElementById('nav-toggle');
+    const links = [...document.querySelectorAll('#nav a')];
+    const sections = links.map(link => document.querySelector(link.getAttribute('href'))).filter(Boolean);
+
+    button.addEventListener('click', () => {
+      const open = body.classList.toggle('nav-open');
+      button.setAttribute('aria-expanded', String(open));
+      button.textContent = open ? '×' : '☰';
+    });
+
+    links.forEach(link => link.addEventListener('click', () => {
+      body.classList.remove('nav-open');
+      button.setAttribute('aria-expanded', 'false');
+      button.textContent = '☰';
+    }));
+
+    const observer = new IntersectionObserver(entries => {
+      const visible = entries
+        .filter(entry => entry.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+      if (!visible) return;
+      links.forEach(link => link.classList.toggle('active', link.getAttribute('href') === '#' + visible.target.id));
+    }, { rootMargin: '-12% 0px -72% 0px', threshold: [0, .15, .5] });
+
+    sections.forEach(section => observer.observe(section));
+  })();
+</script>
+</body>
+</html>

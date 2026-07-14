@@ -13,8 +13,8 @@
  *     bounces every unprocessed pending envelope back to its sender as an
  *     error before the mailbox is archived (senders were told delivery
  *     succeeded — burying their mail would strand them dormant forever).
- * (4) m2 — the autonomy-resume drain only schedules turns for DORMANT agents;
- *     it must never stamp `queued` over a waiting/running agent.
+ * (4) Warning-only autonomy thresholds never gate work or mutate unrelated
+ *     waiting/running lifecycle state.
  *
  * Harness: jiti-alias pattern + text-only mock provider (see env.mjs and
  * phase3-mail.mjs). Run: node test/e2e/phase-runtime-fixes.mjs
@@ -311,41 +311,30 @@ function readDoneEnvelopes(box) {
 }
 
 // ---------------------------------------------------------------------------
-// (4) m2 — autonomy-resume drain never clobbers waiting/running state
+// (4) Warning-only autonomy accounting never mutates lifecycle state
 // ---------------------------------------------------------------------------
-console.log("(4) resume drain respects lifecycle state (m2):");
+console.log("(4) warning thresholds preserve lifecycle state:");
 {
-	const autonomy = new AutonomyBudget({ autonomousTurns: 10_000, autonomousTokens: 10_000_000 });
+	const autonomy = new AutonomyBudget({ autonomousTurns: 10_000, autonomousTokens: 10 });
 	const runtime = new InProcessRuntime({ layout, modelRegistry, settingsManager, maxConcurrent: 2, autonomy });
-	const events = [];
-	runtime.onEvent((e) => events.push(e));
 	await runtime.spawn({ type: "worker", id: "waiter" });
 	await runtime.spawn({ type: "worker", id: "sleeper" });
 	await sleep(100);
-
-	// waiter: blocked on a (simulated) human escalation, mail queued behind it.
-	// sleeper: plain dormant agent with queued mail — the drain's real target.
 	updateRegistry(layout.registryFile, (reg) => {
 		getAgent(reg, "worker/waiter").state = "waiting";
 	});
-	mailbox.writeEnvelope(layout.mailboxDir("worker", "waiter"), makeEnvelope({ from: "main", to: "worker/waiter", type: "message", text: "queued behind the escalation" }));
-	mailbox.writeEnvelope(layout.mailboxDir("worker", "sleeper"), makeEnvelope({ from: "main", to: "worker/sleeper", type: "message", text: "queued while paused" }));
-
-	// Trip the pause, then resume → the runtime's drain fires.
-	autonomy.noteTokens(20_000_000);
-	assert.ok(autonomy.paused);
-	const before = events.length;
-	autonomy.resume();
+	mailbox.writeEnvelope(layout.mailboxDir("worker", "waiter"), makeEnvelope({
+		from: "main", to: "worker/waiter", type: "message", text: "queued behind the escalation",
+	}));
+	assert.equal(autonomy.noteTokens(20), "tokens");
+	assert.equal(autonomy.paused, false);
+	assert.equal(autonomy.canStart(), true);
+	await runtime.send({ to: "worker/sleeper", text: "work continues after the warning" });
 	for (let i = 0; i < 400 && mailbox.pendingCount(layout.mailboxDir("worker", "sleeper")) > 0; i++) await sleep(15);
-
-	assert.equal(mailbox.pendingCount(layout.mailboxDir("worker", "sleeper")), 0, "dormant agent drained");
-	assert.equal(getAgent(readRegistry(layout.registryFile), "worker/waiter")?.state, "waiting", "waiting state NOT clobbered to queued");
-	assert.equal(mailbox.pendingCount(layout.mailboxDir("worker", "waiter")), 1, "waiter's mail stays queued for its own turn boundary");
-	const waiterFlips = events.slice(before).filter((e) => e.type === "state-changed" && e.address === "worker/waiter");
-	assert.equal(waiterFlips.length, 0, "no state events for the waiting agent");
-	ok("autonomy resume drains dormant agents only; `waiting` survives the drain");
-
-	// Cleanup so a stale `waiting` record never leaks into other test worlds.
+	assert.equal(mailbox.pendingCount(layout.mailboxDir("worker", "sleeper")), 0, "new work still runs");
+	assert.equal(getAgent(readRegistry(layout.registryFile), "worker/waiter")?.state, "waiting", "warning does not clobber waiting state");
+	assert.equal(mailbox.pendingCount(layout.mailboxDir("worker", "waiter")), 1, "waiter's own boundary still owns queued mail");
+	ok("autonomy thresholds warn without pausing or mutating unrelated agents");
 	updateRegistry(layout.registryFile, (reg) => {
 		getAgent(reg, "worker/waiter").state = "dormant";
 	});
@@ -460,52 +449,31 @@ console.log("(5) main-mail durability (core):");
 }
 
 // ---------------------------------------------------------------------------
-// (6) Main-mail durability (index.ts wiring): the session file reaches drains
-//     via ctx.sessionManager.getSessionFile(); session_start reconciles and
-//     re-auto-wakes crash-lost mail; no wake loop afterwards.
+// (6) Main-mail durability (index.ts): no notification-driven auto-wake;
+//     crash-lost delivery is requeued for the next genuine user turn.
 // ---------------------------------------------------------------------------
-console.log("(6) main-mail durability (host wiring):");
+console.log("(6) main-mail durability without auto-wake:");
 {
-	const extensionFactory = (await jiti.import(join(EXT, "index.ts"))).default ?? (await jiti.import(join(EXT, "index.ts")));
+	const extensionFactory = (await jiti.import(join(EXT, "index.ts"))).default ?? (await jiti.import(join(EXT, "index.ts")))
 	const projectW = join(scratch, "project-mainmail-wiring");
 	mkdirSync(projectW, { recursive: true });
 	const layoutW = createLayout(projectW, { home, sessionId: "test-session" });
 	const sessionFile = join(home, ".pi", "agent", "sessions", "fake-wiring-session.jsonl");
 	writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 1 })}\n`);
 	const prevHome = process.env.HOME;
-	process.env.HOME = home; // index.ts derives the layout home from os.homedir()
-
+	process.env.HOME = home;
 	const handlers = {};
 	const sentMessages = [];
-	let throwNextSend = false;
 	const stubPi = {
 		isStreaming: false,
 		on: (event, handler) => (handlers[event] ??= []).push(handler),
-		registerTool: () => {},
-		registerCommand: () => {},
-		registerShortcut: () => {},
-		sendMessage: (message, options) => {
-			if (throwNextSend) {
-				throwNextSend = false;
-				throw new Error("synthetic host injection failure");
-			}
-			const mode =
-				options?.deliverAs === "nextTurn" ? "nextTurn"
-				: stubPi.isStreaming ? (options?.deliverAs === "followUp" ? "followUp" : "steer")
-				: options?.triggerTurn ? "newTurn"
-				: "append";
-			sentMessages.push({ message, options, mode });
-		},
+		registerTool: () => {}, registerCommand: () => {}, registerShortcut: () => {},
+		sendMessage: (message, options) => sentMessages.push({ message, options }),
 	};
 	extensionFactory(stubPi);
-	// hasUI so session_start builds the core (widget install path) — the
-	// crash-requeued mail must get its auto-wake back.
 	const ctx = {
-		cwd: projectW,
-		modelRegistry,
-		hasUI: true,
-		mode: "tui",
-		ui: { setStatus: () => {}, notify: () => {} },
+		cwd: projectW, modelRegistry, hasUI: true, mode: "tui",
+		ui: { setStatus: () => {}, setWidget: () => {}, notify: () => {} },
 		sessionManager: { getSessionId: () => "test-session", getSessionFile: () => sessionFile },
 	};
 	const fire = async (event) => {
@@ -514,69 +482,27 @@ console.log("(6) main-mail durability (host wiring):");
 	const hostAppend = (message) => {
 		writeFileSync(sessionFile, `${JSON.stringify({ type: "custom-message", customType: message.customType, content: message.content })}\n`, { flag: "a" });
 	};
-
-	await fire("session_start"); // clean start — nothing to reconcile
-	assert.equal(sentMessages.length, 0);
-
-	// Synchronous host injection failure requeues the exact claimed batch and
-	// clears mainBusy so the next boundary can retry without a restart.
-	const injectionFailure = makeEnvelope({
-		from: "worker/alpha", to: "main", type: "report", text: "INJECTION_FAILURE_MARKER",
-	});
-	mailbox.writeEnvelope(layoutW.mainMailboxDir, injectionFailure);
-	throwNextSend = true;
-	await fire("agent_settled");
-	assert.equal(sentMessages.length, 0);
-	assert.equal(mailbox.pendingCount(layoutW.mainMailboxDir), 1, "failed injection requeued persisted mail");
-	await fire("agent_settled");
-	assert.equal(sentMessages.length, 1, "requeued batch retried on the next boundary");
-	hostAppend(sentMessages[0].message);
-	await handlers.before_agent_start[0]({ type: "before_agent_start" }, ctx);
-	assert.ok(existsSync(join(layoutW.mainMailboxDoneDir, `${injectionFailure.id}.json`)));
-	sentMessages.length = 0;
-	ok("synchronous host injection failure requeues mail and unwedges auto-wake");
-
-	// A subagent escalation lands; a real user turn drains it into the digest.
-	const esc = makeEnvelope({ from: "worker/alpha", to: "main", type: "escalation", text: "approve the deploy? WIRE_ESC_MARKER" });
+	await fire("session_start");
+	const esc = makeEnvelope({ from: "worker/alpha", to: "main", type: "escalation", text: "approve deploy? WIRE_ESC_MARKER" });
 	mailbox.writeEnvelope(layoutW.mainMailboxDir, esc);
+	await fire("agent_settled");
+	assert.equal(sentMessages.length, 0, "idle mail never starts main");
 	const injected = await handlers.before_agent_start[0]({ type: "before_agent_start" }, ctx);
-	assert.match(injected.message.content, /WIRE_ESC_MARKER/, "user-turn digest drained the escalation");
-	assert.ok(existsSync(join(layoutW.mainMailboxDeliveringDir, `${esc.id}.json`)), "parked against the ACTIVE session file (ctx.sessionManager)");
-	// CRASH before the host appended `injected.message` — nothing written.
-	await fire("session_shutdown");
-
-	// Restart: session_start reconciles, requeues, and re-auto-wakes (D16).
+	assert.match(injected.message.content, /WIRE_ESC_MARKER/);
+	assert.ok(existsSync(join(layoutW.mainMailboxDeliveringDir, `${esc.id}.json`)));
+	await fire("session_shutdown"); // crash before host append
 	await fire("session_start");
-	assert.equal(sentMessages.length, 1, "crash-lost escalation re-auto-woken at session_start");
-	const wake = sentMessages[0];
-	assert.equal(wake.mode, "newTurn");
-	assert.equal(wake.options.triggerTurn, true);
-	assert.match(wake.message.customType, /subagent-mail/);
-	assert.match(wake.message.content, /WIRE_ESC_MARKER/, "fresh digest carries the escalation");
-	assert.match(wake.message.content, /re-delivered: an earlier delivery attempt did not complete/, "labeled as a re-delivery");
-	ok("crash-lost escalation is re-delivered AND re-auto-woken on restart (was: lost, subagent stranded)");
-
-	// No wake loop while the new injection is unverified: boundary re-checks
-	// find nothing pending because the envelope is in .delivering.
 	await fire("agent_settled");
-	await fire("agent_settled");
-	assert.equal(sentMessages.length, 1, "no self-wake loop / no repeated pool charge while in flight");
-	ok("unverified re-delivery never re-wakes in-process");
-
-	// The host now durably appends the wake message; the next user turn
-	// finalizes — exactly once, no duplicate digest.
-	hostAppend(wake.message);
+	assert.equal(sentMessages.length, 0, "restart recovery also never auto-wakes main");
+	const retried = await handlers.before_agent_start[0]({ type: "before_agent_start" }, ctx);
+	assert.match(retried.message.content, /WIRE_ESC_MARKER/);
+	assert.match(retried.message.content, /re-delivered: an earlier delivery attempt did not complete/);
+	hostAppend(retried.message);
 	const second = await handlers.before_agent_start[0]({ type: "before_agent_start" }, ctx);
-	assert.equal(second, undefined, "no duplicate delivery once the append is verified");
-	assert.ok(existsSync(join(layoutW.mainMailboxDoneDir, `${esc.id}.json`)), "finalized to .done/");
-	assert.ok(!existsSync(join(layoutW.mainMailboxDeliveringDir, `${esc.id}.json`)));
-	assert.equal(mailbox.pendingCount(layoutW.mainMailboxDir), 0);
-	// And another restart resurrects nothing.
-	await fire("session_shutdown");
-	await fire("session_start");
-	assert.equal(sentMessages.length, 1, "restart after verified delivery re-delivers nothing");
-	ok("verified delivery finalizes exactly once; restarts never resurrect seen mail");
-
+	assert.equal(second, undefined);
+	assert.ok(existsSync(join(layoutW.mainMailboxDoneDir, `${esc.id}.json`)));
+	assert.equal(sentMessages.length, 0);
+	ok("crash-lost main mail waits durably for the next real user turn and finalizes exactly once");
 	await fire("session_shutdown");
 	process.env.HOME = prevHome;
 }
@@ -901,52 +827,36 @@ console.log("(9b) retirement generation + delivery fences:");
 }
 
 // ---------------------------------------------------------------------------
-// (10) Finding 14 — a USER message from the viewer (sendAsUser) resets +
-//      resumes a paused autonomy pool and drains queued mail; a main-agent
-//      send() does NOT (autonomous, no reset).
+// (10) sendAsUser opens a fresh warning-accounting window, but there is no
+//      paused queue or global resume-drain behavior.
 // ---------------------------------------------------------------------------
-console.log("(10) sendAsUser resets + resumes a paused pool and drains (Finding 14):");
+console.log("(10) sendAsUser resets warning accounting without pause/resume:");
 {
 	const layoutU = makeWorld("senduser-world");
-	// Large budget tripped MANUALLY, so the post-reset drain turns (~15 tokens
-	// each) don't immediately re-pause the pool.
-	const autonomy = new AutonomyBudget({ autonomousTurns: 1e9, autonomousTokens: 1e9 });
+	const autonomy = new AutonomyBudget({ autonomousTurns: 1e9, autonomousTokens: 100 });
 	const runtime = new InProcessRuntime({ layout: layoutU, modelRegistry, settingsManager, maxConcurrent: 2, autonomy });
 	const events = [];
 	runtime.onEvent((e) => events.push(e));
 	await runtime.spawn({ type: "worker", id: "direct" });
 	await runtime.spawn({ type: "worker", id: "sleeper" });
 	await sleep(80);
-
-	autonomy.noteTokens(2e9); // trip the pause
-	assert.ok(autonomy.paused, "pool paused");
-
-	// Queued mail on a DIFFERENT dormant agent — the resume-drain's real target.
-	mailbox.writeEnvelope(layoutU.mailboxDir("worker", "sleeper"), makeEnvelope({ from: "main", to: "worker/sleeper", type: "message", text: "queued while paused" }));
-
-	// A MAIN send while paused must NOT reset the pool (autonomous).
-	await runtime.send({ to: "worker/direct", text: "autonomous, stays queued" });
-	await sleep(200);
-	assert.ok(autonomy.paused, "main send did NOT resume the pool");
-	assert.equal(mailbox.pendingCount(layoutU.mailboxDir("worker", "sleeper")), 1, "sleeper still queued while paused");
-
-	// A USER send from the viewer resets + resumes + drains (D21 / Finding 14).
-	const finishedBefore = events.filter((e) => e.type === "turn-finished").length;
+	assert.equal(autonomy.noteTokens(200), "tokens");
+	assert.equal(autonomy.paused, false);
+	mailbox.writeEnvelope(layoutU.mailboxDir("worker", "sleeper"), makeEnvelope({
+		from: "main", to: "worker/sleeper", type: "message", text: "unscheduled durable mail",
+	}));
+	const before = events.filter((e) => e.type === "turn-finished").length;
+	await runtime.send({ to: "worker/direct", text: "autonomous work still runs" });
+	for (let i = 0; i < 400 && events.filter((e) => e.type === "turn-finished").length <= before; i++) await sleep(15);
+	assert.ok(events.filter((e) => e.type === "turn-finished").length > before, "ordinary work ran beyond the threshold");
+	assert.ok(autonomy.status().tokensUsed >= 200, "main send does not reset the accounting window");
 	await runtime.sendAsUser({ to: "worker/direct", text: "user message DIRECT_MARKER" });
-	assert.equal(autonomy.paused, false, "sendAsUser reset (and resumed) the pool");
-	for (
-		let i = 0;
-		i < 400 &&
-		(mailbox.pendingCount(layoutU.mailboxDir("worker", "sleeper")) > 0 ||
-			mailbox.pendingCount(layoutU.mailboxDir("worker", "direct")) > 0);
-		i++
-	) {
-		await sleep(15);
-	}
-	assert.equal(mailbox.pendingCount(layoutU.mailboxDir("worker", "sleeper")), 0, "resume-drain cleared the sleeper's queued mail");
-	assert.equal(mailbox.pendingCount(layoutU.mailboxDir("worker", "direct")), 0, "the user's direct message was delivered + drained");
-	assert.ok(events.filter((e) => e.type === "turn-finished").length > finishedBefore, "turns ran after the user reset");
-	ok("sendAsUser resets/resumes the paused pool and drains queued mail; a main send does not");
+	assert.ok(autonomy.status().tokensUsed < 200, "direct user input opened a fresh accounting window");
+	assert.equal(mailbox.pendingCount(layoutU.mailboxDir("worker", "sleeper")), 1, "no obsolete global resume-drain exists");
+	await runtime.send({ to: "worker/sleeper", text: "explicit wake" });
+	for (let i = 0; i < 400 && mailbox.pendingCount(layoutU.mailboxDir("worker", "sleeper")) > 0; i++) await sleep(15);
+	assert.equal(mailbox.pendingCount(layoutU.mailboxDir("worker", "sleeper")), 0);
+	ok("warning accounting resets on user input; execution never required resume");
 	await runtime.dispose();
 }
 

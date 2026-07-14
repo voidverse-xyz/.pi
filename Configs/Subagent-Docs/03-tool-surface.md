@@ -8,18 +8,18 @@ validation); one-tool-per-power (context bloat).
 
 ### subagent_spawn
 ```
-(type, id?, team?, lifetime?: "persistent"|"oneshot", task?)
+(type, id?, team?, lifetime?: "persistent"|"oneshot", task?, background?: boolean)
 → { address, created: boolean, state, vitals, taskEnvelopeId? }
 ```
 - Get-or-create on `<type>/<id>` (D5): created:false = existed, woke it, memory intact.
 - id required for persistent spawns (meaningful purview slug; default "main" for
   singleton types); omitted id on oneshot → auto `tmp-<short>`.
 - team: names a team; creates it if new (D12).
-- task: optional first message — spawn + assign in one call; its envelope id is returned as an await anchor.
+- task: optional first message — spawn + assign in one call; its envelope id is returned as an await anchor and joins the current user-turn completion barrier. `background:true` explicitly detaches it.
 
 ### subagent_send
 ```
-(to, text, when?: "now"|"after-turn", correlationId?)
+(to, text, when?: "now"|"after-turn", correlationId?, background?: boolean)
 → { delivery: "delivered"|"queued", disposition: "woken"|"held"|"queued", recipientState, envelopeId }
 ```
 - Covers three matrix powers: send (when:"now", default), queue (when:"after-turn"),
@@ -32,6 +32,9 @@ validation); one-tool-per-power (context bloat).
 - disposition disambiguates delivery:"queued": "held" = recipient mid-turn (boundary
   drain), "queued" = a turn was already scheduled. "woken" pairs with
   delivery:"delivered" and recipientState:"queued" (the wake scheduled the turn).
+- Uncorrelated sends join the current user-turn completion barrier. Correlated
+  answers do not create a new task; `background:true` explicitly detaches an
+  uncorrelated send.
 
 ### subagent_steer
 ```
@@ -54,10 +57,11 @@ validation); one-tool-per-power (context bloat).
 
 ### subagent_collect
 ```
-(to, schema) → { requested: true, requestId, recipientState }
+(to, schema, background?: boolean) → { requested: true, requestId, recipientState }
 ```
-- Non-blocking like everything else (D14): asks the agent to deliver a final
-  result conforming to `schema`; result arrives later as a report envelope with
+- The tool call is non-blocking, but its request joins the current user-turn
+  completion barrier unless `background:true`: the agent delivers a result
+  conforming to `schema` as a report envelope with
   payload.data validated against the schema (restricted subset: type/properties/
   required/items/enum/const/additionalProperties:false; other keywords ignored).
   Within the subset validation is honest: `additionalProperties:false` closes the
@@ -109,15 +113,18 @@ validation); one-tool-per-power (context bloat).
 - Sub→sub send: subagents get a reduced send-only tool pair (send/queue) — same
   envelope, team-checked at delivery (D12). No other subagent tools.
 
-## Main-agent mailbox delivery (D24 — all-mail auto-wake with abort latch)
-The main agent is a Pi session; envelopes reach its LLM via turn mechanics:
-- Mid-turn: mail waits for `agent_settled`, then injects digest-style (D14).
-- Idle + any envelope type: AUTO-WAKE — the extension starts a main-agent turn
-  with the wake digest as input.
-- Any aborted main-agent run durably latches auto-wake off across reload/restart.
-  Mail queues visibly (📬 n) until the next interactive/RPC user message clears it and
-  receives the queued digest. Pi reports an abort but not whether Esc caused it.
-- Main wakeups do not consume or obey the subagent autonomy turn/token pool.
-- Config toggle: autoWake: true (default) | false → fully-manual queueing.
+## Main-agent completion and mailbox delivery (D27; supersedes D24)
+The main agent is a Pi session; envelopes reach its LLM without notification-driven
+restart mechanics:
+- Idle main mail never auto-wakes the host. Unrelated queued mail joins the next
+  genuine interactive/RPC user turn.
+- Spawn tasks, uncorrelated sends, collects, and transitive uncorrelated peer
+  delegations created during the current user turn form one required group.
+- A candidate final response is replaced with a waiting status while anchors
+  remain. `agent_end` waits without a hard timeout and queues each result or
+  attention item as `deliverAs:"followUp"`, continuing the same main run.
+- Questions, escalations, provider/tool waits, scheduler contention, main
+  interruption, and missing `final:true` never silently detach the group.
+- `background:true` is the only intentional per-call detachment.
 - Escalations additionally surface a human approval prompt in the TUI; only the
   human can approve (D10).

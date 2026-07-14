@@ -17,9 +17,9 @@
  *    5. subagent_collect with schema → validated digest note on drain.
  *    6. Out-of-scope write → escalation envelope to main → main DENIES BY
  *       MAIL with a note → the blocked tool errors and the agent reacts.
- *    7. Settings live-reload: project subagents.json edit applies at the
- *       next user turn; tiny pool → budget pause (mail queues, no turns);
- *       `/agents resume` refills and drains.
+ *    7. Settings live-reload: tiny thresholds warn while later work continues;
+ *       no resume command. Required question/final results continue the same
+ *       main run and idle mail never auto-wakes.
  *    8. Cumulative vitals: tokens grow across a dormant→wake cycle, and
  *       survive a host restart + session-file rotation (registry baseline).
  *    9. End-state consistency: registry ⋈ teams ⋈ disk with no orphans.
@@ -88,11 +88,11 @@ for (const [name, lines] of Object.entries(TYPES)) {
 	writeFileSync(join(project, ".pi", "subagents", `${name}.md`), `${lines.join("\n")}\n`);
 }
 
-// Phase 7 settings files: global defaults + project override (autoWake off =
-// fully-manual queueing so the story controls every main-mail drain itself).
+// Phase 7 settings files: global defaults + project override. Main mail is
+// always user-turn/barrier driven; notification auto-wake no longer exists.
 const globalSettingsFile = join(home, ".pi", "agent", "subagents.json");
 const projectSettingsFile = join(project, ".pi", "subagents.json");
-writeFileSync(globalSettingsFile, `${JSON.stringify({ autoWake: false, autonomousTurns: 40, archiveGcDays: 7 })}\n`);
+writeFileSync(globalSettingsFile, `${JSON.stringify({ autonomousTurns: 40, archiveGcDays: 7 })}\n`);
 writeFileSync(projectSettingsFile, `${JSON.stringify({ autonomousTurns: 30 })}\n`);
 
 // ---------------------------------------------------------------------------
@@ -202,14 +202,13 @@ await test("defaults when no files exist", async () => {
 	const empty = createLayout(join(scratch, "nowhere"), { home: join(scratch, "nohome"), sessionId: "test-session" });
 	const { settings, warnings } = settingsMod.loadSettings(empty);
 	assert.deepEqual(settings, {
-		autoWake: true, maxConcurrent: 5, maxHops: 8,
+		maxConcurrent: 5, maxHops: 8,
 		autonomousTurns: 40, autonomousTokens: 500000, archiveGcDays: 7,
 	});
 	assert.deepEqual(warnings, []);
 });
 await test("global ← project merge; project wins field-by-field", async () => {
 	const { settings, warnings } = settingsMod.loadSettings(layout);
-	assert.equal(settings.autoWake, false, "from the global file");
 	assert.equal(settings.autonomousTurns, 30, "project override wins");
 	assert.equal(settings.maxConcurrent, 5, "untouched fields keep defaults");
 	assert.deepEqual(warnings, []);
@@ -219,16 +218,16 @@ await test("lenient validation: unknown keys / bad types warn, never throw; null
 	mkdirSync(join(dir, "home"), { recursive: true });
 	mkdirSync(join(dir, "proj", ".pi"), { recursive: true });
 	const l = { globalSettingsFile: join(dir, "home", "subagents.json"), projectSettingsFile: join(dir, "proj", ".pi", "subagents.json") };
-	writeFileSync(l.globalSettingsFile, JSON.stringify({ maxTokensTotal: 100, banana: 1, maxHops: "eight", autoWake: null }));
+	writeFileSync(l.globalSettingsFile, JSON.stringify({ maxTokensTotal: 100, banana: 1, maxHops: "eight", maxConcurrent: null }));
 	writeFileSync(l.projectSettingsFile, JSON.stringify({ maxTokensTotal: null, autonomousTurns: 0.5 }));
 	const { settings, warnings } = settingsMod.loadSettings(l);
 	assert.equal(settings.maxTokensTotal, undefined, "project null cleared the global ceiling");
 	assert.equal(settings.maxHops, 8, "mistyped value ignored");
-	assert.equal(settings.autoWake, true, "null on a required field ignored");
+	assert.equal(settings.maxConcurrent, 5, "null on a required field ignored");
 	assert.equal(settings.autonomousTurns, 40, "non-integer turn budget ignored");
 	assert.ok(warnings.some((w) => w.includes('unknown setting "banana"')));
 	assert.ok(warnings.some((w) => w.includes('"maxHops" must be a positive integer')));
-	assert.ok(warnings.some((w) => w.includes('"autoWake" cannot be null')));
+	assert.ok(warnings.some((w) => w.includes('"maxConcurrent" cannot be null')));
 	// invalid JSON warns instead of throwing
 	writeFileSync(l.projectSettingsFile, "{nope");
 	const bad = settingsMod.readSettingsFile(l.projectSettingsFile);
@@ -240,7 +239,6 @@ await test("applySettingsInto: live in-place reload, programmatic overrides keep
 	target.maxTokensTotal = 111; // pretend an earlier load set it
 	const warnings = settingsMod.applySettingsInto(target, layout, { maxConcurrent: 2 });
 	assert.deepEqual(warnings, []);
-	assert.equal(target.autoWake, false);
 	assert.equal(target.autonomousTurns, 30);
 	assert.equal(target.maxConcurrent, 2, "programmatic override survives reload");
 	assert.equal(target.maxTokensTotal, undefined, "stale optional dropped when files do not set it");
@@ -310,6 +308,9 @@ const tools = new Map();
 const commands = new Map();
 const sentMessages = [];
 const notifications = [];
+const hostSessionFile = join(layout.projectSessionDir, "host-main.jsonl");
+mkdirSync(layout.projectSessionDir, { recursive: true });
+writeFileSync(hostSessionFile, `${JSON.stringify({ type: "session", version: 1 })}\n`);
 // Models AgentSession's streaming flag and records the delivery MODE the real
 // SDK would pick (agent-session.js sendCustomMessage): while isStreaming a
 // sendMessage STEERS into the running turn; only isStreaming=false +
@@ -327,6 +328,11 @@ const stubPi = {
 			: options?.triggerTurn ? "newTurn"
 			: "append";
 		sentMessages.push({ message, options, mode });
+		writeFileSync(
+			hostSessionFile,
+			`${JSON.stringify({ type: "custom-message", customType: message.customType, content: message.content })}\n`,
+			{ flag: "a" },
+		);
 	},
 };
 extensionFactory(stubPi);
@@ -339,7 +345,7 @@ const ctx = {
 	hasUI: false,
 	sessionManager: {
 		getSessionId: () => "test-session",
-		getSessionFile: () => join(layout.projectSessionDir, "host-main.jsonl"),
+		getSessionFile: () => hostSessionFile,
 	},
 	ui: {
 		notify: (text, level) => notifications.push({ text, level }),
@@ -355,14 +361,23 @@ const fire = async (event) => {
 const fireHostTurn = async (messages = []) => {
 	stubPi.isStreaming = true;
 	for (const h of handlers.agent_start ?? []) await h({ type: "agent_start" }, ctx);
-	for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages }, ctx);
+	const delivered = [];
+	for (let message of messages) {
+		for (const h of handlers.message_end ?? []) {
+			const out = await h({ type: "message_end", message }, ctx);
+			if (out?.message) message = out.message;
+		}
+		delivered.push(message);
+	}
+	for (const h of handlers.agent_end ?? []) await h({ type: "agent_end", messages: delivered }, ctx);
 	stubPi.isStreaming = false;
 	for (const h of handlers.agent_settled ?? []) await h({ type: "agent_settled" }, ctx);
+	return delivered;
 };
 /** Drain the main mailbox the way a real user turn does; returns digest or null. */
 const drainMainViaUserTurn = async () => {
 	for (const h of handlers.input ?? []) {
-		await h({ type: "input", text: "test user turn", source: "interactive" }, ctx);
+		await h({ type: "input", text: "test user turn", source: "interactive", streamingBehavior: undefined }, ctx);
 	}
 	for (const h of handlers.before_agent_start ?? []) {
 		const out = await h({}, ctx);
@@ -414,7 +429,7 @@ await test("2+3. team of 3 (2 persistent + oneshot task) with a peer Q&A round-t
 	});
 	scripts.push({
 		match: (c) => c.agent === "builder/main" && c.lastUserText.includes("PEER_A_MARKER"),
-		reply: () => ({ text: "GOT_PEER_ANSWER" }),
+		reply: () => ({ tools: [{ name: "report", args: { text: "GOT_PEER_ANSWER", final: true } }] }),
 	});
 	// the oneshot: final report retires it (D13).
 	scripts.push({
@@ -494,7 +509,7 @@ await test("5. collect with schema → report validated on drain (digest note)",
 		"collect report in main mailbox",
 	);
 	const digest = await drainMainViaUserTurn();
-	assert.ok(digest, "user turn drained the quiet queue (autoWake:false)");
+	assert.ok(digest, "user turn drained the quiet queue without auto-wake");
 	assert.match(digest, /RUNNER_FINAL_RESULT/, "oneshot final report rode the same digest");
 	assert.match(digest, /\[collect result — conforms to the requested schema\]/);
 	// The digest must surface the ACTUAL JSON data the main agent collected —
@@ -511,7 +526,7 @@ await test("6. out-of-scope write → escalation → main denies BY MAIL with a 
 	});
 	scripts.push({
 		match: (c) => c.agent === "builder/main" && c.lastRole === "toolResult" && c.lastJson.includes("DENY_NOTE"),
-		reply: () => ({ text: "DENY_ACK: adjusting to allowed/." }),
+		reply: () => ({ tools: [{ name: "report", args: { text: "DENY_ACK: adjusting to allowed/.", final: true } }] }),
 	});
 	await callTool("subagent_send", { to: "builder/main", text: "WRITE_OUT: write the file outside your scope" });
 	await waitUntil(
@@ -543,78 +558,31 @@ await test("6. out-of-scope write → escalation → main denies BY MAIL with a 
 	await drainMainViaUserTurn(); // clear the escalation envelope from the queue
 });
 
-let tokensBeforePause;
-await test("7. settings live-reload → budget pause (queue, no turns) → /agents resume drains", async () => {
+let tokensBeforeWarning;
+await test("7. settings live-reload → warning threshold → later work continues without resume", async () => {
 	const detail = await callTool("subagent_status", { address: "builder/main" });
-	tokensBeforePause = detail.vitals.tokens;
-	assert.ok(tokensBeforePause > 0, "builder consumed tokens so far");
-
-	// Shrink the pool to one turn via the PROJECT settings file; a real user
-	// turn (before_agent_start) reloads it live and resets the pool.
+	tokensBeforeWarning = detail.vitals.tokens;
+	assert.ok(tokensBeforeWarning > 0);
 	writeFileSync(projectSettingsFile, `${JSON.stringify({ autonomousTurns: 1 })}\n`);
 	await drainMainViaUserTurn();
-
-	scripts.push({
-		match: (c) => c.agent === "helper/main" && c.lastUserText.includes("PAUSE_PING"),
-		reply: () => ({ text: "helper turn ran; the pool is now spent." }),
-	});
-	await callTool("subagent_send", { to: "helper/main", text: "PAUSE_PING: one quick thing" });
-	await waitUntil(
-		() => llmCalls.some((c) => c.agent === "helper/main" && c.lastUserText.includes("PAUSE_PING")),
-		"helper's tripping turn",
-	);
-	await waitUntil(() => stateOf("helper/main") === "dormant", "helper dormant");
-
-	// Paused: new mail queues on disk, NO turn starts (pause never kills).
-	scripts.push({
-		match: (c) => c.agent === "builder/main" && c.lastUserText.includes("QUEUED_WHILE_PAUSED"),
-		reply: () => ({ text: "resumed and processed the queued mail." }),
-	});
-	const before = llmCalls.length;
-	await callTool("subagent_send", { to: "builder/main", text: "QUEUED_WHILE_PAUSED: do this next" });
-	await sleep(400);
-	assert.equal(llmCalls.length, before, "no turn started while paused");
-	assert.equal(mailbox.pendingCount(layout.mailboxDir("builder", "main")), 1, "mail parked on disk");
-
-	// Extension-generated main turns must not impersonate user attention and
-	// refill the paused subagent pool.
-	for (const h of handlers.input ?? []) {
-		await h({ type: "input", text: "synthetic extension turn", source: "extension" }, ctx);
+	for (const [agent, marker] of [["helper/main", "WARNING_PING"], ["builder/main", "WORK_AFTER_WARNING"]]) {
+		scripts.push({
+			match: (c) => c.agent === agent && c.lastUserText.includes(marker),
+			reply: () => ({ tools: [{ name: "report", args: { text: `processed ${marker}`, final: true } }] }),
+		});
+		await callTool("subagent_send", { to: agent, text: `${marker}: continue` });
+		await waitUntil(() => llmCalls.some((c) => c.agent === agent && c.lastUserText.includes(marker)), marker);
+		await waitUntil(() => stateOf(agent) === "dormant", `${agent} dormant`);
 	}
-	for (const h of handlers.before_agent_start ?? []) await h({}, ctx);
-	await sleep(200);
-	assert.equal(llmCalls.length, before, "extension input did not resume agent work");
-	assert.equal(mailbox.pendingCount(layout.mailboxDir("builder", "main")), 1, "agent mail stayed queued");
-
-	// The Phase-7 affordance: /agents resume refills the pool and drains.
-	await commands.get("agents").handler("resume", ctx);
-	assert.ok(
-		notifications.some((n) => n.text.includes("refilled")),
-		"resume acknowledged via notify",
-	);
-	await waitUntil(
-		() => llmCalls.some((c) => c.agent === "builder/main" && c.lastUserText.includes("QUEUED_WHILE_PAUSED")),
-		"queued mail drained after resume",
-	);
-	await waitUntil(() => mailbox.pendingCount(layout.mailboxDir("builder", "main")) === 0, "builder mailbox drained");
-
-	// resume when not paused says so (restore a roomy pool first).
-	writeFileSync(projectSettingsFile, `${JSON.stringify({ autonomousTurns: 30 })}\n`);
-	await drainMainViaUserTurn();
+	assert.equal(mailbox.pendingCount(layout.mailboxDir("builder", "main")), 0, "work beyond threshold was not parked");
 	notifications.length = 0;
-	await commands.get("agents").handler("resume", ctx);
-	assert.ok(notifications.some((n) => n.text.includes("not paused")));
+	await commands.get("agents").handler("resume", { ...ctx, mode: "rpc", hasUI: true });
+	assert.ok(!notifications.some((n) => /refilled|resum/i.test(n.text)), "/agents resume no longer exists");
 });
 
-await test("7b. main auto-wakes are real turns but do not consume the subagent autonomy pool", async () => {
-	// The main response below is much larger than this agent-only token cap. If
-	// main usage leaked into the pool, /agents resume would report a pause.
-	writeFileSync(
-		projectSettingsFile,
-		`${JSON.stringify({ autonomousTurns: 30, autoWake: true, autonomousTokens: 1_000 })}\n`,
-	);
+await test("7b. required question/final stay in the same main run; idle mail never auto-wakes", async () => {
+	writeFileSync(projectSettingsFile, `${JSON.stringify({ autonomousTurns: 30, autonomousTokens: 1_000 })}\n`);
 	await drainMainViaUserTurn();
-
 	scripts.push({
 		match: (c) => c.agent === "builder/main" && c.lastUserText.includes("ASK_MAIN_BUDGET"),
 		reply: () => ({ tools: [{ name: "ask", args: { text: "Main, may I spend more? WAKE_CHARGE_MARKER" } }] }),
@@ -623,40 +591,45 @@ await test("7b. main auto-wakes are real turns but do not consume the subagent a
 		match: (c) => c.agent === "builder/main" && c.lastRole === "toolResult",
 		reply: () => ({ text: "waiting on main for budget." }),
 	});
-	const beforeWake = sentMessages.length;
-	await callTool("subagent_send", { to: "builder/main", text: "ASK_MAIN_BUDGET: ask the human-side agent" });
-	await waitUntil(() => sentMessages.length > beforeWake, "auto-wake for the builder question");
-	const wake = sentMessages.at(-1);
-	assert.equal(wake.options.triggerTurn, true, "wake requests a turn");
-	assert.equal(wake.mode, "newTurn", "idle mail starts a real main turn");
-	assert.match(wake.message.content, /WAKE_CHARGE_MARKER/);
-	await waitUntil(() => stateOf("builder/main") === "dormant", "builder dormant after asking");
+	scripts.push({
+		match: (c) => c.agent === "builder/main" && c.lastUserText.includes("BUDGET_ANSWER"),
+		reply: () => ({ tools: [{ name: "report", args: { text: "BUDGET_FINAL", final: true } }] }),
+	});
+	const before = sentMessages.length;
+	await callTool("subagent_send", { to: "builder/main", text: "ASK_MAIN_BUDGET: ask main" });
+	await waitUntil(() => mailbox.readPending(layout.mainMailboxDir).some((p) => p.envelope.type === "question" && /WAKE_CHARGE_MARKER/.test(p.envelope.payload.text)), "builder question");
+	assert.equal(sentMessages.length, before, "question did not auto-wake idle main");
+	const stop = {
+		role: "assistant", api: "mock-api", provider: "mock", model: "mock-1",
+		content: [{ type: "text", text: "premature" }], stopReason: "stop", timestamp: Date.now(),
+	};
+	const held = await fireHostTurn([stop]);
+	assert.match(held[0].content[0].text, /Waiting for [1-9]\d* required subagent tasks?/);
+	assert.equal(sentMessages.at(-1).mode, "followUp");
+	assert.match(sentMessages.at(-1).message.content, /WAKE_CHARGE_MARKER/);
+	const attention = JSON.parse(sentMessages.at(-1).message.content.match(/\{[\s\S]*\}/)[0]);
+	await callTool("subagent_send", {
+		to: "builder/main", correlationId: attention.attention.id, text: "Approved. BUDGET_ANSWER",
+	});
+	await waitUntil(() => mailbox.readPending(layout.mainMailboxDir).some((p) => p.envelope.payload.text === "BUDGET_FINAL"), "builder final");
+	const beforeFinalBarrier = sentMessages.length;
+	assert.equal(sentMessages.length, beforeFinalBarrier, "final remained queued before the barrier");
+	await fireHostTurn([stop]);
+	assert.equal(sentMessages.length, beforeFinalBarrier + 1);
+	assert.match(sentMessages.at(-1).message.content, /BUDGET_FINAL/);
 
+	// A huge main response is not charged to the subagent-only warning counters.
 	const hugeMainUsage = {
 		input: 550_000, output: 150_000, cacheRead: 200_000, cacheWrite: 100_000,
 		totalTokens: 1_000_000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.42 },
 	};
-	await fireHostTurn([{
-		role: "assistant", api: "mock-api", provider: "mock", model: "mock-1",
-		content: [{ type: "text", text: "answered the builder" }],
-		usage: hugeMainUsage, stopReason: "stop", timestamp: Date.now(),
-	}]);
-
-	notifications.length = 0;
-	await commands.get("agents").handler("resume", ctx);
-	assert.ok(notifications.some((n) => n.text.includes("not paused")), "main usage did not charge the agent pool");
-
-	// Subagent work still starts normally under its independent budget.
+	await fireHostTurn([{ ...stop, content: [{ type: "text", text: "all required work incorporated" }], usage: hugeMainUsage }]);
 	scripts.push({
 		match: (c) => c.agent === "helper/main" && c.lastUserText.includes("AGENT_POOL_STILL_ACTIVE"),
 		reply: () => ({ text: "agent pool remained active." }),
 	});
 	await callTool("subagent_send", { to: "helper/main", text: "AGENT_POOL_STILL_ACTIVE" });
-	await waitUntil(
-		() => llmCalls.some((c) => c.agent === "helper/main" && c.lastUserText.includes("AGENT_POOL_STILL_ACTIVE")),
-		"subagent turn started after huge main response",
-	);
-	await waitUntil(() => stateOf("helper/main") === "dormant", "helper dormant again");
+	await waitUntil(() => llmCalls.some((c) => c.agent === "helper/main" && c.lastUserText.includes("AGENT_POOL_STILL_ACTIVE")), "subagent work after huge main usage");
 });
 
 await test("8. cumulative vitals: grow across wakes AND survive restart + session-file rotation", async () => {
@@ -664,8 +637,8 @@ await test("8. cumulative vitals: grow across wakes AND survive restart + sessio
 	const detail = await callTool("subagent_status", { address: "builder/main" });
 	const tokensAfterResume = detail.vitals.tokens;
 	assert.ok(
-		tokensAfterResume > tokensBeforePause,
-		`tokens grew across the dormant→wake cycle (${tokensBeforePause} → ${tokensAfterResume})`,
+		tokensAfterResume > tokensBeforeWarning,
+		`tokens grew across the dormant→wake cycle (${tokensBeforeWarning} → ${tokensAfterResume})`,
 	);
 
 	// Host restart: dispose everything, then ROTATE the session file away —

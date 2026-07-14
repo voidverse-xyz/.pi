@@ -18,6 +18,7 @@ const DEFAULT_MODE: SafetyMode = "max";
 const STATUS_KEY = "safety";
 const CONFIG_PATH = join(getAgentDir(), "safety.json");
 const MAX_CLASSIFIED_COMMAND_LENGTH = 256 * 1024;
+const ICON_SHIELD = ""; // nf-fa-shield — text always names the feature and state
 
 const MODE_CATEGORIES: Record<SafetyMode, ReadonlySet<Category>> = {
 	off: new Set(),
@@ -61,8 +62,8 @@ function saveMode(mode: SafetyMode): string | null {
 
 function updateStatus(ctx: ExtensionContext, mode: SafetyMode): void {
 	if (ctx.mode !== "tui") return;
-	const color = mode === "max" ? "success" : mode === "on" ? "warning" : "error";
-	ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(color, `⛨ ${mode}`));
+	const color = mode === "off" ? "dim" : mode === "on" ? "text" : "error";
+	ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(color, `${ICON_SHIELD} ${mode}`));
 }
 
 export default function safetyExtension(pi: ExtensionAPI): void {

@@ -1,0 +1,20 @@
+{
+    "id": "en",
+    "name": "English",
+    "dir": "ltr",
+    "locales": ["en-US", "en-GB"],
+    "messages": {
+        "common": {
+            "save": "Save",
+            "cancel": "Cancel"
+        },
+        "welcome": "Welcome, {{name}}.",
+        "inbox": {
+            "unread": {
+                "=0": "No unread messages",
+                "one": "{{count}} unread message",
+                "other": "{{count}} unread messages"
+            }
+        }
+    }
+}

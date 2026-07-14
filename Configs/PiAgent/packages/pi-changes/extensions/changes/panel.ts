@@ -181,7 +181,7 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 			}
 		}
 		if (answer.status === "running") {
-			out.push(pad(` ${theme.fg("dim", "▌ streaming…")}`, innerW));
+			out.push(pad(` ${theme.fg("dim", "󰔟 streaming…")}`, innerW)); // nf-md-loading
 		} else if (answer.usageLine) {
 			out.push(pad("", innerW));
 			out.push(pad(` ${theme.fg("dim", answer.usageLine)}`, innerW));

@@ -1,5 +1,6 @@
 ---
 name: general-planning
+plan-template: true
 description: >-
   How to produce a genuinely good plan for any problem, in any domain, on any
   platform — merging the two halves of plan quality: decisive economy (commit to

@@ -4,13 +4,12 @@
  * Drives the four tui/ modules with fake core state and asserts rendered
  * lines and input handling:
  *  (w) widget: segment hiding (zero agents / zero segments), budget segment
- *      only >50% consumed, paused-banner SGR band correctness (ONE bg+fg
- *      pair, plain interior, single trailing reset — no nested resets).
+ *      only >50% consumed and never acts as an execution gate.
  *  (p) picker: team-grouped ordering, state glyphs, unread badge, collapsed/
  *      expanded .archive section; keys ↑↓/Enter/x/X-confirm/Esc.
- *  (v) viewer: header-strip format, wake-digest → compact 📨 entries
+ *  (v) viewer: header-strip format, wake-digest → compact 󰇮 entries
  *      (round-trip through the REAL composeWakeDigest), mail-tool calls →
- *      outbound 📨 entries, incremental tail reader, Enter=sendAsUser
+ *      outbound 󰇮 entries, incremental tail reader, Enter=sendAsUser
  *      (Editor onSubmit quirk), alt+Enter=steer, x=interrupt, Esc/alt+j.
  *  (m) escalation modal: spec lines, a/d/D-with-note/v/Esc key handling.
  *
@@ -58,13 +57,9 @@ async function test(name, fn) {
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, "");
 
-// Fake theme: distinguishable fg wraps + raw bg/fg SGR accessors for bands.
-const FG = "\x1b[38;2;220;220;40m";
-const BG = "\x1b[48;2;60;0;0m";
+// Fake theme: distinguishable foreground wrapping.
 const fakeTheme = {
 	fg: (_color, text) => `\x1b[38;5;245m${text}\x1b[39m`,
-	getFgAnsi: () => FG,
-	getBgAnsi: () => BG,
 };
 const plainTheme = { ...fakeTheme, fg: (_c, t) => t };
 const fakeTui = { requestRender() {}, terminal: { rows: 30, columns: 100 } };
@@ -110,61 +105,6 @@ await test("budget segment shows the closer axis (tokens)", () => {
 	);
 	assert.equal(text, "󰔛 budget 300k/500k");
 });
-await test("production status uses pause icon only after tripping and includes the remedy", () => {
-	const active = snap({ agentCount: 1, running: 1, tokensUsed: 300000, tokensBudget: 500000, turnsBudget: 40 });
-	assert.equal(widget.widgetStatusText(active), "󰚩 1 running · 󰔛 budget 300k/500k");
-	const paused = snap({ agentCount: 1, paused: true, trippedBy: "tokens", tokensUsed: 512000, tokensBudget: 500000, queuedMail: 2 });
-	assert.equal(widget.widgetStatusText(paused), "󰚩  paused · tokens 512k/500k · 󰇮 2 queued · /agents resume");
-});
-await test("paused banner: one bg+fg band, plain interior, single trailing reset", () => {
-	const lines = widget.renderWidgetLines(
-		snap({ agentCount: 2, paused: true, trippedBy: "turns", turnsUsed: 40, turnsBudget: 40, queuedMail: 5, unread: 2 }),
-		fakeTheme,
-		100,
-	);
-	assert.equal(lines.length, 1);
-	const banner = lines[0];
-	assert.ok(banner.startsWith(BG + FG), "band opens with ONE bg+fg pair");
-	assert.ok(banner.endsWith("\x1b[0m"), "band ends with the reset");
-	const interior = banner.slice((BG + FG).length, -"\x1b[0m".length);
-	assert.ok(!interior.includes("\x1b"), "NO nested SGR inside the band (the hard-won constraint)");
-	assert.match(interior, / subagents paused/);
-	assert.match(interior, /turns 40\/40/);
-	assert.match(interior, /󰇮 7 queued/);
-});
-await test("paused banner: tokens trip variant", () => {
-	const lines = widget.renderWidgetLines(
-		snap({ agentCount: 1, paused: true, trippedBy: "tokens", tokensUsed: 512000, tokensBudget: 500000 }),
-		fakeTheme,
-		200,
-	);
-	assert.match(strip(lines[0]), /tokens 512k\/500k/);
-});
-await test("paused banner fits the terminal exactly at 40/80/120 (host-crash guard)", () => {
-	// pi-tui's non-overlay render path THROWS on any line wider than the
-	// terminal ("Rendered line N exceeds terminal width") and stops the whole
-	// host session — the banner must clip, and clipping must not break the
-	// single bg+fg band (no nested SGR inside).
-	const pausedSnap = snap({
-		agentCount: 2,
-		paused: true,
-		trippedBy: "turns",
-		turnsUsed: 40,
-		turnsBudget: 40,
-		queuedMail: 5,
-		unread: 2,
-	});
-	for (const width of [40, 80, 120]) {
-		const lines = widget.renderWidgetLines(pausedSnap, fakeTheme, width);
-		assert.equal(lines.length, 1);
-		const banner = lines[0];
-		assert.equal(visibleWidth(banner), width, `banner is exactly ${width} cols wide`);
-		assert.ok(banner.startsWith(BG + FG), "band still opens with ONE bg+fg pair");
-		assert.ok(banner.endsWith("\x1b[0m"), "band still ends with the reset");
-		const interior = banner.slice((BG + FG).length, -"\x1b[0m".length);
-		assert.ok(!interior.includes("\x1b"), "truncation left NO SGR inside the band");
-	}
-});
 await test("busy segment line never exceeds a narrow terminal", () => {
 	const busy = snap({ agentCount: 9, running: 5, waiting: 3, unread: 12, turnsUsed: 30, turnsBudget: 40 });
 	for (const width of [40, 80]) {
@@ -198,11 +138,11 @@ await test("rows grouped by team then (solo); collapsed .archive at the bottom",
 	const texts = rows.map(picker.pickerRowText);
 	assert.deepEqual(texts, [
 		"billing",
-		"  ◐ refactorer/api  ·  queued  ·  ctx 10%",
-		"  ● refactorer/auth  ·  running  ·  ctx 61%  ·  󰇮 2",
+		"   refactorer/api  ·  queued  ·  ctx 10%",
+		"   refactorer/auth  ·  running  ·  ctx 61%  ·  󰇮 2",
 		"(solo)",
-		"  ○ docs-keeper/main  ·  dormant  ·  ctx 5%",
-		"  ⚠ tester/main  ·  waiting  ·  ctx 30%",
+		"   docs-keeper/main  ·  dormant  ·  ctx 5%",
+		"   tester/main  ·  waiting  ·  ctx 30%",
 		"▸ .archive (1)",
 	]);
 });
@@ -210,10 +150,10 @@ await test("expanded archive lists retired agents", () => {
 	const rows = picker.buildPickerRows(roster, archivedList, { archiveExpanded: true, unread });
 	const texts = rows.map(picker.pickerRowText);
 	assert.equal(texts[texts.length - 2], "▾ .archive (1)");
-	assert.equal(texts[texts.length - 1], "  ✝ oneshot/tmp-abc · retired 2026-07-08");
+	assert.equal(texts[texts.length - 1], "   oneshot/tmp-abc · retired 2026-07-08");
 });
-await test("state glyphs match the spec (● ◐ ○ ⚠)", () => {
-	assert.deepEqual(picker.STATE_GLYPHS, { running: "●", queued: "◐", dormant: "○", waiting: "⚠" });
+await test("state glyphs use Nerd Font icons with distinct semantics", () => {
+	assert.deepEqual(picker.STATE_GLYPHS, { running: "", queued: "", dormant: "", waiting: "" });
 });
 
 function fakePickerCore(calls) {
@@ -330,7 +270,7 @@ await test("picker render: selected marker + hint line", async () => {
 	});
 	await tick();
 	const lines = component.render(90).map(strip);
-	assert.ok(lines.some((line) => line.startsWith("→   ◐ refactorer/api")), "selected row marked");
+	assert.ok(lines.some((line) => line.startsWith("→    refactorer/api")), "selected row marked");
 	assert.ok(lines.some((line) => /enter view · x interrupt · X retire/.test(line)));
 	component.dispose();
 });
@@ -391,7 +331,7 @@ await test("header strip format matches the spec example (team slot, D12)", () =
 		cost: 0.84,
 		turns: 9,
 	});
-	assert.equal(text, "refactorer/auth · billing-refactor · running · ctx 61% · 142k · $0.84 · ↻9");
+	assert.equal(text, "refactorer/auth · billing-refactor · running · ctx 61% · 142k · $0.84 ·  9");
 });
 await test("header strip omits the team slot for solo agents", () => {
 	const text = viewer.headerStripText({
@@ -403,9 +343,9 @@ await test("header strip omits the team slot for solo agents", () => {
 		cost: 0.12,
 		turns: 3,
 	});
-	assert.equal(text, "worker/main · running · ctx 42% · 4k · $0.12 · ↻3");
+	assert.equal(text, "worker/main · running · ctx 42% · 4k · $0.12 ·  3");
 });
-await test("wake digest round-trips to compact inbound 📨 entries", () => {
+await test("wake digest round-trips to compact inbound Nerd Font mail entries", () => {
 	const q = makeEnvelope({ from: "refactorer/api", to: "refactorer/auth", type: "question", text: "Which endpoint?" });
 	const r = makeEnvelope({ from: "main", to: "refactorer/auth", type: "message", text: "carry on\nsecond line" });
 	const digest = composeWakeDigest({
@@ -420,7 +360,7 @@ await test("wake digest round-trips to compact inbound 📨 entries", () => {
 	assert.equal(entries.length, 2);
 	const question = entries.find((e) => e.type === "question");
 	assert.deepEqual(question, { direction: "in", peer: "refactorer/api", type: "question", preview: "Which endpoint?" });
-	assert.equal(viewer.envelopeEntryText(question), '📨 ← refactorer/api: question "Which endpoint?"');
+	assert.equal(viewer.envelopeEntryText(question), '󰇮 ← refactorer/api: question "Which endpoint?"');
 	const message = entries.find((e) => e.type === "message");
 	assert.equal(message.preview, "carry on", "preview is the first line only");
 });
@@ -434,11 +374,11 @@ await test("answer envelopes parse from the answers section", () => {
 	const entries = viewer.parseDigestEntries(digest);
 	assert.deepEqual(entries, [{ direction: "in", peer: "refactorer/api", type: "answer", preview: "RFC7807" }]);
 });
-await test("mail-tool calls become outbound 📨 entries", () => {
+await test("mail-tool calls become outbound Nerd Font mail entries", () => {
 	const send = viewer.envelopeEntryForToolCall("send_message", { to: "refactorer/api", type: "question", text: "hi\nthere" });
-	assert.equal(viewer.envelopeEntryText(send), '📨 → refactorer/api: question "hi"');
+	assert.equal(viewer.envelopeEntryText(send), '󰇮 → refactorer/api: question "hi"');
 	const ask = viewer.envelopeEntryForToolCall("ask", { text: "which branch?" });
-	assert.equal(viewer.envelopeEntryText(ask), '📨 → main: question "which branch?"');
+	assert.equal(viewer.envelopeEntryText(ask), '󰇮 → main: question "which branch?"');
 	const report = viewer.envelopeEntryForToolCall("report", { text: "done" });
 	assert.equal(report.type, "report");
 	assert.equal(viewer.envelopeEntryForToolCall("bash", { command: "ls" }), null);
@@ -540,9 +480,9 @@ await test("viewer renders header, Pi transcript, and compact envelope entries",
 	// The header's second slot is the TEAM off the real AgentDetail.teams
 	// field (D12) — with purview at its production value (= id), a purview
 	// leak would render `worker/main · running` with no team, failing this.
-	assert.match(text, /worker\/main · billing-refactor · running · ctx 42% · 4k · \$0\.12 · ↻3/);
-	assert.match(text, /📨 ← main: question "Need the answer"/, "inbound digest collapsed to a compact entry");
-	assert.match(text, /📨 → main: report "progress 50%"/, "mail tool call is an envelope entry, not a tool box");
+	assert.match(text, /worker\/main · billing-refactor · running · ctx 42% · 4k · \$0\.12 ·  3/);
+	assert.match(text, /󰇮 ← main: question "Need the answer"/, "inbound digest collapsed to a compact entry");
+	assert.match(text, /󰇮 → main: report "progress 50%"/, "mail tool call is an envelope entry, not a tool box");
 	assert.match(text, /On it — replying now\./, "assistant text through Pi's own component");
 	assert.match(text, /echo hello/, "non-mail tool call rendered as a tool execution");
 	assert.match(text, /enter mail · alt\+enter steer/, "superuser input hints");
@@ -684,7 +624,7 @@ const record = {
 
 await test("modal body matches the spec shape", () => {
 	assert.deepEqual(modal.escalationLines(record), [
-		"⚠ refactorer/auth requests approval",
+		" refactorer/auth requests approval",
 		"  bash: git push origin main",
 		"  blocked by: writePaths (mutation outside src/auth/**)",
 		"  [a]pprove once  [d]eny  [D]eny with note  [v]iew session",
@@ -722,7 +662,7 @@ await test("queued count renders behind the prompt", () => {
 	const component = modal.createEscalationModal({ record, queuedBehind: 2, tui: fakeTui, theme: plainTheme, onDone: () => {} });
 	const text = component.render(90).map(strip).join("\n");
 	assert.match(text, /\+2 more pending/);
-	assert.match(text, /⚠ refactorer\/auth requests approval/);
+	assert.match(text, / refactorer\/auth requests approval/);
 });
 // The modal replaces the main editor so it stays adjacent to the input area.
 await test("modal render: editor-local sanity at 80/120 (spec lines, width-safe)", () => {
@@ -737,7 +677,7 @@ await test("modal render: editor-local sanity at 80/120 (spec lines, width-safe)
 		const raw = component.render(width);
 		const lines = raw.map(strip);
 		assert.match(lines[0], /─/, "top warning divider");
-		assert.ok(/⚠ refactorer\/auth requests approval/.test(lines[1]), "prompt header follows divider");
+		assert.ok(/ refactorer\/auth requests approval/.test(lines[1]), "prompt header follows divider");
 		assert.match(lines[lines.length - 1], /─/, "bottom warning divider");
 		assert.ok(lines.some((line) => /a approve once/.test(line)), "action line");
 		assert.ok(lines.some((line) => /\+3 more pending/.test(line)), "queued count");
