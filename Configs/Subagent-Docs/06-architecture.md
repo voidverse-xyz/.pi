@@ -58,7 +58,9 @@ packages/pi-agents/
    the matrix IS the API.
 2. store/layout.ts owns every path. Project resources are shared; every mutable
    path is below `owners/<main-session-id>` (D25). A host-scope lease gates all
-   mutation/consumption, while per-agent run-owner markers remain defense in depth.
+   mutation/consumption, while per-agent run-owner markers remain defense in depth;
+   both fence PID reuse with process-start identity. Retirement archives memory and
+   scrubs teams before deregistration makes an address reusable.
 3. Pure modules (unit-testable without a live agent): digest, paths, hops, parse,
    compose. The e2e harness covers wiring only.
 

@@ -40,18 +40,19 @@
  * helpers.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWriteJson, withFileLockSync } from "../store/registry.ts";
 import {
 	attemptMarkerOf,
+	awaitAnchorsFileOf,
 	collectRequestsFileOf,
 	deliveringMetaOf,
 	mailboxDeliveringDirOf,
 	mailboxDoneDirOf,
 	sentQuestionsFileOf,
 } from "../store/layout.ts";
-import { type Envelope, validateEnvelope } from "./envelope.ts";
+import { type Envelope, ENVELOPE_ID_RE, validateEnvelope } from "./envelope.ts";
 
 /** Envelope filename shape: msg_<ulid>.json (envelope ids double as names). */
 const ENVELOPE_FILE_RE = /^msg_[0-9A-HJKMNP-TV-Z]{26}\.json$/;
@@ -78,6 +79,12 @@ export interface PendingEnvelope {
 	redelivered: boolean;
 }
 
+export interface StoredHostEnvelope {
+	envelope: Envelope;
+	file: string;
+	state: "delivering" | "done";
+}
+
 /**
  * All unprocessed envelopes in ulid (= filename) order. Files that fail to
  * parse or validate are QUARANTINED into <mailboxDir>/.corrupt/ (kept for
@@ -88,16 +95,34 @@ export interface PendingEnvelope {
  * loop that starved the host event loop (C1 fix).
  */
 export function readPending(mailboxDir: string): PendingEnvelope[] {
-	if (!existsSync(mailboxDir)) return [];
 	const pending: PendingEnvelope[] = [];
-	const names = readdirSync(mailboxDir)
-		.filter((name) => ENVELOPE_FILE_RE.test(name))
-		.sort();
+	let names: string[];
+	try {
+		names = readdirSync(mailboxDir)
+			.filter((name) => ENVELOPE_FILE_RE.test(name))
+			.sort();
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return [];
+		throw error;
+	}
 	for (const name of names) {
 		const file = join(mailboxDir, name);
+		let raw: string;
+		try {
+			raw = readFileSync(file, "utf8");
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT" || code === "ENOTDIR") continue; // claimed/retired after readdir
+			if (code === "EISDIR") {
+				quarantineEnvelopeFile(mailboxDir, name);
+				continue;
+			}
+			throw error; // EIO/EMFILE/EACCES: retry; never corrupt valid durable mail
+		}
 		let envelope: Envelope;
 		try {
-			envelope = JSON.parse(readFileSync(file, "utf8")) as Envelope;
+			envelope = JSON.parse(raw) as Envelope;
 		} catch {
 			quarantineEnvelopeFile(mailboxDir, name);
 			continue;
@@ -121,6 +146,100 @@ export function readPending(mailboxDir: string): PendingEnvelope[] {
 }
 
 /**
+ * Read already-claimed host mail for durable await/retry. Unlike pending mail,
+ * invalid files are left in place for reconciliation/GC; operational I/O
+ * failures propagate so an await never mistakes uncertainty for absence.
+ */
+export function readStoredHostEnvelopes(mailboxDir: string): StoredHostEnvelope[] {
+	const out: StoredHostEnvelope[] = [];
+	for (const [state, dir] of [
+		["delivering", mailboxDeliveringDirOf(mailboxDir)],
+		["done", mailboxDoneDirOf(mailboxDir)],
+	] as const) {
+		let names: string[];
+		try {
+			names = readdirSync(dir).filter((name) => ENVELOPE_FILE_RE.test(name)).sort();
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT" || code === "ENOTDIR") continue;
+			throw error;
+		}
+		for (const name of names) {
+			const file = join(dir, name);
+			let raw: string;
+			try {
+				raw = readFileSync(file, "utf8");
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code === "ENOENT" || code === "ENOTDIR") continue;
+				throw error;
+			}
+			try {
+				const envelope = JSON.parse(raw) as Envelope;
+				if (validateEnvelope(envelope).length === 0 && name === `${envelope.id}.json`) {
+					out.push({ envelope, file, state });
+				}
+			} catch {
+				// Reconciliation owns malformed parked mail; done mail is retained
+				// only for diagnostics/GC. Neither is evidence for await.
+			}
+		}
+	}
+	return out.sort((a, b) => a.envelope.id.localeCompare(b.envelope.id));
+}
+
+/**
+ * Register another durable host record that may prove delivery of a parked
+ * envelope. This is used when await observes a report already claimed by the
+ * ordinary main digest: either that digest OR the await tool result may then
+ * finalize the same envelope without requeueing it after a crash.
+ */
+export function addHostDeliveryMarker(
+	mailboxDir: string,
+	envelopeId: string,
+	marker: string,
+): "delivering" | "done" | null {
+	const existsStrict = (file: string): boolean => {
+		try {
+			lstatSync(file);
+			return true;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ENOENT" || code === "ENOTDIR") return false;
+			throw error;
+		}
+	};
+	return withFileLockSync(join(mailboxDir, ".host-delivery"), () => {
+		const done = join(mailboxDoneDirOf(mailboxDir), `${envelopeId}.json`);
+		if (existsStrict(done)) return "done";
+		const parked = join(mailboxDeliveringDirOf(mailboxDir), `${envelopeId}.json`);
+		if (!existsStrict(parked)) return null;
+		const metaFile = deliveringMetaOf(parked);
+		const meta = JSON.parse(readFileSync(metaFile, "utf8")) as {
+			sessionFile?: unknown;
+			marker?: unknown;
+			markers?: unknown;
+			recordedAt?: unknown;
+		};
+		if (typeof meta.sessionFile !== "string" || meta.sessionFile.length === 0) {
+			throw new Error(`Host-delivery metadata for ${envelopeId} has no session file.`);
+		}
+		const markers = new Set<string>();
+		if (typeof meta.marker === "string" && meta.marker.length > 0) markers.add(meta.marker);
+		if (Array.isArray(meta.markers)) {
+			for (const value of meta.markers) if (typeof value === "string" && value.length > 0) markers.add(value);
+		}
+		markers.add(marker);
+		atomicWriteJson(metaFile, {
+			sessionFile: meta.sessionFile,
+			recordedAt: typeof meta.recordedAt === "string" ? meta.recordedAt : new Date().toISOString(),
+			markers: [...markers].sort(),
+		});
+		return "delivering";
+	});
+}
+
+/**
  * Move an unparsable/invalid envelope file to <mailboxDir>/.corrupt/ so it no
  * longer counts as pending but stays on disk for debugging. Best-effort: any
  * fs failure here must never break mail reading. (Path computed inline — a
@@ -141,8 +260,16 @@ function quarantineEnvelopeFile(mailboxDir: string, name: string): void {
 
 /** Unprocessed-envelope count (📬 widget, quiet-queue accounting). */
 export function pendingCount(mailboxDir: string): number {
-	if (!existsSync(mailboxDir)) return 0;
-	return readdirSync(mailboxDir).filter((name) => ENVELOPE_FILE_RE.test(name)).length;
+	try {
+		return readdirSync(mailboxDir).filter((name) => ENVELOPE_FILE_RE.test(name)).length;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		// Missing/not-a-directory is the expected concurrent retirement rename.
+		// Other failures are transient/operational: callers must retry or surface
+		// them, never misclassify durable queued mail as an empty mailbox.
+		if (code === "ENOENT" || code === "ENOTDIR") return 0;
+		throw error;
+	}
 }
 
 /**
@@ -238,6 +365,70 @@ export function claimPendingForHost(
 	});
 }
 
+function cancelHostDeliveryUnlocked(mailboxDir: string, envelopeIds: Iterable<string>): void {
+	const deliveringDir = mailboxDeliveringDirOf(mailboxDir);
+	const doneDir = mailboxDoneDirOf(mailboxDir);
+	mkdirSync(doneDir, { recursive: true });
+	for (const id of envelopeIds) {
+		const pending = join(mailboxDir, `${id}.json`);
+		const parked = join(deliveringDir, `${id}.json`);
+		const done = join(doneDir, `${id}.json`);
+		const source = existsSync(pending) ? pending : existsSync(parked) ? parked : null;
+		if (source !== null) {
+			if (existsSync(done)) rmSync(source, { force: true });
+			else renameSync(source, done);
+		}
+		rmSync(attemptMarkerOf(pending), { force: true });
+		rmSync(deliveringMetaOf(parked), { force: true });
+	}
+}
+
+/**
+ * Permanently settle host-bound envelopes that became obsolete while pending or
+ * parked for JSONL verification (for example, a cancelled escalation). The
+ * host-delivery lock makes this idempotent against digest/await claiming.
+ */
+export function cancelHostDelivery(mailboxDir: string, envelopeIds: string[]): void {
+	withFileLockSync(join(mailboxDir, ".host-delivery"), () => {
+		cancelHostDeliveryUnlocked(mailboxDir, envelopeIds);
+	});
+}
+
+/**
+ * Find and settle matching pending OR host-parked envelopes atomically. This is
+ * the crash-recovery path for records whose envelope id was never persisted.
+ */
+export function cancelHostDeliveriesWhere(
+	mailboxDir: string,
+	predicate: (envelope: Envelope) => boolean,
+): string[] {
+	return withFileLockSync(join(mailboxDir, ".host-delivery"), () => {
+		const ids = new Set(
+			readPending(mailboxDir)
+				.filter(({ envelope }) => predicate(envelope))
+				.map(({ envelope }) => envelope.id),
+		);
+		const deliveringDir = mailboxDeliveringDirOf(mailboxDir);
+		try {
+			for (const name of readdirSync(deliveringDir)) {
+				if (!ENVELOPE_FILE_RE.test(name)) continue;
+				try {
+					const envelope = JSON.parse(readFileSync(join(deliveringDir, name), "utf8")) as Envelope;
+					if (validateEnvelope(envelope).length === 0 && name === `${envelope.id}.json` && predicate(envelope)) {
+						ids.add(envelope.id);
+					}
+				} catch {
+					// Corrupt parked mail is left for ordinary reconciliation/GC.
+				}
+			}
+		} catch {
+			// No delivering directory.
+		}
+		cancelHostDeliveryUnlocked(mailboxDir, ids);
+		return [...ids].sort();
+	});
+}
+
 /** Requeue a failed-to-render host claim without waiting for process restart. */
 export function requeueHostClaim(mailboxDir: string, envelopeIds: string[]): void {
 	withFileLockSync(join(mailboxDir, ".host-delivery"), () => {
@@ -249,6 +440,21 @@ export function requeueHostClaim(mailboxDir: string, envelopeIds: string[]): voi
 			renameSync(parked, restored);
 			writeFileSync(attemptMarkerOf(restored), "", "utf8");
 			rmSync(deliveringMetaOf(parked), { force: true });
+		}
+	});
+}
+
+/** Requeue a no-session claim that was provisionally finalized to `.done/`. */
+export function requeueDoneHostClaim(mailboxDir: string, envelopeIds: string[]): void {
+	withFileLockSync(join(mailboxDir, ".host-delivery"), () => {
+		const doneDir = mailboxDoneDirOf(mailboxDir);
+		for (const id of envelopeIds) {
+			if (!ENVELOPE_ID_RE.test(id)) continue;
+			const done = join(doneDir, `${id}.json`);
+			if (!existsSync(done)) continue;
+			const restored = join(mailboxDir, `${id}.json`);
+			renameSync(done, restored);
+			writeFileSync(attemptMarkerOf(restored), "", "utf8");
 		}
 	});
 }
@@ -282,35 +488,87 @@ export interface ReconcileHostDeliveryOptions {
 
 /**
  * Settle the .delivering/ state against the source of truth — the recorded
- * main session JSONL files. Delivered (id + marker found on one line) →
- * finalize to .done/. Not delivered → requeue as pending (with an .attempt
+ * main session JSONL files. Delivered (a complete parsed custom-message record
+ * with exact marker and id in its content) → finalize to .done/. Not delivered
+ * → requeue as pending (with an .attempt
  * marker so the digest labels the re-delivery) or leave in flight, per
  * options. Orphan .meta files (crash between meta write and move) are swept.
  * Best-effort per envelope: one unreadable file never wedges the mailbox.
  */
+function isCompleteHostDeliveryRecord(line: string, envelopeId: string, marker: string): boolean {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(line);
+	} catch {
+		return false; // truncated/partial final JSONL line is not durable delivery
+	}
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return false;
+	const outer = parsed as Record<string, unknown>;
+	const candidate =
+		outer.type === "message" && typeof outer.message === "object" && outer.message !== null
+			? outer.message as Record<string, unknown>
+			: outer;
+	if (candidate.type === "custom_message" || candidate.type === "custom-message") {
+		const customType = candidate.customType;
+		return (
+			typeof customType === "string" &&
+			(customType === marker || customType.startsWith(`${marker}-`)) &&
+			typeof candidate.content === "string" &&
+			candidate.content.includes(envelopeId)
+		);
+	}
+	if (candidate.role === "toolResult" && candidate.toolName === marker) {
+		try {
+			const content = typeof candidate.content === "string"
+				? candidate.content
+				: JSON.stringify(candidate.content);
+			return typeof content === "string" && content.includes(envelopeId);
+		} catch {
+			return false;
+		}
+	}
+	return false;
+}
+
 export function reconcileHostDelivery(
+	mailboxDir: string,
+	options: ReconcileHostDeliveryOptions,
+): HostDeliveryReconcile {
+	return withFileLockSync(join(mailboxDir, ".host-delivery"), () =>
+		reconcileHostDeliveryUnlocked(mailboxDir, options));
+}
+
+function reconcileHostDeliveryUnlocked(
 	mailboxDir: string,
 	options: ReconcileHostDeliveryOptions,
 ): HostDeliveryReconcile {
 	const out: HostDeliveryReconcile = { finalized: [], requeued: [], inFlight: [] };
 	const deliveringDir = mailboxDeliveringDirOf(mailboxDir);
-	if (!existsSync(deliveringDir)) return out;
 	let names: string[];
 	try {
 		names = readdirSync(deliveringDir).sort();
-	} catch {
-		return out;
+	} catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return out;
+		throw error;
 	}
-	const sessionCache = new Map<string, string[] | null>(); // file → lines (null = unreadable)
-	const readSessionLines = (file: string): string[] | null => {
+	type SessionRead = { lines: string[] | null; uncertain: boolean };
+	const sessionCache = new Map<string, SessionRead>();
+	const readSessionLines = (file: string): SessionRead => {
 		if (!sessionCache.has(file)) {
 			try {
-				sessionCache.set(file, readFileSync(file, "utf8").split("\n"));
-			} catch {
-				sessionCache.set(file, null);
+				sessionCache.set(file, { lines: readFileSync(file, "utf8").split("\n"), uncertain: false });
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				// A missing target means no append could have landed there. Any
+				// other I/O failure is uncertainty, never evidence of non-delivery.
+				sessionCache.set(file, {
+					lines: null,
+					uncertain: code !== "ENOENT" && code !== "ENOTDIR",
+				});
 			}
 		}
-		return sessionCache.get(file) ?? null;
+		return sessionCache.get(file)!;
 	};
 
 	const envelopeNames = names.filter((name) => ENVELOPE_FILE_RE.test(name));
@@ -328,19 +586,42 @@ export function reconcileHostDelivery(
 		const parked = join(deliveringDir, name);
 		const metaFile = deliveringMetaOf(parked);
 		let sessionFile: string | null = null;
-		let marker = options.marker;
+		let metaUncertain = false;
+		const markers = new Set<string>();
 		try {
 			const meta = JSON.parse(readFileSync(metaFile, "utf8")) as {
 				sessionFile?: unknown;
 				marker?: unknown;
+				markers?: unknown;
 			};
 			if (typeof meta.sessionFile === "string") sessionFile = meta.sessionFile;
-			if (typeof meta.marker === "string" && meta.marker.length > 0) marker = meta.marker;
-		} catch {
-			// Missing/corrupt meta — treat as unverifiable (undelivered).
+			if (typeof meta.marker === "string" && meta.marker.length > 0) markers.add(meta.marker);
+			if (Array.isArray(meta.markers)) {
+				for (const marker of meta.markers) {
+					if (typeof marker === "string" && marker.length > 0) markers.add(marker);
+				}
+			}
+		} catch (error) {
+			// Missing/corrupt metadata is a crash artifact and therefore
+			// unverifiable. Operational read failures are different: fail closed.
+			if (!(error instanceof SyntaxError)) {
+				const code = (error as NodeJS.ErrnoException).code;
+				metaUncertain = code !== "ENOENT" && code !== "ENOTDIR";
+			}
 		}
-		const lines = sessionFile !== null ? readSessionLines(sessionFile) : null;
-		const delivered = lines !== null && lines.some((line) => line.includes(id) && line.includes(marker));
+		// Protocol-1 metadata has one `marker`; protocol-2 may carry several
+		// accepted proofs. Only fall back to the caller's marker when metadata
+		// supplied none — never let an unrelated digest finalize an await claim.
+		if (markers.size === 0) markers.add(options.marker);
+		const sessionRead = sessionFile !== null
+			? readSessionLines(sessionFile)
+			: { lines: null, uncertain: false };
+		if (metaUncertain || sessionRead.uncertain) {
+			out.inFlight.push(id);
+			continue;
+		}
+		const delivered = sessionRead.lines !== null && sessionRead.lines.some((line) =>
+			[...markers].some((marker) => isCompleteHostDeliveryRecord(line, id, marker)));
 		try {
 			if (delivered) {
 				// This envelope is now durably delivered — the finalize point where
@@ -386,6 +667,40 @@ function readIndex(file: string): Record<string, unknown> {
 	const parsed = JSON.parse(raw) as Record<string, unknown>;
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
 	return parsed;
+}
+
+interface AwaitAnchorRecord {
+	to: string;
+	generationId: string;
+}
+
+/** Persist the recipient incarnation that owns a task/collect await anchor. */
+export function recordAwaitAnchor(
+	mainMailboxDir: string,
+	envelopeId: string,
+	to: string,
+	generationId: string,
+): void {
+	const file = awaitAnchorsFileOf(mainMailboxDir);
+	withFileLockSync(file, () => {
+		const index = readIndex(file);
+		index[envelopeId] = { to, generationId } satisfies AwaitAnchorRecord;
+		atomicWriteJson(file, index);
+	});
+}
+
+/** Resolve an anchor only for its exact intended recipient. */
+export function lookupAwaitAnchorGeneration(
+	mainMailboxDir: string,
+	envelopeId: string,
+	to: string,
+): string | undefined {
+	const value = readIndex(awaitAnchorsFileOf(mainMailboxDir))[envelopeId];
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+	const record = value as Record<string, unknown>;
+	return record.to === to && typeof record.generationId === "string" && /^gen_[0-9a-f]{32}$/.test(record.generationId)
+		? record.generationId
+		: undefined;
 }
 
 interface SentQuestionRecord {

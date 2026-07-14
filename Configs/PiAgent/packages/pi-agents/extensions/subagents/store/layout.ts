@@ -151,6 +151,16 @@ export function collectRequestsFileOf(mailboxDir: string): string {
 	return join(mailboxDir, ".collect-requests.json");
 }
 
+/**
+ * <mainMailboxDir>/.await-anchors.json — durable task/collect anchor ownership
+ * (envelopeId → recipient address + generation). Await uses it after retirement
+ * or address reuse, when the live registry can no longer identify the task's
+ * original generation.
+ */
+export function awaitAnchorsFileOf(mailboxDir: string): string {
+	return join(mailboxDir, ".await-anchors.json");
+}
+
 // ---------------------------------------------------------------------------
 // Layout
 // ---------------------------------------------------------------------------

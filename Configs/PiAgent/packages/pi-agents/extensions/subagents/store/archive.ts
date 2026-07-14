@@ -11,7 +11,7 @@
  * is runtime work); this module owns only the disk moves.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Layout } from "./layout.ts";
 import { atomicWriteJson, listAgents, readRegistry, withFileLockSync } from "./registry.ts";
@@ -86,7 +86,12 @@ export interface GcOptions {
 export function gcArchive(layout: Layout, options: GcOptions = {}): string[] {
 	const cutoff = (options.now ?? new Date()).getTime() - (options.days ?? DEFAULT_GC_DAYS) * DAY_MS;
 	const root = layout.archiveRoot;
-	if (!existsSync(root)) return [];
+	try {
+		if (!lstatSync(root).isDirectory()) return []; // never traverse a symlink root
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
 
 	const deleted: string[] = [];
 	for (const typeEntry of readdirSync(root, { withFileTypes: true })) {
@@ -132,14 +137,24 @@ function retiredAtMs(archiveDir: string): number {
  */
 export function gcDoneDir(doneDir: string, options: GcOptions = {}): string[] {
 	const cutoff = (options.now ?? new Date()).getTime() - (options.days ?? DEFAULT_GC_DAYS) * DAY_MS;
-	if (!existsSync(doneDir)) return [];
+	try {
+		// The quarantine root itself is a reserved directory, never a traversal
+		// point. Refuse symlink/non-directory roots so GC cannot delete entries in
+		// an out-of-scope target.
+		if (!lstatSync(doneDir).isDirectory()) return [];
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
 
 	const deleted: string[] = [];
 	for (const entry of readdirSync(doneDir, { withFileTypes: true })) {
-		if (!entry.isFile()) continue;
 		const file = join(doneDir, entry.name);
-		if (statSync(file).mtimeMs < cutoff) {
-			rmSync(file, { force: true });
+		if (lstatSync(file).mtimeMs < cutoff) {
+			// Quarantine can contain structural impostors (e.g. a directory named
+			// msg_<id>.json). Never follow symlinks, but age out every entry kind so
+			// corrupt state cannot create a permanent disk leak.
+			rmSync(file, { recursive: entry.isDirectory(), force: true });
 			deleted.push(file);
 		}
 	}
@@ -155,7 +170,12 @@ export function gcDoneDir(doneDir: string, options: GcOptions = {}): string[] {
  */
 export function gcEscalationRecords(escalationsDir: string, options: GcOptions = {}): string[] {
 	const cutoff = (options.now ?? new Date()).getTime() - (options.days ?? DEFAULT_GC_DAYS) * DAY_MS;
-	if (!existsSync(escalationsDir)) return [];
+	try {
+		if (!lstatSync(escalationsDir).isDirectory()) return []; // never traverse a symlink root
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
 
 	const deleted: string[] = [];
 	for (const entry of readdirSync(escalationsDir, { withFileTypes: true })) {
@@ -193,9 +213,8 @@ export function gcEscalationRecords(escalationsDir: string, options: GcOptions =
  * are dropped; the file is rewritten only when something was pruned.
  * Returns the pruned envelope ids.
  */
-export function gcCollectRequests(mailboxDir: string, options: GcOptions = {}): string[] {
+function gcEnvelopeIdIndex(file: string, options: GcOptions): string[] {
 	const cutoff = (options.now ?? new Date()).getTime() - (options.days ?? DEFAULT_GC_DAYS) * DAY_MS;
-	const file = join(mailboxDir, ".collect-requests.json");
 	try {
 		return withFileLockSync(file, () => {
 			let index: Record<string, unknown>;
@@ -220,6 +239,15 @@ export function gcCollectRequests(mailboxDir: string, options: GcOptions = {}): 
 	} catch {
 		return []; // lock/write failure — report nothing pruned
 	}
+}
+
+export function gcCollectRequests(mailboxDir: string, options: GcOptions = {}): string[] {
+	return gcEnvelopeIdIndex(join(mailboxDir, ".collect-requests.json"), options);
+}
+
+/** Age-prune durable task/collect generation anchors after their retry window. */
+export function gcAwaitAnchors(mailboxDir: string, options: GcOptions = {}): string[] {
+	return gcEnvelopeIdIndex(join(mailboxDir, ".await-anchors.json"), options);
 }
 
 /** Crockford-base32 digit values, as used by mail/envelope.ts's ulid(). */
@@ -249,6 +277,8 @@ export interface GcSweepResult {
 	corruptFiles: string[];
 	/** Aged-out `.collect-requests.json` entries (envelope ids) across all mailboxes. */
 	collectRequests: string[];
+	/** Aged-out durable await-anchor ownership records from the main mailbox. */
+	awaitAnchors: string[];
 }
 
 /**
@@ -265,6 +295,7 @@ export function gcSweep(layout: Layout, options: GcOptions = {}): GcSweepResult 
 	// quarantine), deliberately not in store/layout.ts — same age policy.
 	const corruptFiles = [...gcDoneDir(join(layout.mainMailboxDir, ".corrupt"), options)];
 	const collectRequests = [...gcCollectRequests(layout.mainMailboxDir, options)];
+	const awaitAnchors = [...gcAwaitAnchors(layout.mainMailboxDir, options)];
 	let agents: ReturnType<typeof listAgents> = [];
 	try {
 		agents = listAgents(readRegistry(layout.registryFile));
@@ -283,5 +314,6 @@ export function gcSweep(layout: Layout, options: GcOptions = {}): GcSweepResult 
 		escalations: gcEscalationRecords(layout.escalationsDir, options),
 		corruptFiles,
 		collectRequests,
+		awaitAnchors,
 	};
 }

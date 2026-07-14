@@ -39,13 +39,15 @@ export interface SubagentMailPort {
 		text: string;
 		data?: unknown;
 		final?: boolean;
+		/** Runtime-reserved id tying final-report mail to retirement intent. */
+		envelopeId?: string;
 		correlationId?: string;
 		when?: "now" | "after-turn";
 	}): Promise<{ disposition: Disposition; bounceReason?: string }>;
-	/** Persist oneshot final-report retirement intent before routing. */
-	noteFinalReport(from: string): void;
-	/** Clear that intent if routing fails before the report reaches main mail. */
-	cancelFinalReport(from: string): void;
+	/** Persist intent and return the final report id reserved as its evidence. */
+	noteFinalReport(from: string): string | undefined;
+	/** Clear only the matching pre-route intent if that report fails. */
+	cancelFinalReport(from: string, evidenceEnvelopeId: string | undefined): void;
 }
 
 function jsonResult(value: unknown): {
@@ -199,10 +201,11 @@ export function createSubagentTools(address: string, port: SubagentMailPort): To
 		parameters: ReportParams,
 		async execute(_toolCallId, params) {
 			const final = params.final === true;
-			if (final) port.noteFinalReport(address);
+			let finalEnvelopeId: string | undefined;
 			try {
+				finalEnvelopeId = final ? port.noteFinalReport(address) : undefined;
 				if (params.text.length > MAX_REPORT_TEXT_CHARS) {
-					if (final) port.cancelFinalReport(address);
+					if (final) port.cancelFinalReport(address, finalEnvelopeId);
 					return errorResult(new Error(`Report text exceeds ${MAX_REPORT_TEXT_CHARS} characters; retry with a concise summary.`));
 				}
 				if (params.data !== undefined) {
@@ -210,11 +213,11 @@ export function createSubagentTools(address: string, port: SubagentMailPort): To
 					try {
 						encoded = JSON.stringify(params.data);
 					} catch {
-						if (final) port.cancelFinalReport(address);
+						if (final) port.cancelFinalReport(address, finalEnvelopeId);
 						return errorResult(new Error("Report data must be JSON-serializable."));
 					}
 					if (Buffer.byteLength(encoded, "utf8") > MAX_REPORT_DATA_BYTES) {
-						if (final) port.cancelFinalReport(address);
+						if (final) port.cancelFinalReport(address, finalEnvelopeId);
 						return errorResult(new Error(`Report data exceeds ${MAX_REPORT_DATA_BYTES} bytes; retry with a smaller structured result.`));
 					}
 				}
@@ -225,15 +228,16 @@ export function createSubagentTools(address: string, port: SubagentMailPort): To
 					text: params.text,
 					...(params.data !== undefined ? { data: params.data } : {}),
 					final,
+					...(finalEnvelopeId !== undefined ? { envelopeId: finalEnvelopeId } : {}),
 					...(params.correlationId !== undefined ? { correlationId: params.correlationId } : {}),
 				});
 				if (outcome.disposition === "bounced") {
-					if (final) port.cancelFinalReport(address);
+					if (final) port.cancelFinalReport(address, finalEnvelopeId);
 					return errorResult(new Error(`Not delivered: ${outcome.bounceReason ?? "bounced"}`));
 				}
 				return jsonResult({ reported: true, final });
 			} catch (error) {
-				if (final) port.cancelFinalReport(address);
+				if (final) port.cancelFinalReport(address, finalEnvelopeId);
 				return errorResult(error);
 			}
 		},

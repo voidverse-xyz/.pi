@@ -510,6 +510,14 @@ function analyzeSegment(segment: string, options: BashGuardOptions): SegmentAnal
 			index += 1;
 			continue;
 		}
+		if (word.text.includes("/")) {
+			// Never grant trust by basename to a path-selected executable. A project
+			// can contain an attacker-controlled `ls`/`git`/`env` whose behavior has
+			// nothing to do with the system utility. Keep classifying the basename
+			// and arguments so a protected mutation target can still upgrade this to
+			// a hard denial, but path selection itself always requires human review.
+			verdicts.push(escalate(`path-qualified command "${word.text}" is not a trusted bare executable name`));
+		}
 		if (TRANSPARENT_WRAPPERS.has(word.text)) {
 			index += 1;
 			// skip a wrapper's own numeric arg (e.g. `timeout 5`)
@@ -639,9 +647,14 @@ function analyzeSegment(segment: string, options: BashGuardOptions): SegmentAnal
 		const takesTargetDir = cmd === "cp" || cmd === "mv" || cmd === "ln" || cmd === "install";
 		let targetDir: Token | null = null;
 		const positional: Token[] = [];
+		let optionsEnded = false;
 		for (let i = 0; i < args.length; i++) {
 			const a = args[i]!;
-			if (takesTargetDir) {
+			if (!optionsEnded && a.text === "--") {
+				optionsEnded = true;
+				continue;
+			}
+			if (!optionsEnded && takesTargetDir) {
 				if (a.text === "-t" || a.text === "--target-directory") {
 					const next = args[i + 1];
 					if (!next) {
@@ -667,7 +680,9 @@ function analyzeSegment(segment: string, options: BashGuardOptions): SegmentAnal
 					return { verdict: worst(verdicts) };
 				}
 			}
-			if (!a.text.startsWith("-")) positional.push(a);
+			// After `--`, leading '-' is ordinary path data, not an option. Dropping
+			// it lets `cp -- src -dest` hide the real destination from checkWrite.
+			if (optionsEnded || !a.text.startsWith("-")) positional.push(a);
 		}
 		if (targetDir !== null) {
 			// The dir is written; "all"-mode commands (mv) also mutate their

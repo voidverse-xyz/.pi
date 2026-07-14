@@ -433,7 +433,11 @@ await test("collect metadata survives a crash-then-requeue (finding 8)", async (
 	// The verdict survived: the requeued report can still be validated.
 	assert.deepEqual(mailbox.peekCollectRequest(dir, reqId), { type: "object" }, "schema kept for the re-delivered report");
 	// Now a clean delivery: the session file carries the id + marker → finalize.
-	writeFileSync(sessionFile, `{"customType":"subagent-mail","id":"${report.id}"}\n`);
+	writeFileSync(sessionFile, `${JSON.stringify({
+		type: "custom_message",
+		customType: "subagent-mail",
+		content: `delivered ${report.id}`,
+	})}\n`);
 	mailbox.beginDelivery(dir, [report.id]); // (marker only; not required)
 	mailbox.beginHostDelivery(dir, [report.id], sessionFile);
 	const done = mailbox.reconcileHostDelivery(dir, { marker: "subagent-mail", requeueUndelivered: false });
@@ -441,6 +445,21 @@ await test("collect metadata survives a crash-then-requeue (finding 8)", async (
 	// Only NOW, at the durable finalize point, is the collect request retired.
 	assert.equal(mailbox.peekCollectRequest(dir, reqId), undefined, "schema retired after durable delivery");
 });
+await test("host reconciliation treats operational session-read failure as in-flight, never undelivered", async () => {
+	const dir = join(scratch, "unit-host-io-uncertain");
+	const report = env({ from: "worker/alpha", to: "main", type: "report", text: "uncertain" });
+	mailbox.writeEnvelope(dir, report);
+	const unreadableAsFile = join(dir, "session-is-a-directory");
+	mkdirSync(unreadableAsFile, { recursive: true });
+	mailbox.beginHostDelivery(dir, [report.id], unreadableAsFile, "subagent-mail");
+	assert.deepEqual(
+		mailbox.reconcileHostDelivery(dir, { marker: "subagent-mail", requeueUndelivered: true }),
+		{ finalized: [], requeued: [], inFlight: [report.id] },
+	);
+	assert.ok(existsSync(join(dir, ".delivering", `${report.id}.json`)));
+	assert.equal(mailbox.pendingCount(dir), 0);
+});
+
 await test("envelope whose FILENAME id != body id is quarantined (endless re-delivery guard)", async () => {
 	const dir = join(scratch, "unit-idmismatch");
 	const e = env({ text: "mismatch" });

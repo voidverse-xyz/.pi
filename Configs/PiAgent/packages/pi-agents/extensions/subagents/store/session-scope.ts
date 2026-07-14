@@ -1,9 +1,11 @@
 import {
 	cpSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	readlinkSync,
 	renameSync,
 	statSync,
 	rmSync,
@@ -12,6 +14,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import type { Layout } from "./layout.ts";
+import { pidStartToken, processMarkerIsLive } from "./process-identity.ts";
 import { atomicWriteJson, withFileLockSync } from "./registry.ts";
 
 export interface ScopeManifest {
@@ -38,38 +41,6 @@ export class SessionScopeLockedError extends Error {
 				: `This Pi session's subagent scope is already open in live Pi process ${ownerPid}.`,
 		);
 		this.name = "SessionScopeLockedError";
-	}
-}
-
-function pidStartToken(pid: number): string | undefined {
-	try {
-		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-		const afterCommand = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
-		return afterCommand[19]; // Linux /proc stat field 22: process start ticks
-	} catch {
-		return undefined;
-	}
-}
-
-function pidStartedAtMs(pid: number): number | undefined {
-	try {
-		const token = Number(pidStartToken(pid));
-		const uptimeSeconds = Number(readFileSync("/proc/uptime", "utf8").trim().split(/\s+/)[0]);
-		if (!Number.isFinite(token) || !Number.isFinite(uptimeSeconds)) return undefined;
-		// Linux exposes starttime in USER_HZ, standardized as 100 for /proc.
-		return Date.now() - (uptimeSeconds - token / 100) * 1000;
-	} catch {
-		return undefined;
-	}
-}
-
-function pidAlive(pid: number): boolean {
-	if (!Number.isInteger(pid) || pid <= 0) return false;
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "EPERM";
 	}
 }
 
@@ -103,8 +74,17 @@ export function ensureScopeManifest(
 	return manifest;
 }
 
-/** Claim exclusive host ownership for one main-session scope. */
+/**
+ * Claim exclusive host ownership for one main-session scope. Adoption rollback
+ * takes the same short lock, making its no-live-host check + removal atomic
+ * against publication of a new host lease.
+ */
 export function claimHostScope(layout: Layout): HostScopeLease {
+	const adoptionLock = join(layout.stateContainerRoot, ".adoption");
+	return withFileLockSync(adoptionLock, () => claimHostScopeUnlocked(layout));
+}
+
+function claimHostScopeUnlocked(layout: Layout): HostScopeLease {
 	mkdirSync(layout.subagentsRoot, { recursive: true });
 	const runtimeId = `host_${process.pid}_${randomBytes(8).toString("hex")}`;
 	const claimedAt = new Date().toISOString();
@@ -133,23 +113,7 @@ export function claimHostScope(layout: Layout): HostScopeLease {
 			}
 			return null;
 		}
-		if (typeof owner.pid !== "number" || !pidAlive(owner.pid)) return null;
-		const liveStartToken = pidStartToken(owner.pid);
-		if (
-			typeof owner.processStartToken === "string" &&
-			liveStartToken !== undefined &&
-			owner.processStartToken !== liveStartToken
-		) {
-			return null; // marker survived PID reuse
-		}
-		if (typeof owner.processStartToken !== "string" && typeof owner.claimedAt === "string") {
-			const claimedAtMs = Date.parse(owner.claimedAt);
-			const liveStartedAt = pidStartedAtMs(owner.pid);
-			if (!Number.isNaN(claimedAtMs) && liveStartedAt !== undefined && liveStartedAt > claimedAtMs + 60_000) {
-				return null; // heartbeat-less marker survived PID reuse
-			}
-		}
-		return owner.pid;
+		return processMarkerIsLive(owner) ? owner.pid : null;
 	};
 	const finishLease = (): HostScopeLease => {
 		const heartbeat = setInterval(() => {
@@ -184,11 +148,9 @@ export function claimHostScope(layout: Layout): HostScopeLease {
 	const ownerPid = liveOwnerPid();
 	if (ownerPid !== null) throw new SessionScopeLockedError(ownerPid > 0 ? ownerPid : null);
 
-	// Fence stale reclamation by the exact observed host generation. The claim
-	// file is append-only and never reused: only one process can create it with
-	// `wx`; late contenders for the same stale marker cannot unlink a winner's
-	// replacement. If the winner crashes in this tiny recovery window, future
-	// opens fail closed instead of risking split-brain.
+	// claimHostScope holds the shared .adoption generation lock for this entire
+	// transaction. Exact observation still fences heartbeat/release changes,
+	// while the outer lock makes a separate permanent reclaim file unnecessary.
 	let observed: string;
 	try {
 		observed = readFileSync(layout.hostOwnerFile, "utf8");
@@ -207,25 +169,11 @@ export function claimHostScope(layout: Layout): HostScopeLease {
 		if (error instanceof SessionScopeLockedError) throw error;
 		throw new SessionScopeLockedError(null);
 	}
-	const reclaimRoot = join(layout.stateContainerRoot, ".host-owner-reclaims", layout.ownerSessionId);
-	mkdirSync(reclaimRoot, { recursive: true });
-	const generation = createHash("sha256").update(observed).digest("hex");
-	const reclaimFile = join(reclaimRoot, `${generation}.json`);
-	try {
-		writeFileSync(
-			reclaimFile,
-			`${JSON.stringify({ pid: process.pid, runtimeId, observedAt: new Date().toISOString() })}\n`,
-			{ flag: "wx", mode: 0o600 },
-		);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new SessionScopeLockedError(null);
-		throw error;
-	}
 	let current: string;
 	try {
 		current = readFileSync(layout.hostOwnerFile, "utf8");
 	} catch {
-		current = ""; // a late fresh claimant may now win the `wx` below
+		current = "";
 	}
 	if (current !== "" && current !== observed) throw new SessionScopeLockedError(liveOwnerPid());
 	if (current === observed) rmSync(layout.hostOwnerFile, { force: true });
@@ -239,33 +187,107 @@ export function claimHostScope(layout: Layout): HostScopeLease {
 }
 
 export function legacyStateRoots(layout: Layout): string[] {
-	return [layout.legacyDigestSubagentsRoot, layout.legacySubagentsRoot].filter((root) => existsSync(root));
+	const roots: string[] = [];
+	for (const root of [layout.legacyDigestSubagentsRoot, layout.legacySubagentsRoot]) {
+		let stat: ReturnType<typeof lstatSync>;
+		try {
+			stat = lstatSync(root);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw error;
+		}
+		if (!stat.isDirectory() || stat.isSymbolicLink()) {
+			throw new Error(`Legacy subagent state root must be a real directory, not a symlink or special file: ${root}`);
+		}
+		roots.push(root);
+	}
+	return roots;
+}
+
+function isLifecycleLockArtifact(name: string): boolean {
+	return name === ".lifecycle.lock" ||
+		name.startsWith(".lifecycle.lock.candidate-") ||
+		name.startsWith(".lifecycle.lock.stale-") ||
+		name.startsWith(".lifecycle.lock.reclaim-");
+}
+
+function removeLifecycleLockArtifacts(root: string): void {
+	if (!existsSync(root)) return;
+	for (const name of readdirSync(root)) {
+		if (isLifecycleLockArtifact(name)) rmSync(join(root, name), { recursive: true, force: true });
+	}
 }
 
 function scopeHasUserState(layout: Layout): boolean {
 	if (!existsSync(layout.subagentsRoot)) return false;
 	const ignorable = new Set(["scope.json", "autonomy.json", ".host-owner.json"]);
-	return readdirSync(layout.subagentsRoot).some((name) => !ignorable.has(name));
+	return readdirSync(layout.subagentsRoot).some((name) => !ignorable.has(name) && !isLifecycleLockArtifact(name));
+}
+
+/** Destructive migration steps must never run beneath a live host lease. */
+function clearStaleOrRejectHostOwner(layout: Layout): void {
+	if (!existsSync(layout.hostOwnerFile)) return;
+	let owner: { pid?: unknown; processStartToken?: unknown; claimedAt?: unknown };
+	try {
+		owner = JSON.parse(readFileSync(layout.hostOwnerFile, "utf8"));
+	} catch {
+		throw new Error("Release the current session's subagent core before migration recovery/adoption/rollback.");
+	}
+	if (processMarkerIsLive(owner)) {
+		throw new Error("Release the current session's subagent core before migration recovery/adoption/rollback.");
+	}
+	rmSync(layout.hostOwnerFile, { force: true });
+}
+
+interface FingerprintOptions {
+	/** Ignore only runtime ownership markers at their reserved layout paths. */
+	ignoreTransientOwnership?: boolean;
+	/** Additional exact root-relative paths (never basename-wide). */
+	ignoreRootPaths?: ReadonlySet<string>;
 }
 
 function fingerprintTree(
 	root: string,
-	ignoreNames: ReadonlySet<string> = new Set(),
+	options: FingerprintOptions = {},
 ): { files: number; dirs: number; digest: string } {
 	let files = 0;
 	let dirs = 0;
 	const hash = createHash("sha256");
 	const walk = (dir: string, relativeDir: string): void => {
 		for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-			if (ignoreNames.has(entry.name)) continue;
 			const relative = relativeDir === "" ? entry.name : `${relativeDir}/${entry.name}`;
-			hash.update(`${entry.isDirectory() ? "d" : "f"}:${relative}\0`);
+			if (options.ignoreRootPaths?.has(relative)) continue;
+			if (
+				relativeDir === "" &&
+				options.ignoreRootPaths?.has(".lifecycle.lock") &&
+				isLifecycleLockArtifact(entry.name)
+			) continue;
+			if (options.ignoreTransientOwnership) {
+				const parts = relative.split("/");
+				const agentRunOwner =
+					parts.length === 3 &&
+					parts[2] === ".run-owner.json" &&
+					!parts[0]!.startsWith(".") &&
+					!parts[1]!.startsWith(".");
+				if (relative === ".host-owner.json" || agentRunOwner) continue;
+			}
+			const kind = entry.isDirectory() ? "d" : entry.isSymbolicLink() ? "l" : entry.isFile() ? "f" : "o";
+			hash.update(`${kind}:${relative}\0`);
 			if (entry.isDirectory()) {
 				dirs++;
 				walk(join(dir, entry.name), relative);
-			} else if (entry.isFile()) {
+			} else {
 				files++;
-				hash.update(readFileSync(join(dir, entry.name)));
+				if (entry.isSymbolicLink()) {
+					// Hash the link itself, never external target contents. Retargeting is
+					// still a scope mutation and must block destructive rollback.
+					hash.update(`->${readlinkSync(join(dir, entry.name))}\0`);
+				} else if (entry.isFile()) {
+					hash.update(readFileSync(join(dir, entry.name)));
+				} else {
+					const stat = lstatSync(join(dir, entry.name));
+					hash.update(`${stat.mode}:${stat.size}:${stat.mtimeMs}\0`);
+				}
 			}
 		}
 	};
@@ -281,10 +303,14 @@ function assertNoLiveRunOwners(root: string): void {
 				walk(file);
 				continue;
 			}
-			if (!entry.isFile() || entry.name !== ".run-owner.json") continue;
+			if (entry.name !== ".run-owner.json" || (!entry.isFile() && !entry.isSymbolicLink())) continue;
 			try {
-				const owner = JSON.parse(readFileSync(file, "utf8")) as { pid?: unknown };
-				if (typeof owner.pid === "number" && pidAlive(owner.pid)) {
+				const owner = JSON.parse(readFileSync(file, "utf8")) as {
+					pid?: unknown;
+					processStartToken?: unknown;
+					claimedAt?: unknown;
+				};
+				if (processMarkerIsLive(owner)) {
 					throw new Error(`Legacy state is still run-owned by live Pi process ${owner.pid}.`);
 				}
 			} catch (error) {
@@ -305,8 +331,11 @@ export function recoverInterruptedAdoption(layout: Layout): AdoptionRecoveryResu
 	const ledger = join(layout.stateContainerRoot, ".adoption-ledger.json");
 	const lockTarget = join(layout.stateContainerRoot, ".adoption");
 	return withFileLockSync(lockTarget, () => {
+		clearStaleOrRejectHostOwner(layout);
 		let record: {
 			status?: unknown;
+			protocol?: unknown;
+			activationStartedAt?: unknown;
 			source?: unknown;
 			backup?: unknown;
 			staging?: unknown;
@@ -316,6 +345,17 @@ export function recoverInterruptedAdoption(layout: Layout): AdoptionRecoveryResu
 			record = JSON.parse(readFileSync(ledger, "utf8"));
 		} catch {
 			return { recovered: false };
+		}
+		if (record.status === "rolling-back") {
+			if (
+				record.ownerSessionId !== layout.ownerSessionId ||
+				typeof record.source !== "string" ||
+				typeof record.backup !== "string"
+			) {
+				throw new Error("Interrupted rollback belongs to another session or has an invalid ledger.");
+			}
+			const result = completeLegacyRollback(layout, ledger, record as RollingBackRecord);
+			return { recovered: true, restoredSource: result.restored };
 		}
 		if (record.status !== "copying") return { recovered: false };
 		if (
@@ -329,22 +369,41 @@ export function recoverInterruptedAdoption(layout: Layout): AdoptionRecoveryResu
 		if (existsSync(record.source) && existsSync(record.backup)) {
 			throw new Error("Interrupted legacy adoption has both source and backup roots; recover manually.");
 		}
-		if (!existsSync(record.source) && existsSync(layout.subagentsRoot)) {
-			if (!existsSync(record.backup)) {
-				throw new Error("Interrupted legacy adoption has an owner scope but no recoverable backup.");
+		const protocol2PreActivation = record.protocol === 2 && typeof record.activationStartedAt !== "string";
+		if (!protocol2PreActivation && existsSync(layout.subagentsRoot)) {
+			const legacySnapshot = existsSync(record.source)
+				? record.source
+				: existsSync(record.backup)
+					? record.backup
+					: null;
+			if (legacySnapshot === null) {
+				throw new Error("Interrupted legacy adoption has an owner scope but no recoverable source/backup.");
 			}
-			const backupFingerprint = fingerprintTree(record.backup);
-			const ownerFingerprint = fingerprintTree(
-				layout.subagentsRoot,
-				new Set(["scope.json", ".host-owner.json", ".run-owner.json"]),
-			);
-			if (backupFingerprint.digest !== ownerFingerprint.digest) {
-				throw new Error("Interrupted adoption's owner scope differs from its backup; recover manually.");
+			// Once activation was announced, the destination is either the original
+			// empty/generated scope or the verified legacy copy. Empty machinery is
+			// safe to retain; a populated destination must match exactly before
+			// deletion. Anything divergent remains a manual-recovery stop.
+			if (scopeHasUserState(layout)) {
+				const legacyFingerprint = fingerprintTree(legacySnapshot, {
+					ignoreRootPaths: new Set([".lifecycle.lock"]),
+				});
+				const ownerFingerprint = fingerprintTree(layout.subagentsRoot, {
+					ignoreRootPaths: new Set(["scope.json"]),
+				});
+				if (legacyFingerprint.digest !== ownerFingerprint.digest) {
+					throw new Error("Interrupted adoption's owner scope differs from its legacy snapshot; recover manually.");
+				}
+				rmSync(layout.subagentsRoot, { recursive: true, force: true });
 			}
-			rmSync(layout.subagentsRoot, { recursive: true, force: true });
 		}
+		// Protocol 2 proves no destination mutation happens before the durable
+		// activation marker. A copy-phase crash therefore deletes only staging
+		// and never compares ordinary empty scope metadata to the legacy tree.
 		rmSync(record.staging, { recursive: true, force: true });
-		if (!existsSync(record.source) && existsSync(record.backup)) renameSync(record.backup, record.source);
+		if (!existsSync(record.source) && existsSync(record.backup)) {
+			removeLifecycleLockArtifacts(record.backup);
+			renameSync(record.backup, record.source);
+		}
 		atomicWriteJson(ledger, {
 			...record,
 			status: "recovered",
@@ -364,26 +423,46 @@ export interface AdoptLegacyResult {
 /** Human-command-only two-phase adoption of one inactive cwd-wide root. */
 export function adoptLegacyState(layout: Layout): AdoptLegacyResult {
 	recoverInterruptedAdoption(layout);
-	const sources = legacyStateRoots(layout);
-	if (sources.length === 0) throw new Error("No legacy cwd-wide subagent state was found.");
-	if (sources.length > 1) {
-		throw new Error("Both pre-digest and digest legacy roots exist; resolve the ambiguity manually before adoption.");
-	}
-	if (scopeHasUserState(layout)) throw new Error("The current session scope is not empty; legacy state cannot be merged automatically.");
-
-	const source = sources[0]!;
-	assertNoLiveRunOwners(source);
-	const token = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(4).toString("hex")}`;
-	const backup = `${source}.legacy-backup-${token}`;
-	const staging = join(layout.ownersRoot, `.adopting-${layout.ownerSessionId}-${token}`);
-	const ledger = join(layout.stateContainerRoot, ".adoption-ledger.json");
 	const lockTarget = join(layout.stateContainerRoot, ".adoption");
 
+	// Discovery, destination emptiness, source identity, and ledger publication
+	// are one adoption-lock transaction. A second session can no longer retain a
+	// pre-lock source pathname that the first adopter moved to its backup.
 	return withFileLockSync(lockTarget, () => {
+		const sources = legacyStateRoots(layout);
+		if (sources.length === 0) throw new Error("No legacy cwd-wide subagent state was found.");
+		if (sources.length > 1) {
+			throw new Error("Both pre-digest and digest legacy roots exist; resolve the ambiguity manually before adoption.");
+		}
+		if (scopeHasUserState(layout)) {
+			throw new Error("The current session scope is not empty; legacy state cannot be merged automatically.");
+		}
+
+		const source = sources[0]!;
+		const sourceIdentity = lstatSync(source);
+		const token = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomBytes(4).toString("hex")}`;
+		const backup = `${source}.legacy-backup-${token}`;
+		const staging = join(layout.ownersRoot, `.adopting-${layout.ownerSessionId}-${token}`);
+		const ledger = join(layout.stateContainerRoot, ".adoption-ledger.json");
+
+		return withFileLockSync(join(source, ".lifecycle"), () => {
+			const lockedIdentity = lstatSync(source);
+			if (
+				!lockedIdentity.isDirectory() || lockedIdentity.isSymbolicLink() ||
+				lockedIdentity.dev !== sourceIdentity.dev || lockedIdentity.ino !== sourceIdentity.ino
+			) {
+				throw new Error("Legacy subagent state root changed while adoption locks were being acquired.");
+			}
+			clearStaleOrRejectHostOwner(layout);
+		// The legacy runtime claims per-agent ownership beneath this same lock.
+		// Keep the source pathname + lock stable through copy and activation; the
+		// source is renamed to its inactive backup only as the final publication.
+		assertNoLiveRunOwners(source);
 		if (scopeHasUserState(layout)) throw new Error("The current session scope changed during adoption.");
 		mkdirSync(dirname(staging), { recursive: true });
 		atomicWriteJson(ledger, {
 			version: 1,
+			protocol: 2,
 			status: "copying",
 			source,
 			backup,
@@ -391,11 +470,20 @@ export function adoptLegacyState(layout: Layout): AdoptLegacyResult {
 			ownerSessionId: layout.ownerSessionId,
 			startedAt: new Date().toISOString(),
 		});
-		renameSync(source, backup);
 		let activated = false;
+		let sourceMoved = false;
 		try {
-			cpSync(backup, staging, { recursive: true, errorOnExist: true, force: false });
-			const expected = fingerprintTree(backup);
+			cpSync(source, staging, {
+				recursive: true,
+				errorOnExist: true,
+				force: false,
+				verbatimSymlinks: true,
+			});
+			// The held lifecycle generation is runtime machinery, not legacy state.
+			removeLifecycleLockArtifacts(staging);
+			const expected = fingerprintTree(source, {
+				ignoreRootPaths: new Set([".lifecycle.lock"]),
+			});
 			const actual = fingerprintTree(staging);
 			if (
 				expected.files !== actual.files ||
@@ -404,16 +492,32 @@ export function adoptLegacyState(layout: Layout): AdoptLegacyResult {
 			) {
 				throw new Error("Legacy adoption verification failed: copied tree fingerprint differs.");
 			}
+			// This durable phase boundary makes pre-activation copy crashes
+			// distinguishable from crashes after destination mutation begins.
+			atomicWriteJson(ledger, {
+				version: 1,
+				protocol: 2,
+				status: "copying",
+				source,
+				backup,
+				staging,
+				ownerSessionId: layout.ownerSessionId,
+				startedAt: new Date().toISOString(),
+				activationStartedAt: new Date().toISOString(),
+			});
 			rmSync(layout.subagentsRoot, { recursive: true, force: true });
 			renameSync(staging, layout.subagentsRoot);
 			activated = true;
 			ensureScopeManifest(layout, { persisted: true, adoptedFrom: basename(backup) });
-			const baseline = fingerprintTree(
-				layout.subagentsRoot,
-				new Set([".host-owner.json", ".run-owner.json"]),
-			);
+			// Only now move the stable, locked source out of the legacy pathname.
+			// No write can be omitted from the already-verified activated copy.
+			renameSync(source, backup);
+			sourceMoved = true;
+			removeLifecycleLockArtifacts(backup);
+			const baseline = fingerprintTree(layout.subagentsRoot, { ignoreTransientOwnership: true });
 			atomicWriteJson(ledger, {
 				version: 1,
+				protocol: 2,
 				status: "complete",
 				source,
 				backup,
@@ -426,15 +530,56 @@ export function adoptLegacyState(layout: Layout): AdoptLegacyResult {
 		} catch (error) {
 			rmSync(staging, { recursive: true, force: true });
 			if (activated) rmSync(layout.subagentsRoot, { recursive: true, force: true });
-			if (!existsSync(source) && existsSync(backup)) renameSync(backup, source);
+			if (sourceMoved && !existsSync(source) && existsSync(backup)) renameSync(backup, source);
 			throw error;
-		}
+			}
+		});
 	});
 }
 
 export interface RollbackLegacyResult {
 	restored: string;
 	removedScope: string;
+}
+
+interface RollingBackRecord {
+	status?: unknown;
+	source: string;
+	backup: string;
+	ownerSessionId: string;
+	[key: string]: unknown;
+}
+
+function completeLegacyRollback(
+	layout: Layout,
+	ledger: string,
+	record: RollingBackRecord,
+): RollbackLegacyResult {
+	const sourceExists = existsSync(record.source);
+	const backupExists = existsSync(record.backup);
+	if (sourceExists && backupExists) {
+		throw new Error("Rollback recovery found both source and backup roots; recover manually.");
+	}
+	if (!sourceExists && !backupExists) {
+		throw new Error("Rollback recovery found neither source nor backup root; recover manually.");
+	}
+	const lockRoot = sourceExists ? record.source : record.backup;
+	return withFileLockSync(join(lockRoot, ".lifecycle"), () => {
+		try {
+			// Restore first: there is never a crash point with neither usable copy.
+			if (!existsSync(record.source)) renameSync(record.backup, record.source);
+			rmSync(layout.subagentsRoot, { recursive: true, force: true });
+			atomicWriteJson(ledger, {
+				...record,
+				status: "rolled-back",
+				rolledBackAt: new Date().toISOString(),
+			});
+			return { restored: record.source, removedScope: layout.subagentsRoot };
+		} finally {
+			// The lock may have moved backup→source with the restored tree.
+			removeLifecycleLockArtifacts(record.source);
+		}
+	});
 }
 
 /**
@@ -470,25 +615,22 @@ export function rollbackLegacyAdoption(layout: Layout): RollbackLegacyResult {
 		if (!existsSync(record.backup)) throw new Error("The inactive legacy backup no longer exists.");
 		if (existsSync(record.source)) throw new Error("The original legacy root already exists; refusing to overwrite it.");
 		if (!existsSync(layout.subagentsRoot)) throw new Error("The adopted session scope no longer exists.");
-		if (existsSync(layout.hostOwnerFile)) {
-			throw new Error("Release the current session's subagent core before rollback.");
-		}
-		const current = fingerprintTree(
-			layout.subagentsRoot,
-			new Set([".host-owner.json", ".run-owner.json"]),
-		);
+		clearStaleOrRejectHostOwner(layout);
+		const current = fingerprintTree(layout.subagentsRoot, { ignoreTransientOwnership: true });
 		if (current.digest !== record.baselineDigest) {
 			throw new Error(
 				"The adopted scope has diverged; automatic rollback would lose work. Export it and recover manually.",
 			);
 		}
-		rmSync(layout.subagentsRoot, { recursive: true, force: true });
-		renameSync(record.backup, record.source);
-		atomicWriteJson(ledger, {
+		const rollingBack: RollingBackRecord = {
 			...record,
-			status: "rolled-back",
-			rolledBackAt: new Date().toISOString(),
-		});
-		return { restored: record.source, removedScope: layout.subagentsRoot };
+			status: "rolling-back",
+			source: record.source,
+			backup: record.backup,
+			ownerSessionId: record.ownerSessionId,
+			rollbackStartedAt: new Date().toISOString(),
+		};
+		atomicWriteJson(ledger, rollingBack);
+		return completeLegacyRollback(layout, ledger, rollingBack);
 	});
 }

@@ -21,7 +21,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn as spawnChild } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
 
@@ -30,10 +30,11 @@ const piAi = await jiti.import(join(PI_PKG, "node_modules/@earendil-works/pi-ai/
 const { createLayout } = await jiti.import(join(EXT, "store/layout.ts"));
 const { readRegistry, updateRegistry, getAgent } = await jiti.import(join(EXT, "store/registry.ts"));
 const { InProcessRuntime } = await jiti.import(join(EXT, "runtime/in-process.ts"));
+const { createSubagentTools } = await jiti.import(join(EXT, "tools/sub-agent.ts"));
 const { AutonomyBudget } = await jiti.import(join(EXT, "rails/autonomy.ts"));
 const { makeEnvelope, ulid } = await jiti.import(join(EXT, "mail/envelope.ts"));
 const mailbox = await jiti.import(join(EXT, "mail/mailbox.ts"));
-const { archiveAgentDir } = await jiti.import(join(EXT, "store/archive.ts"));
+const { readTeams } = await jiti.import(join(EXT, "store/teams.ts"));
 const { readSettingsFile, loadSettings, applySettingsInto, defaultSettings } = await jiti.import(join(EXT, "store/settings.ts"));
 
 // ---------------------------------------------------------------------------
@@ -137,6 +138,19 @@ console.log("(1) corrupt-envelope quarantine (C1):");
 	assert.ok(existsSync(join(corruptDir, invalidName)), "invalid envelope preserved in .corrupt/");
 	ok("readPending quarantines corrupt + invalid envelopes to mailbox/.corrupt/ (kept for debugging)");
 
+	// An operational read failure is not evidence of corrupt contents. Keep the
+	// exact envelope pathname durable and propagate so the runtime retry path
+	// can try again instead of quarantining valid-but-temporarily-unreadable mail.
+	const loopTarget = join(box, "io-loop");
+	const operationalName = `msg_${ulid()}.json`;
+	symlinkSync("io-loop", loopTarget);
+	symlinkSync("io-loop", join(box, operationalName));
+	assert.throws(() => mailbox.readPending(box), /ELOOP/);
+	assert.ok(lstatSync(join(box, operationalName)).isSymbolicLink(), "operational failure left envelope in place");
+	rmSync(join(box, operationalName), { force: true });
+	rmSync(loopTarget, { force: true });
+	ok("operational envelope read failures propagate without quarantine/mail loss");
+
 	// A fresh corrupt file arriving before a wake: the turn must settle, not loop.
 	writeFileSync(join(box, `msg_${ulid()}.json`), "also not json", "utf8");
 	const before = events.length;
@@ -197,6 +211,7 @@ console.log("(3) funeral bounce (M5):");
 	// before the oneshot funeral / an explicit retire).
 	const question = makeEnvelope({
 		from: "worker/asker", to: "worker/doomed", type: "question", team: "t",
+		hops: 8, // at the normal cap: funeral errors must bypass the hops guard
 		text: "did the migration finish?",
 	});
 	mailbox.writeEnvelope(layout.mailboxDir("worker", "doomed"), question);
@@ -215,8 +230,75 @@ console.log("(3) funeral bounce (M5):");
 	assert.match(bounced.payload.text, /did the migration finish\?/);
 	ok("retire bounces unprocessed pending mail back to the sender (asker never strands)");
 
+	// A transient bounce-route failure must abort before archive/removal. The
+	// acknowledged inbound envelope remains retryable instead of being buried.
+	await runtime.spawn({ type: "worker", id: "bounce-failure-target" });
+	const bounceFailureBox = layout.mailboxDir("worker", "bounce-failure-target");
+	const mustBounce = makeEnvelope({
+		from: "worker/asker",
+		to: "worker/bounce-failure-target",
+		type: "question",
+		text: "this acknowledged question must not be buried",
+	});
+	mailbox.writeEnvelope(bounceFailureBox, mustBounce);
+	const realBounce = runtime._deliverer.bounceUndelivered.bind(runtime._deliverer);
+	runtime._deliverer.bounceUndelivered = () => { throw new Error("synthetic bounce I/O failure"); };
+	await assert.rejects(() => runtime.retire("worker/bounce-failure-target"), /synthetic bounce I\/O failure/);
+	assert.ok(getAgent(readRegistry(layout.registryFile), "worker/bounce-failure-target"), "failed funeral did not publish registry removal");
+	assert.equal(mailbox.pendingCount(bounceFailureBox), 1, "failed funeral kept inbound mail pending");
+	runtime._deliverer.bounceUndelivered = realBounce;
+	await runtime.retire("worker/bounce-failure-target");
+	ok("bounce write failure aborts retirement before acknowledged mail can be archived");
+
+	// Automatic oneshot retirement is different from an explicit owner funeral:
+	// main/user mail racing the final report was not the retirement command and
+	// must fail visibly instead of being quietly buried.
+	const auto = await runtime.spawn({ type: "worker", lifetime: "oneshot" });
+	const [autoType, autoId] = auto.address.split("/");
+	const beforeFinal = makeEnvelope({
+		from: "main",
+		to: auto.address,
+		type: "message",
+		text: "queued just before the final report",
+	});
+	mailbox.writeEnvelope(layout.mailboxDir(autoType, autoId), beforeFinal);
+	runtime._mailPort.noteFinalReport(auto.address);
+	await assert.rejects(
+		() => runtime.send({ to: auto.address, text: "raced just after the final report" }),
+		/No agent/,
+		"post-final inbound mail bounces immediately",
+	);
+	await runtime._startRetire(auto.address, true);
+	const mainMail = [
+		...mailbox.readPending(layout.mainMailboxDir).map((p) => p.envelope),
+		...readDoneEnvelopes(layout.mainMailboxDir),
+	];
+	assert.ok(
+		mainMail.some((envelope) => envelope.type === "error" && envelope.correlationId === beforeFinal.id),
+		"pre-final held main mail receives a funeral failure during auto-retire",
+	);
+	ok("oneshot final report closes inbound delivery and bounces already-held owner mail");
+
+	const duplicateFinal = await runtime.spawn({ type: "worker", lifetime: "oneshot" });
+	const reportTool = createSubagentTools(duplicateFinal.address, runtime._mailPort).find((tool) => tool.name === "report");
+	assert.ok(reportTool);
+	const firstFinal = await reportTool.execute("final-1", { text: "the actual final", final: true });
+	assert.equal(firstFinal.isError, undefined);
+	const firstEvidence = runtime._handles.get(duplicateFinal.address)?.retirementEvidenceId;
+	assert.ok(firstEvidence);
+	const rejectedSecond = await reportTool.execute("final-2", {
+		text: "x".repeat(20_000),
+		final: true,
+	});
+	assert.equal(rejectedSecond.isError, true);
+	assert.match(rejectedSecond.content[0].text, /already delivered|already in flight/);
+	assert.equal(runtime._handles.get(duplicateFinal.address)?.retirementEvidenceId, firstEvidence);
+	assert.equal(runtime._handles.get(duplicateFinal.address)?.retireAfterTurn, true);
+	await runtime._startRetire(duplicateFinal.address, true);
+	ok("a failed duplicate final report cannot cancel the first final's retirement");
+
 	// The archived mailbox keeps the original (funeral loses nothing on disk).
-	await sleep(400); // let the asker's bounce-wake turn settle before dispose
+	await sleep(400); // let bounce-wake turns settle before dispose
 	await runtime.dispose();
 }
 
@@ -307,6 +389,16 @@ console.log("(5) main-mail durability (core):");
 	assert.ok(existsSync(join(layoutM.mainMailboxDeliveringDir, `${esc.id}.json.meta`)), "target session file on record");
 	ok("drain parks envelopes in .delivering/ instead of finalizing (host append unverified)");
 
+	// A second startup/reconciler cannot use the fresh-process assumption while
+	// this scope has a live host. It may inspect/finalize proven mail, but must
+	// not requeue this digest before the owning host appends it.
+	assert.deepEqual(
+		reconcileMainMailFor(projectM, { home, sessionId: "test-session" }),
+		{ finalized: [], requeued: [], inFlight: [esc.id] },
+	);
+	assert.ok(existsSync(join(layoutM.mainMailboxDeliveringDir, `${esc.id}.json`)));
+	ok("live host lease prevents foreign startup reconciliation from requeueing in-flight mail");
+
 	// In the SAME process an unverified envelope is in flight, never re-queued —
 	// a drain loop can't double-deliver it (and can't double-charge the D21 pool).
 	assert.equal(core1.drainMainMail(sessionFile), null, "no re-delivery while the injection may be in flight");
@@ -323,6 +415,17 @@ console.log("(5) main-mail durability (core):");
 	assert.ok(digest2.includes("ESC_MARKER"), "escalation re-delivered after the crash (was: silently lost)");
 	assert.match(digest2, /re-delivered: an earlier delivery attempt did not complete/, "re-delivery labeled in the digest");
 	ok("crash before the host append RE-DELIVERS the escalation on restart (at-least-once)");
+
+	// A crash-truncated JSONL line may already contain both raw strings; it is
+	// not a loadable host message and must never finalize the parked envelope.
+	writeFileSync(
+		sessionFile,
+		`{"type":"custom_message","customType":"subagent-mail","content":"partial ${esc.id}`,
+		{ flag: "a" },
+	);
+	assert.equal(core2.drainMainMail(sessionFile), null);
+	assert.ok(existsSync(join(layoutM.mainMailboxDeliveringDir, `${esc.id}.json`)), "truncated host line stays unverified");
+	writeFileSync(sessionFile, "\n", { flag: "a" });
 
 	// --- no-crash path: host appends → next opportunity finalizes exactly once
 	hostAppend("subagent-mail", digest2);
@@ -341,7 +444,18 @@ console.log("(5) main-mail durability (core):");
 	const digest3 = core2.drainMainMail(null);
 	assert.ok(digest3.includes("PLAIN_MARKER"));
 	assert.ok(existsSync(join(layoutM.mainMailboxDoneDir, `${plain.id}.json`)), "no session file → finalize at compose time (old behavior)");
+	core2.commitMainMailDrain();
 	ok("null session file falls back to compose-time finalize (nothing durable to verify against)");
+
+	const noSessionFailure = makeEnvelope({ from: "worker/alpha", to: "main", type: "report", text: "NO_SESSION_FAILURE" });
+	mailbox.writeEnvelope(layoutM.mainMailboxDir, noSessionFailure);
+	assert.match(core2.drainMainMail(null), /NO_SESSION_FAILURE/);
+	core2.rollbackMainMailDrain();
+	assert.equal(mailbox.pendingCount(layoutM.mainMailboxDir), 1, "no-session provisional .done claim restored after injection failure");
+	assert.ok(!existsSync(join(layoutM.mainMailboxDoneDir, `${noSessionFailure.id}.json`)));
+	assert.match(core2.drainMainMail(null), /NO_SESSION_FAILURE/, "restored no-session mail can be retried");
+	core2.commitMainMailDrain();
+	ok("no-session synchronous injection failure requeues provisional done mail");
 	await core2.dispose();
 }
 
@@ -363,6 +477,7 @@ console.log("(6) main-mail durability (host wiring):");
 
 	const handlers = {};
 	const sentMessages = [];
+	let throwNextSend = false;
 	const stubPi = {
 		isStreaming: false,
 		on: (event, handler) => (handlers[event] ??= []).push(handler),
@@ -370,6 +485,10 @@ console.log("(6) main-mail durability (host wiring):");
 		registerCommand: () => {},
 		registerShortcut: () => {},
 		sendMessage: (message, options) => {
+			if (throwNextSend) {
+				throwNextSend = false;
+				throw new Error("synthetic host injection failure");
+			}
 			const mode =
 				options?.deliverAs === "nextTurn" ? "nextTurn"
 				: stubPi.isStreaming ? (options?.deliverAs === "followUp" ? "followUp" : "steer")
@@ -398,6 +517,24 @@ console.log("(6) main-mail durability (host wiring):");
 
 	await fire("session_start"); // clean start — nothing to reconcile
 	assert.equal(sentMessages.length, 0);
+
+	// Synchronous host injection failure requeues the exact claimed batch and
+	// clears mainBusy so the next boundary can retry without a restart.
+	const injectionFailure = makeEnvelope({
+		from: "worker/alpha", to: "main", type: "report", text: "INJECTION_FAILURE_MARKER",
+	});
+	mailbox.writeEnvelope(layoutW.mainMailboxDir, injectionFailure);
+	throwNextSend = true;
+	await fire("agent_settled");
+	assert.equal(sentMessages.length, 0);
+	assert.equal(mailbox.pendingCount(layoutW.mainMailboxDir), 1, "failed injection requeued persisted mail");
+	await fire("agent_settled");
+	assert.equal(sentMessages.length, 1, "requeued batch retried on the next boundary");
+	hostAppend(sentMessages[0].message);
+	await handlers.before_agent_start[0]({ type: "before_agent_start" }, ctx);
+	assert.ok(existsSync(join(layoutW.mainMailboxDoneDir, `${injectionFailure.id}.json`)));
+	sentMessages.length = 0;
+	ok("synchronous host injection failure requeues mail and unwedges auto-wake");
 
 	// A subagent escalation lands; a real user turn drains it into the digest.
 	const esc = makeEnvelope({ from: "worker/alpha", to: "main", type: "escalation", text: "approve the deploy? WIRE_ESC_MARKER" });
@@ -462,10 +599,44 @@ console.log("(6b) lifetime and same-PID runtime ownership guards:");
 
 	await runtime1.spawn({ type: "worker", id: "same-pid-owner" });
 	assert.equal(runtime1._claimRunOwner("worker", "same-pid-owner"), true);
+	const ownerBox = layoutG.mailboxDir("worker", "same-pid-owner");
+	mailbox.writeEnvelope(ownerBox, makeEnvelope({
+		from: "main", to: "worker/same-pid-owner", type: "message", text: "already queued before replacement startup",
+	}));
 	const runtime2 = new InProcessRuntime({ layout: layoutG, modelRegistry, settingsManager, maxConcurrent: 2 });
 	assert.ok(runtime2._foreignRunOwner("worker", "same-pid-owner"), "different runtimeId in this PID is foreign");
 	assert.equal(runtime2._claimRunOwner("worker", "same-pid-owner"), false, "same-PID second runtime cannot steal marker");
-	ok("lifetime mismatch rejected; same-PID runtimes retain exclusive run ownership");
+	await sleep(80);
+	assert.equal(mailbox.pendingCount(ownerBox), 1, "startup leaves pre-existing mail queued while old work is genuinely live");
+	runtime1._clearRunOwner("worker", "same-pid-owner");
+	// Reacquire in this runtime before the old-owner poll fires. The poll must
+	// recognize the successor generation as ours and never clear/reset it.
+	streamDelayMs = 700;
+	runtime2._scheduleMailTurn("worker/same-pid-owner");
+	for (let i = 0; i < 100 && getAgent(readRegistry(layoutG.registryFile), "worker/same-pid-owner")?.state !== "running"; i++) await sleep(10);
+	assert.equal(JSON.parse(readFileSync(join(layoutG.agentInstanceDir("worker", "same-pid-owner"), ".run-owner.json"), "utf8")).runtimeId, runtime2._runtimeId);
+	await sleep(350); // crosses the old poll's 250ms boundary
+	assert.equal(getAgent(readRegistry(layoutG.registryFile), "worker/same-pid-owner")?.state, "running", "old-generation poll did not reset successor turn");
+	assert.equal(JSON.parse(readFileSync(join(layoutG.agentInstanceDir("worker", "same-pid-owner"), ".run-owner.json"), "utf8")).runtimeId, runtime2._runtimeId, "old-generation poll did not unlink successor marker");
+	streamDelayMs = 0;
+	for (let i = 0; i < 100 && mailbox.pendingCount(ownerBox) > 0; i++) await sleep(20);
+	assert.equal(mailbox.pendingCount(ownerBox), 0, "successor turn drains queued mail after exact owner release");
+
+	await runtime1.spawn({ type: "worker", id: "poll-generation" });
+	assert.equal(runtime1._claimRunOwner("worker", "poll-generation"), true);
+	const oldPollGeneration = getAgent(readRegistry(layoutG.registryFile), "worker/poll-generation").generationId;
+	const runtime3 = new InProcessRuntime({ layout: layoutG, modelRegistry, settingsManager, maxConcurrent: 2 });
+	runtime1._clearRunOwner("worker", "poll-generation");
+	await runtime1.retire("worker/poll-generation");
+	await runtime1.spawn({ type: "worker", id: "poll-generation" });
+	const replacementPollGeneration = getAgent(readRegistry(layoutG.registryFile), "worker/poll-generation").generationId;
+	assert.notEqual(replacementPollGeneration, oldPollGeneration);
+	await sleep(350);
+	const replacementPollRecord = getAgent(readRegistry(layoutG.registryFile), "worker/poll-generation");
+	assert.equal(replacementPollRecord?.generationId, replacementPollGeneration, "old poll did not target replacement incarnation");
+	assert.equal(replacementPollRecord?.state, "dormant");
+	await runtime3.dispose();
+	ok("same-PID runtimes never steal ownership; stale polls are incarnation-scoped");
 	await runtime2.dispose();
 	await runtime1.dispose();
 }
@@ -527,6 +698,17 @@ console.log("(8) atomic run-owner claim — live foreign blocks, stale swept (Fi
 	// A live FOREIGN process "owns" the run marker.
 	const child = spawnChild(process.execPath, ["-e", "setTimeout(()=>{}, 30000)"], { stdio: "ignore" });
 	const ownerFile = join(layoutC.agentInstanceDir("worker", "shared"), ".run-owner.json");
+	writeFileSync(ownerFile, JSON.stringify({
+		pid: child.pid,
+		runtimeId: "pid-reused-rt",
+		processStartToken: "not-this-process-instance",
+		claimedAt: new Date().toISOString(),
+	}));
+	assert.equal(runtime._foreignRunOwner("worker", "shared"), null, "live PID with mismatched start token is stale");
+	assert.equal(runtime._claimRunOwner("worker", "shared"), true, "PID-reused marker can be reclaimed");
+	runtime._clearRunOwner("worker", "shared");
+
+	// Legacy token-less markers still recognize the genuinely live child.
 	writeFileSync(ownerFile, JSON.stringify({ pid: child.pid, runtimeId: "foreign-rt", claimedAt: new Date().toISOString() }));
 
 	await runtime.send({ to: "worker/shared", text: "do not double-run" });
@@ -550,7 +732,25 @@ console.log("(8) atomic run-owner claim — live foreign blocks, stale swept (Fi
 	for (let i = 0; i < 400 && mailbox.pendingCount(layoutC.mailboxDir("worker", "shared")) > 0; i++) await sleep(15);
 	assert.equal(mailbox.pendingCount(layoutC.mailboxDir("worker", "shared")), 0, "dead-pid owner swept; the new owner's atomic claim runs the turn and drains");
 	assert.ok(!existsSync(ownerFile), "stale run-owner marker cleared");
-	ok("live foreign run-owner blocks the wake without clobbering its marker; a dead owner is swept and reclaimed");
+	const malformedCandidate = `${ownerFile}.candidate-crashed-writer`;
+	writeFileSync(malformedCandidate, "{ partial", "utf8");
+	const candidateOld = new Date(Date.now() - 120_000);
+	utimesSync(malformedCandidate, candidateOld, candidateOld);
+	assert.equal(runtime2._claimRunOwner("worker", "shared"), true);
+	runtime2._clearRunOwner("worker", "shared");
+	assert.ok(!existsSync(malformedCandidate), "aged malformed private candidate swept");
+
+	// Operational owner reads fail closed: they cannot authorize a second run
+	// and the uncertain marker is never unlinked as though it were stale JSON.
+	const ownerLoop = join(layoutC.agentInstanceDir("worker", "shared"), "owner-loop");
+	symlinkSync("owner-loop", ownerLoop);
+	symlinkSync("owner-loop", ownerFile);
+	assert.ok(runtime2._foreignRunOwner("worker", "shared"), "unreadable owner is conservatively foreign");
+	assert.equal(runtime2._claimRunOwner("worker", "shared"), false);
+	assert.ok(lstatSync(ownerFile).isSymbolicLink(), "operational read failure did not unlink owner marker");
+	rmSync(ownerFile, { force: true });
+	rmSync(ownerLoop, { force: true });
+	ok("live/unreadable foreign owners fail closed; dead owners are reclaimed atomically");
 	await runtime2.dispose();
 }
 
@@ -565,24 +765,38 @@ console.log("(9) retire tombstone survives a mid-retire crash; no resurrection (
 	const runtime = new InProcessRuntime({ layout: layoutR, modelRegistry, settingsManager, maxConcurrent: 2 });
 	const ev1 = [];
 	runtime.onEvent((e) => ev1.push(e));
-	await runtime.spawn({ type: "worker", id: "ghost", task: "remember GHOST_MEMORY_MARKER" });
+	await runtime.spawn({ type: "worker", id: "ghost", team: "afterlife", task: "remember GHOST_MEMORY_MARKER" });
 	for (let i = 0; i < 400 && !ev1.some((e) => e.type === "turn-finished" && e.address === "worker/ghost"); i++) await sleep(15);
 	await runtime.dispose();
 
-	// Simulate the NEW retire order crashing AFTER archiveAgentDir but BEFORE
-	// removeAgent: dir in .archive/ (tombstoned), registry record still present.
-	const archiveDir = archiveAgentDir(layoutR, "worker", "ghost");
-	assert.ok(archiveDir && existsSync(archiveDir), "dir archived");
-	assert.ok(existsSync(join(archiveDir, ".retired-at")), "tombstone travelled WITH the move");
-	assert.ok(getAgent(readRegistry(layoutR.registryFile), "worker/ghost"), "registry record still present (crash before removal)");
-	assert.ok(!existsSync(layoutR.agentInstanceDir("worker", "ghost")), "live instance dir gone");
+	// Simulate a crash after durable tombstoning but before the archive move.
+	// The registry must continue reserving the address until recovery archives
+	// memory and scrubs teams; registry removal is the final publication step.
+	const sourceDir = layoutR.agentInstanceDir("worker", "ghost");
+	writeFileSync(join(sourceDir, ".retired-at"), `${new Date().toISOString()}\n`);
+	assert.ok(getAgent(readRegistry(layoutR.registryFile), "worker/ghost"), "registry still reserves the address");
+	assert.ok(existsSync(sourceDir), "old live-memory directory still exists at the crash point");
 
-	// Restart: startup reconciliation finishes the funeral.
+	// A transient operational mailbox read during recovery must install an
+	// in-process retry rather than silently leaving every crashed state held.
+	const mailboxPath = layoutR.mailboxDir("worker", "ghost");
+	const heldMailbox = join(sourceDir, "mailbox-held-for-retry");
+	rmSync(heldMailbox, { recursive: true, force: true });
+	renameSync(mailboxPath, heldMailbox);
+	symlinkSync("mailbox", mailboxPath); // self-loop -> ELOOP
+	// Restart: the first reconciliation fails closed, then retries beneath the lifecycle lock.
 	const runtime2 = new InProcessRuntime({ layout: layoutR, modelRegistry, settingsManager, maxConcurrent: 2 });
+	assert.ok(runtime2._startupRecoveryTimer, "failed startup funeral scheduled durable retry");
+	rmSync(mailboxPath, { force: true });
+	renameSync(heldMailbox, mailboxPath);
 	const ev2 = [];
 	runtime2.onEvent((e) => ev2.push(e));
-	await sleep(80);
-	assert.equal(getAgent(readRegistry(layoutR.registryFile), "worker/ghost"), undefined, "crashed retire reconciled — record removed");
+	for (let i = 0; i < 100 && getAgent(readRegistry(layoutR.registryFile), "worker/ghost"); i++) await sleep(20);
+	assert.equal(getAgent(readRegistry(layoutR.registryFile), "worker/ghost"), undefined, "crashed retire reconciled on retry — record removed last");
+	const archiveDir = layoutR.archiveDir("worker", "ghost");
+	assert.ok(existsSync(archiveDir), "old memory archived before the address became reusable");
+	assert.ok(existsSync(join(archiveDir, ".retired-at")), "tombstone travelled with the move");
+	assert.equal(readTeams(layoutR.teamsFile).afterlife, undefined, "old team membership scrubbed before publication");
 
 	// A fresh same-address spawn is created ANEW with no resurrected memory.
 	const again = await runtime2.spawn({ type: "worker", id: "ghost", task: "fresh start FRESH_MARKER" });
@@ -594,6 +808,96 @@ console.log("(9) retire tombstone survives a mid-retire crash; no resurrection (
 	assert.ok(!content.includes("GHOST_MEMORY_MARKER"), "old memory NOT resurrected into the fresh identity");
 	ok("crashed retire (dir archived, record present) is reconciled on restart with no memory resurrection");
 	await runtime2.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// (9b) Retirement drains old async work and rejects mail racing the funeral.
+// ---------------------------------------------------------------------------
+console.log("(9b) retirement generation + delivery fences:");
+{
+	const layoutD = makeWorld("retire-drain-world");
+	const runtime = new InProcessRuntime({ layout: layoutD, modelRegistry, settingsManager, maxConcurrent: 2 });
+	await runtime.spawn({ type: "worker", id: "draining" });
+	const sourceDir = layoutD.agentInstanceDir("worker", "draining");
+	let releaseOldWork;
+	const gate = new Promise((resolve) => { releaseOldWork = resolve; });
+	const oldWork = gate.then(() => {
+		mkdirSync(sourceDir, { recursive: true });
+		writeFileSync(join(sourceDir, "late-old-generation.txt"), "must be archived, never inherited\n");
+	});
+	runtime._chains.set("worker/draining", oldWork);
+	runtime._handleLocks.set("worker/draining", oldWork);
+	void oldWork.then(() => {
+		if (runtime._chains.get("worker/draining") === oldWork) runtime._chains.delete("worker/draining");
+		if (runtime._handleLocks.get("worker/draining") === oldWork) runtime._handleLocks.delete("worker/draining");
+	});
+	let retirementSettled = false;
+	const retiring = runtime.retire("worker/draining").then((result) => {
+		retirementSettled = true;
+		return result;
+	});
+	await sleep(60);
+	assert.equal(retirementSettled, false, "registry/address is not published free while old async work remains");
+	assert.ok(getAgent(readRegistry(layoutD.registryFile), "worker/draining"), "registry still reserves old generation");
+	releaseOldWork();
+	const retired = await retiring;
+	assert.ok(retired.archiveDir && existsSync(join(retired.archiveDir, "late-old-generation.txt")), "late old work drained into its archive");
+	await runtime.spawn({ type: "worker", id: "draining" });
+	assert.ok(!existsSync(join(layoutD.agentInstanceDir("worker", "draining"), "late-old-generation.txt")), "replacement inherits no old-generation files");
+
+	// Defense-in-depth overlap: another runtime can retire/recreate an idle
+	// address while this runtime still caches its old in-memory handle. The
+	// durable generation ID must force disposal/rebuild, never transcript reuse.
+	await runtime.spawn({ type: "worker", id: "handle-aba" });
+	const oldHandle = runtime._handles.get("worker/handle-aba");
+	const oldGeneration = getAgent(readRegistry(layoutD.registryFile), "worker/handle-aba").generationId;
+	const otherRuntime = new InProcessRuntime({ layout: layoutD, modelRegistry, settingsManager, maxConcurrent: 2 });
+	await otherRuntime.retire("worker/handle-aba");
+	await otherRuntime.spawn({ type: "worker", id: "handle-aba" });
+	const newGeneration = getAgent(readRegistry(layoutD.registryFile), "worker/handle-aba").generationId;
+	assert.notEqual(newGeneration, oldGeneration, "address recreation minted a new durable generation");
+	await otherRuntime.dispose();
+	await runtime.send({ to: "worker/handle-aba", text: "must use replacement generation" });
+	for (let i = 0; i < 100 && runtime._handles.get("worker/handle-aba")?.generationId !== newGeneration; i++) await sleep(20);
+	assert.equal(runtime._handles.get("worker/handle-aba")?.generationId, newGeneration);
+	assert.notEqual(runtime._handles.get("worker/handle-aba"), oldHandle, "stale in-memory session was not migrated into replacement");
+
+	await runtime.spawn({ type: "worker", id: "queued-generation-aba" });
+	let releaseQueuedGeneration;
+	const queuedGenerationGate = new Promise((resolve) => { releaseQueuedGeneration = resolve; });
+	runtime._chains.set("worker/queued-generation-aba", queuedGenerationGate);
+	await runtime.send({ to: "worker/queued-generation-aba", text: "generation A queued work" });
+	const queueRuntimeB = new InProcessRuntime({ layout: layoutD, modelRegistry, settingsManager, maxConcurrent: 2 });
+	await queueRuntimeB.retire("worker/queued-generation-aba");
+	await queueRuntimeB.spawn({ type: "worker", id: "queued-generation-aba" });
+	const replacementQueueBox = layoutD.mailboxDir("worker", "queued-generation-aba");
+	mailbox.writeEnvelope(replacementQueueBox, makeEnvelope({
+		from: "main", to: "worker/queued-generation-aba", type: "message", text: "generation B work",
+	}));
+	releaseQueuedGeneration();
+	await sleep(100);
+	assert.equal(getAgent(readRegistry(layoutD.registryFile), "worker/queued-generation-aba")?.state, "dormant", "generation-A queued turn did not stamp B");
+	assert.equal(mailbox.pendingCount(replacementQueueBox), 1, "generation-A queued turn did not consume B mailbox");
+	queueRuntimeB._scheduleMailTurn("worker/queued-generation-aba");
+	for (let i = 0; i < 100 && mailbox.pendingCount(replacementQueueBox) > 0; i++) await sleep(20);
+	assert.equal(mailbox.pendingCount(replacementQueueBox), 0);
+	await queueRuntimeB.dispose();
+
+	await runtime.spawn({ type: "worker", id: "mail-race" });
+	const bouncePending = runtime._bouncePendingMail.bind(runtime);
+	let racingSend;
+	runtime._bouncePendingMail = (address, record) => {
+		bouncePending(address, record);
+		if (address === "worker/mail-race") {
+			racingSend = runtime.send({ to: address, text: "arrived during the funeral" });
+			void racingSend.catch(() => {});
+		}
+	};
+	await runtime.retire("worker/mail-race");
+	await assert.rejects(racingSend, /No agent|retired/);
+	assert.ok(!existsSync(layoutD.agentInstanceDir("worker", "mail-race")), "racing delivery cannot recreate a retired mailbox path");
+	ok("retirement drains old generation work and atomically bounces racing delivery");
+	await runtime.dispose();
 }
 
 // ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Layout } from "../store/layout.ts";
 
@@ -110,37 +110,57 @@ export function resolveTypeDef(layout: Layout, name: string, options: DiscoverOp
 }
 
 /**
- * The `.md` type-name stems in a dir. Symlinks are INCLUDED (Finding 7 lower-
- * priority): Dirent.isFile() is false for a symlink, but resolution follows it
- * (readFileSync), so listing it as absent while spawn happily resolves it was
- * inconsistent. We accept a symlink whose target stats as a regular file.
+ * A type definition must be an independent ordinary file. Symlinks and
+ * multiply-linked files are rejected: otherwise the same constitution could
+ * be edited through an unprotected path outside the type library, bypassing
+ * the non-overridable self-retuning denial.
  */
+function isIndependentTypeFile(path: string): boolean {
+	try {
+		const info = lstatSync(path);
+		return info.isFile() && info.nlink === 1;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
+}
+
+/** The safe `.md` type-name stems in a library directory. */
 function typeNamesIn(dir: string): string[] {
 	if (!existsSync(dir)) return [];
 	const names: string[] = [];
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
 		if (!entry.name.endsWith(".md") || entry.name.startsWith(".")) continue;
-		let isFile = entry.isFile();
-		if (!isFile && entry.isSymbolicLink()) {
-			try {
-				isFile = statSync(join(dir, entry.name)).isFile(); // follow the link
-			} catch {
-				isFile = false; // dangling/unreadable symlink — resolution would fail too
-			}
+		if (entry.isFile() && isIndependentTypeFile(join(dir, entry.name))) {
+			names.push(entry.name.slice(0, -".md".length));
 		}
-		if (isFile) names.push(entry.name.slice(0, -".md".length));
 	}
 	return names;
 }
 
-function readTypeDef(layout: Layout, dir: string, name: string, source: TypeDefSource): DiscoveredTypeDef | null {
-	const path = layout.typeDefFile(dir, name);
-	let content: string;
+function readIndependentTypeFile(path: string): string | null {
+	let fd: number;
 	try {
-		content = readFileSync(path, "utf8");
+		// O_NOFOLLOW closes the lstat→read swap window for the leaf on platforms
+		// that expose it; fstat validates the exact opened inode and link count.
+		fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ELOOP") return null;
 		throw error;
 	}
+	try {
+		const info = fstatSync(fd);
+		if (!info.isFile() || info.nlink !== 1) return null;
+		return readFileSync(fd, "utf8");
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function readTypeDef(layout: Layout, dir: string, name: string, source: TypeDefSource): DiscoveredTypeDef | null {
+	const path = layout.typeDefFile(dir, name);
+	const content = readIndependentTypeFile(path);
+	if (content === null) return null;
 	return { name, path, source, content, hash: sha256(content) };
 }

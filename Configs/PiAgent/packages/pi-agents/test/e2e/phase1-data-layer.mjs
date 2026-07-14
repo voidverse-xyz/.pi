@@ -6,9 +6,10 @@
  * Run: node phase1-data-layer.mjs
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
 import { EXT, WORLDS, jiti } from "./env.mjs";
 
 const { createLayout, cwdSlug, cwdDigest, sessionFileName } = await jiti.import(join(EXT, "store/layout.ts"));
@@ -119,6 +120,121 @@ ok("interrupted legacy copy is recovered to the inactive source", () => {
 	assert.ok(!existsSync(staging));
 });
 
+ok("protocol-2 pre-activation copy crash preserves the authoritative source and empty scope", () => {
+	const home2 = join(scratch, "home-migrate-preactivation-crash");
+	const lay = createLayout("/home/user/preactivation-crash-project", { home: home2, sessionId: "test-session" });
+	const staging = join(lay.ownersRoot, ".adopting-test-session-preactivation");
+	mkdirSync(lay.legacySubagentsRoot, { recursive: true });
+	writeFileSync(join(lay.legacySubagentsRoot, "registry.json"), '{"legacy":true}\n');
+	mkdirSync(staging, { recursive: true });
+	writeFileSync(join(staging, "partial-copy"), "partial\n");
+	mkdirSync(lay.subagentsRoot, { recursive: true });
+	writeFileSync(lay.scopeManifestFile, `${JSON.stringify({ version: 2, ownerSessionId: lay.ownerSessionId })}\n`);
+	mkdirSync(lay.stateContainerRoot, { recursive: true });
+	writeFileSync(join(lay.stateContainerRoot, ".adoption-ledger.json"), `${JSON.stringify({
+		version: 1,
+		protocol: 2,
+		status: "copying",
+		source: lay.legacySubagentsRoot,
+		backup: `${lay.legacySubagentsRoot}.legacy-backup-unused`,
+		staging,
+		ownerSessionId: lay.ownerSessionId,
+	})}\n`);
+	const recovered = recoverInterruptedAdoption(lay);
+	assert.equal(recovered.recovered, true);
+	assert.ok(existsSync(join(lay.legacySubagentsRoot, "registry.json")));
+	assert.ok(existsSync(lay.scopeManifestFile), "pre-existing empty scope metadata was not misclassified/divergently deleted");
+	assert.ok(!existsSync(staging));
+});
+
+ok("post-activation adoption crash recovers despite generated scope metadata", () => {
+	const home2 = join(scratch, "home-migrate-activated-crash");
+	const lay = createLayout("/home/user/activated-crash-project", { home: home2, sessionId: "test-session" });
+	const backup = `${lay.legacySubagentsRoot}.legacy-backup-activated`;
+	const staging = join(lay.ownersRoot, ".adopting-test-session-activated");
+	mkdirSync(backup, { recursive: true });
+	writeFileSync(join(backup, "registry.json"), '{"agents":{}}\n');
+	mkdirSync(lay.subagentsRoot, { recursive: true });
+	writeFileSync(join(lay.subagentsRoot, "registry.json"), '{"agents":{}}\n');
+	writeFileSync(lay.scopeManifestFile, `${JSON.stringify({
+		version: 2,
+		cwd: lay.cwd,
+		ownerSessionId: lay.ownerSessionId,
+		persisted: true,
+		createdAt: new Date().toISOString(),
+	})}\n`);
+	mkdirSync(lay.stateContainerRoot, { recursive: true });
+	writeFileSync(join(lay.stateContainerRoot, ".adoption-ledger.json"), `${JSON.stringify({
+		version: 1,
+		status: "copying",
+		source: lay.legacySubagentsRoot,
+		backup,
+		staging,
+		ownerSessionId: lay.ownerSessionId,
+	})}\n`);
+	const recovered = recoverInterruptedAdoption(lay);
+	assert.equal(recovered.recovered, true);
+	assert.ok(existsSync(join(lay.legacySubagentsRoot, "registry.json")));
+	assert.ok(!existsSync(lay.subagentsRoot));
+});
+
+ok("interrupted rollback restores backup before removing the activated scope", () => {
+	const home2 = join(scratch, "home-rollback-crash");
+	const lay = createLayout("/home/user/rollback-crash-project", { home: home2, sessionId: "test-session" });
+	const backup = `${lay.legacySubagentsRoot}.legacy-backup-rollback`;
+	mkdirSync(backup, { recursive: true });
+	writeFileSync(join(backup, "registry.json"), '{"legacy":true}\n');
+	mkdirSync(lay.subagentsRoot, { recursive: true });
+	writeFileSync(join(lay.subagentsRoot, "registry.json"), '{"activated":true}\n');
+	mkdirSync(lay.stateContainerRoot, { recursive: true });
+	writeFileSync(join(lay.stateContainerRoot, ".adoption-ledger.json"), `${JSON.stringify({
+		version: 1,
+		status: "rolling-back",
+		source: lay.legacySubagentsRoot,
+		backup,
+		ownerSessionId: lay.ownerSessionId,
+	})}\n`);
+	const recovered = recoverInterruptedAdoption(lay);
+	assert.equal(recovered.recovered, true);
+	assert.ok(existsSync(join(lay.legacySubagentsRoot, "registry.json")));
+	assert.ok(!existsSync(lay.subagentsRoot));
+});
+
+ok("legacy rollback fingerprint detects symlink retargeting", () => {
+	const home2 = join(scratch, "home-migrate-symlink");
+	const lay = createLayout("/home/user/symlink-project", { home: home2, sessionId: "test-session" });
+	mkdirSync(lay.legacySubagentsRoot, { recursive: true });
+	writeFileSync(join(lay.legacySubagentsRoot, "registry.json"), '{"agents":{}}\n');
+	symlinkSync("target-before", join(lay.legacySubagentsRoot, "mutable-link"));
+	adoptLegacyState(lay);
+	rmSync(join(lay.subagentsRoot, "mutable-link"), { force: true });
+	symlinkSync("target-after", join(lay.subagentsRoot, "mutable-link"));
+	assert.throws(() => rollbackLegacyAdoption(lay), /has diverged/);
+	// Restore the link, then prove basename exclusions do not hide user files
+	// nested below the reserved agent-marker location.
+	rmSync(join(lay.subagentsRoot, "mutable-link"), { force: true });
+	symlinkSync("target-before", join(lay.subagentsRoot, "mutable-link"));
+	const nested = join(lay.subagentsRoot, "worker", "id", "files");
+	mkdirSync(nested, { recursive: true });
+	writeFileSync(join(nested, ".run-owner.json"), "user work, not a runtime marker\n");
+	writeFileSync(join(nested, ".host-owner.json"), "also user work\n");
+	assert.throws(() => rollbackLegacyAdoption(lay), /has diverged/);
+	rmSync(join(lay.subagentsRoot, "worker"), { recursive: true, force: true });
+	assert.equal(rollbackLegacyAdoption(lay).restored, lay.legacySubagentsRoot);
+});
+ok("legacy adoption rejects a symlink root without touching its external target", () => {
+	const home2 = join(scratch, "home-migrate-symlink-root");
+	const lay = createLayout("/home/user/symlink-root-project", { home: home2, sessionId: "test-session" });
+	const external = join(scratch, "external-legacy-root");
+	mkdirSync(external, { recursive: true });
+	writeFileSync(join(external, "registry.json"), '{"external":true}\n');
+	mkdirSync(dirname(lay.legacySubagentsRoot), { recursive: true });
+	symlinkSync(external, lay.legacySubagentsRoot);
+	assert.throws(() => adoptLegacyState(lay), /must be a real directory/);
+	assert.ok(existsSync(join(external, "registry.json")));
+	assert.deepEqual(readdirSync(external), ["registry.json"], "migration never created/removed lifecycle machinery in target");
+});
+
 ok("existing legacy state requires explicit adoption into one session", () => {
 	const home2 = join(scratch, "home-migrate");
 	const cwd = "/home/user/legacy-project";
@@ -127,6 +243,11 @@ ok("existing legacy state requires explicit adoption into one session", () => {
 	mkdirSync(lay.legacySubagentsRoot, { recursive: true });
 	writeFileSync(join(lay.legacySubagentsRoot, "registry.json"), '{"agents":{}}\n');
 	assert.ok(!existsSync(lay.subagentsRoot));
+	// A live destination host lease must never be deleted out from under its core.
+	mkdirSync(lay.subagentsRoot, { recursive: true });
+	writeFileSync(lay.hostOwnerFile, `${JSON.stringify({ pid: process.pid, runtimeId: "live-destination" })}\n`);
+	assert.throws(() => adoptLegacyState(lay), /Release the current session's subagent core/);
+	rmSync(lay.hostOwnerFile, { force: true });
 	// Merely constructing the layout never assigns it, and a live legacy
 	// run-owner blocks adoption until every old Pi process is closed.
 	assert.ok(existsSync(lay.legacySubagentsRoot));
@@ -135,9 +256,18 @@ ok("existing legacy state requires explicit adoption into one session", () => {
 	writeFileSync(join(liveAgent, ".run-owner.json"), `${JSON.stringify({ pid: process.pid })}\n`);
 	assert.throws(() => adoptLegacyState(lay), /still run-owned by live Pi process/);
 	rmSync(liveAgent, { recursive: true, force: true });
+	// Crash debris from a lifecycle lock is runtime machinery, not divergent
+	// user state, and must not brick adoption of an otherwise-empty scope.
+	writeFileSync(join(lay.subagentsRoot, ".lifecycle.lock.candidate-dead"), "{}\n");
+	writeFileSync(join(lay.subagentsRoot, ".lifecycle.lock.stale-dead"), "{}\n");
 	const adopted = adoptLegacyState(lay);
 	assert.ok(!existsSync(lay.legacySubagentsRoot));
 	assert.ok(existsSync(adopted.backup), "inactive legacy backup retained");
+	const losingSession = createLayout(cwd, { home: home2, sessionId: "second-session" });
+	assert.throws(() => adoptLegacyState(losingSession), /No legacy cwd-wide subagent state/);
+	const adoptionLedger = JSON.parse(readFileSync(join(lay.stateContainerRoot, ".adoption-ledger.json"), "utf8"));
+	assert.equal(adoptionLedger.ownerSessionId, lay.ownerSessionId, "losing adopter did not overwrite first owner's ledger");
+	assert.ok(!existsSync(losingSession.subagentsRoot), "losing adopter did not publish phantom empty ownership");
 	assert.ok(existsSync(join(lay.subagentsRoot, "registry.json")));
 	assert.ok(existsSync(lay.scopeManifestFile));
 	const rolledBack = rollbackLegacyAdoption(lay);
@@ -192,6 +322,14 @@ ok("roundtrip + get-or-create + patch", () => {
 	assert.equal(registry.listAgents(reloaded).length, 0);
 });
 ok("persisted records are deeply validated before paths can use them", () => {
+	const legacy = JSON.parse(readFileSync(layout.registryFile, "utf8"));
+	delete legacy.agents["refactorer/auth"].generationId;
+	writeFileSync(layout.registryFile, JSON.stringify(legacy));
+	const legacyGeneration1 = registry.readRegistry(layout.registryFile).agents["refactorer/auth"].generationId;
+	const legacyGeneration2 = registry.readRegistry(layout.registryFile).agents["refactorer/auth"].generationId;
+	assert.equal(legacyGeneration1, legacyGeneration2, "legacy generation normalization is deterministic across readers");
+	registry.updateRegistry(layout.registryFile, () => {});
+	assert.equal(JSON.parse(readFileSync(layout.registryFile, "utf8")).agents["refactorer/auth"].generationId, legacyGeneration1);
 	const valid = registry.readRegistry(layout.registryFile);
 	const original = valid.agents["refactorer/auth"];
 	assert.ok(original);
@@ -199,28 +337,165 @@ ok("persisted records are deeply validated before paths can use them", () => {
 	assert.throws(() => registry.readRegistry(layout.registryFile), /Invalid agent record/);
 	registry.writeRegistry(layout.registryFile, registry.emptyRegistry());
 });
+ok("generic state locks reclaim PID-reused and owner-write crash generations", () => {
+	const file = join(scratch, "registry-pid-reuse.json");
+	writeFileSync(`${file}.lock`, `${JSON.stringify({
+		pid: process.pid,
+		processStartToken: "not-the-current-process-instance",
+		createdAt: new Date(Date.now() - 120_000).toISOString(),
+	})}\n`);
+	registry.updateRegistry(file, () => {});
+	assert.ok(!existsSync(`${file}.lock`));
+
+	// Crash after publishing the per-generation reclaim lease but before
+	// unlinking the stale file: a later process retires the dead lease through
+	// a non-empty directory generation CAS and completes reclamation.
+	const reclaimCrash = join(scratch, "registry-reclaim-crash.json");
+	const staleRaw = `${JSON.stringify({
+		pid: process.pid,
+		processStartToken: "dead-active-generation",
+		createdAt: new Date(Date.now() - 120_000).toISOString(),
+	})}\n`;
+	writeFileSync(`${reclaimCrash}.lock`, staleRaw);
+	const staleStat = statSync(`${reclaimCrash}.lock`);
+	const observed = `file:${staleStat.dev}:${staleStat.ino}:${staleStat.mtimeMs}:${staleRaw}`;
+	const generation = createHash("sha256").update(observed).digest("hex");
+	const reclaimLease = `${reclaimCrash}.lock.reclaim-${generation}`;
+	mkdirSync(reclaimLease);
+	const deadReclaimerRaw = `${JSON.stringify({
+		pid: process.pid,
+		lockId: "dead-reclaimer",
+		processStartToken: "dead-reclaimer-generation",
+		createdAt: new Date(Date.now() - 120_000).toISOString(),
+	})}\n`;
+	writeFileSync(join(reclaimLease, "owner.json"), deadReclaimerRaw);
+	const leaseStat = statSync(reclaimLease);
+	const leaseGeneration = createHash("sha256")
+		.update(`lease:${leaseStat.dev}:${leaseStat.ino}:${deadReclaimerRaw}`)
+		.digest("hex");
+	const expectedLeaseTombstone = `${reclaimLease}.stale-${leaseGeneration}`;
+	// A contender that observed an earlier incomplete directory may write its
+	// marker into this replacement complete lease before noticing inode change.
+	// That changes directory mtime but must NOT split the complete generation's
+	// tombstone hash, or delayed reclaimers can rename one another's live lease.
+	writeFileSync(join(reclaimLease, ".stale-generation"), "late marker from replaced inode\n");
+	utimesSync(reclaimLease, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+	registry.updateRegistry(reclaimCrash, () => {});
+	assert.ok(!existsSync(`${reclaimCrash}.lock`));
+	assert.ok(!existsSync(reclaimLease));
+	assert.ok(existsSync(expectedLeaseTombstone), "complete lease tombstone ignores mutable directory mtime");
+
+	const incomplete = join(scratch, "registry-incomplete-lock.json");
+	mkdirSync(`${incomplete}.lock`, { recursive: true });
+	const old = new Date(Date.now() - 120_000);
+	utimesSync(`${incomplete}.lock`, old, old);
+	registry.updateRegistry(incomplete, () => {});
+	assert.ok(!existsSync(`${incomplete}.lock`));
+
+	const debris = join(scratch, "registry-lock-debris.json");
+	const deadOwner = `${JSON.stringify({
+		pid: process.pid,
+		processStartToken: "dead-process-generation",
+		createdAt: new Date(Date.now() - 120_000).toISOString(),
+	})}\n`;
+	writeFileSync(`${debris}.lock.candidate-dead`, deadOwner);
+	writeFileSync(`${debris}.lock.stale-dead`, deadOwner);
+	registry.updateRegistry(debris, () => {});
+	assert.ok(!existsSync(`${debris}.lock.candidate-dead`));
+	assert.ok(!existsSync(`${debris}.lock.stale-dead`));
+});
 {
 	const file = join(scratch, "registry-concurrent.json");
 	const child = join(scratch, "registry-writer.mjs");
+	const readyDir = join(scratch, "registry-writer-ready");
+	const startFile = join(scratch, "registry-writer-start");
+	mkdirSync(readyDir, { recursive: true });
+	// Both contenders begin from one stale, PID-reused directory generation.
+	mkdirSync(`${file}.lock`, { recursive: true });
+	writeFileSync(join(`${file}.lock`, "owner.json"), `${JSON.stringify({
+		pid: process.pid,
+		lockId: "stale-generation",
+		processStartToken: "not-this-process",
+		createdAt: new Date(Date.now() - 120_000).toISOString(),
+	})}\n`);
 	const envUrl = new URL("./env.mjs", import.meta.url).href;
 	writeFileSync(child, `
+import { existsSync, writeFileSync } from "node:fs";
 import { EXT, jiti } from ${JSON.stringify(envUrl)};
 import { join } from "node:path";
 const registry = await jiti.import(join(EXT, "store/registry.ts"));
-const [file, prefix] = process.argv.slice(2);
-for (let i = 0; i < 30; i++) registry.updateRegistry(file, reg => registry.upsertAgent(reg, {
-  type: "worker", id: prefix + i, lifetime: "persistent", purview: prefix, typeFileHash: "hash"
-}));
+const [file, prefix, readyDir, startFile] = process.argv.slice(2);
+writeFileSync(join(readyDir, prefix), "ready\\n");
+while (!existsSync(startFile)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+for (let i = 0; i < 30; i++) registry.updateRegistry(file, reg => {
+  if (i === 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
+  return registry.upsertAgent(reg, {
+    type: "worker", id: prefix + i, lifetime: "persistent", purview: prefix, typeFileHash: "hash"
+  });
+});
 `);
 	const run = (prefix) => new Promise((resolve, reject) => {
-		const proc = spawn(process.execPath, [child, file, prefix], { stdio: "inherit" });
+		const proc = spawn(process.execPath, [child, file, prefix, readyDir, startFile], { stdio: "inherit" });
 		proc.once("error", reject);
 		proc.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`registry writer exited ${code}`)));
 	});
-	await Promise.all([run("a"), run("b")]);
+	const writers = [run("a"), run("b")];
+	for (let i = 0; i < 400 && (!existsSync(join(readyDir, "a")) || !existsSync(join(readyDir, "b"))); i++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.ok(existsSync(join(readyDir, "a")) && existsSync(join(readyDir, "b")));
+	writeFileSync(startFile, "go\n");
+	await Promise.all(writers);
 	assert.equal(registry.listAgents(registry.readRegistry(file)).length, 60);
 	passed++;
 	console.log("  ok  concurrent registry writers preserve every update");
+}
+{
+	const file = join(scratch, "registry-concurrent-stale-file.json");
+	const child = join(scratch, "registry-file-writer.mjs");
+	const readyDir = join(scratch, "registry-file-writer-ready");
+	const startFile = join(scratch, "registry-file-writer-start");
+	mkdirSync(readyDir, { recursive: true });
+	// Regular-file generation: this is the hard-link reclaim path whose old
+	// shared tombstone allowed two reclaimers to unlink a replacement lock.
+	writeFileSync(`${file}.lock`, `${JSON.stringify({
+		pid: process.pid,
+		lockId: "stale-file-generation",
+		processStartToken: "not-this-process",
+		createdAt: new Date(Date.now() - 120_000).toISOString(),
+	})}\n`);
+	const envUrl = new URL("./env.mjs", import.meta.url).href;
+	writeFileSync(child, `
+import { existsSync, writeFileSync } from "node:fs";
+import { EXT, jiti } from ${JSON.stringify(envUrl)};
+import { join } from "node:path";
+const registry = await jiti.import(join(EXT, "store/registry.ts"));
+const [file, prefix, readyDir, startFile] = process.argv.slice(2);
+writeFileSync(join(readyDir, prefix), "ready\\n");
+while (!existsSync(startFile)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+for (let i = 0; i < 40; i++) registry.updateRegistry(file, reg => {
+  if (i === 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+  return registry.upsertAgent(reg, {
+    type: "worker", id: prefix + i, lifetime: "persistent", purview: prefix, typeFileHash: "hash"
+  });
+});
+`);
+	const run = (prefix) => new Promise((resolve, reject) => {
+		const proc = spawn(process.execPath, [child, file, prefix, readyDir, startFile], { stdio: "inherit" });
+		proc.once("error", reject);
+		proc.once("exit", (code) => code === 0 ? resolve() : reject(new Error(`file-lock writer exited ${code}`)));
+	});
+	const prefixes = ["a", "b", "c", "d"];
+	const writers = prefixes.map(run);
+	for (let i = 0; i < 400 && prefixes.some((prefix) => !existsSync(join(readyDir, prefix))); i++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.ok(prefixes.every((prefix) => existsSync(join(readyDir, prefix))));
+	writeFileSync(startFile, "go\n");
+	await Promise.all(writers);
+	assert.equal(registry.listAgents(registry.readRegistry(file)).length, 160);
+	passed++;
+	console.log("  ok  stale regular-file lock reclaim serializes every contender");
 }
 
 // ---------------------------------------------------------------- teams
@@ -442,9 +717,22 @@ ok("makeEnvelope + validate roundtrip", () => {
 	assert.ok(envelope.validateEnvelope({ ...env, type: "broadcast" }).length > 0);
 	assert.ok(envelope.validateEnvelope({ ...env, hops: -1 }).length > 0);
 	assert.ok(envelope.validateEnvelope({ ...env, payload: {} }).length > 0);
-	// data payload preserved
-	const rep = envelope.makeEnvelope({ from: "refactorer/auth", to: "main", type: "report", text: "done", data: { files: 3 } });
+	// data payload + optional sender-incarnation fence preserved
+	const generationId = `gen_${"a".repeat(32)}`;
+	const rep = envelope.makeEnvelope({
+		from: "refactorer/auth",
+		fromGenerationId: generationId,
+		to: "main",
+		type: "report",
+		text: "done",
+		data: { files: 3 },
+	});
 	assert.deepEqual(rep.payload, { text: "done", data: { files: 3 } });
+	assert.equal(rep.fromGenerationId, generationId);
+	assert.deepEqual(envelope.validateEnvelope(rep), []);
+	assert.throws(() => envelope.makeEnvelope({
+		from: "main", fromGenerationId: generationId, to: "refactorer/auth", type: "message", text: "bad fence",
+	}));
 });
 ok("ulid ordering: 2000 ids strictly increasing", () => {
 	const ids = [];

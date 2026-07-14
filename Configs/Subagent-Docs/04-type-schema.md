@@ -5,7 +5,9 @@ frontmatter; the body is the agent's role prose (context layer 3, D18).
 
 Discovery (D6): `~/.pi/agent/subagents/<type>.md` (global) and
 `<project>/.pi/subagents/<type>.md` (project; wins on name conflict). Live-resolved
-at wake; resolved-file hash recorded in instance state.
+at wake; resolved-file hash recorded in instance state. A definition must be an
+independent regular file: symbolic links and files with multiple hard links are
+ignored so the same constitution cannot be mutated through an unprotected alias.
 
 Doctrine (D19): every frontmatter field is type-fixed. `subagent_spawn` carries
 only instance identity: id, team, lifetime, task. Need a variant → write another
@@ -63,8 +65,10 @@ routing (always the human — D10), mailbox behavior (contract-fixed — 02), id
   overlap.
 - Paths resolved to real paths before checking (symlink defense).
 - Bash under a path-restricted type: mutation heuristics — commands that look
-  mutating and aren't provably inside writePaths → escalation envelope. Fails safe:
-  false positives become human decisions, never silent writes.
+  mutating and aren't provably inside writePaths → escalation envelope. A
+  path-qualified executable always escalates; only a bare command name can match
+  the trusted read-only/mutator tables. Fails safe: false positives become human
+  decisions, never silent writes.
 - Implicit system denials, non-overridable, for every agent regardless of type:
   the subagents/ state tree (mailboxes, sessions, teams.json, registry) and the
   type-definition directories. Prevents self-modified type files (privilege

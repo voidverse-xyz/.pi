@@ -34,8 +34,9 @@
  * `cancelled`, the promise rejects, and the aborting turn unwinds normally.
  */
 
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { ulid } from "../mail/envelope.ts";
+import { atomicWriteJson } from "../store/registry.ts";
 
 // ---------------------------------------------------------------------------
 // Records
@@ -92,6 +93,8 @@ export interface EscalationManagerOptions {
 	 * still pends either way (the record + TUI widget remain the fallback).
 	 */
 	notifyMain: (record: EscalationRecord) => string | null;
+	/** Settle main-mail notification that became obsolete before the wait began/resumed. */
+	onObsoleteNotification?: (record: EscalationRecord) => void;
 	/** The agent just blocked: registry → `waiting`, scheduler slot released. */
 	onWaiting: (agent: string) => void;
 	/**
@@ -108,6 +111,8 @@ export interface EscalationManagerOptions {
 
 interface PendingEntry {
 	record: EscalationRecord;
+	/** A human decision was made; slot/lifecycle restoration is still in flight. */
+	resolving: boolean;
 	settle: (resolution: EscalationResolution) => void;
 	cancel: (reason: string) => void;
 }
@@ -143,39 +148,86 @@ export class EscalationManager {
 			resolvedAt: null,
 		};
 		this._persist(record);
-		record.envelopeId = this._o.notifyMain(record);
-		this._persist(record);
 
 		return new Promise<EscalationResolution>((resolve, reject) => {
-			const entry: PendingEntry = {
+			let entry: PendingEntry;
+			const onAbort = (): void => {
+				if (this._pending.get(record.id) !== entry) return;
+				this._pending.delete(record.id);
+				entry.cancel("Tool call aborted while waiting for human approval — escalation cancelled.");
+			};
+			const cleanup = (): void => signal?.removeEventListener("abort", onAbort);
+			const settleObsoleteNotification = (): void => {
+				try {
+					this._o.onObsoleteNotification?.({ ...record });
+				} catch {
+					// Lifecycle/startup reconciliation retries from the durable record.
+				}
+			};
+			entry = {
 				record,
+				resolving: false,
 				settle: (resolution) => {
 					cleanup();
 					resolve(resolution);
 				},
 				cancel: (reason) => {
 					cleanup();
-					this._finalize(record, "cancelled", null);
+					try {
+						this._finalize(record, "cancelled", null);
+					} catch {
+						// Keep the last valid atomic record; startup reconciliation retries.
+					}
+					settleObsoleteNotification();
 					reject(new Error(reason));
 				},
 			};
-			const onAbort = (): void => {
-				this._pending.delete(record.id);
-				entry.cancel("Tool call aborted while waiting for human approval — escalation cancelled.");
-			};
-			const cleanup = (): void => signal?.removeEventListener("abort", onAbort);
-			signal?.addEventListener("abort", onAbort, { once: true });
 			this._pending.set(record.id, entry);
-			this._o.emit?.({ type: "escalation-created", escalation: { ...record } });
-			this._o.onWaiting(input.agent);
+			// Install the abort handler BEFORE notifyMain: delivery callbacks may
+			// re-enter interrupt/dispose synchronously. Re-check immediately because
+			// adding a listener to an already-aborted signal does not fire it.
+			signal?.addEventListener("abort", onAbort, { once: true });
+			if (signal?.aborted) {
+				onAbort();
+				return;
+			}
+			try {
+				record.envelopeId = this._o.notifyMain(record);
+				this._persist(record);
+			} catch (error) {
+				if (this._pending.get(record.id) === entry) this._pending.delete(record.id);
+				const message = error instanceof Error ? error.message : String(error);
+				entry.cancel(`Could not raise escalation: ${message}`);
+				return;
+			}
+			if (this._pending.get(record.id) !== entry || signal?.aborted) {
+				settleObsoleteNotification();
+				return;
+			}
+			try {
+				this._o.emit?.({ type: "escalation-created", escalation: { ...record } });
+				if (this._pending.get(record.id) === entry) this._o.onWaiting(input.agent);
+			} catch (error) {
+				if (this._pending.get(record.id) === entry) this._pending.delete(record.id);
+				const message = error instanceof Error ? error.message : String(error);
+				entry.cancel(`Could not enter escalation wait: ${message}`);
+			}
 		});
 	}
 
 	/** Pending escalations, oldest first (Phase 6 modal queue + ⚠ widget). */
 	pending(): EscalationRecord[] {
 		return [...this._pending.values()]
+			.filter((entry) => entry.record.status === "pending")
 			.map((entry) => ({ ...entry.record }))
 			.sort((a, b) => (a.id < b.id ? -1 : 1));
+	}
+
+	/** Pending or resolution-in-flight entries used by lifecycle cancellation. */
+	active(agent?: string): EscalationRecord[] {
+		return [...this._pending.values()]
+			.filter((entry) => agent === undefined || entry.record.agent === agent)
+			.map((entry) => ({ ...entry.record }));
 	}
 
 	/** HUMAN-only (D10): approve once. False if the id is not pending. */
@@ -195,7 +247,7 @@ export class EscalationManager {
 	 */
 	denyByEnvelope(envelopeId: string, note: string): boolean {
 		for (const entry of this._pending.values()) {
-			if (entry.record.envelopeId === envelopeId) {
+			if (entry.record.status === "pending" && entry.record.envelopeId === envelopeId) {
 				return this.deny(entry.record.id, note);
 			}
 		}
@@ -218,29 +270,64 @@ export class EscalationManager {
 
 	private _resolve(id: string, resolution: EscalationResolution): boolean {
 		const entry = this._pending.get(id);
-		if (!entry) return false;
-		this._pending.delete(id);
-		this._finalize(entry.record, resolution.approved ? "approved" : "denied", resolution.approved ? null : resolution.note);
-		// Slot re-acquisition + state flip happen before the tool proceeds;
-		// the settle chains behind it so approval order is preserved.
+		if (!entry || entry.resolving || entry.record.status !== "pending") return false;
+		entry.resolving = true;
+		try {
+			this._finalize(
+				entry.record,
+				resolution.approved ? "approved" : "denied",
+				resolution.approved ? null : resolution.note,
+			);
+		} catch {
+			entry.resolving = false;
+			return false; // still pending; the human may retry or abort safely
+		}
+		try {
+			this._o.onObsoleteNotification?.({ ...entry.record });
+		} catch {
+			// Terminal audit state is durable; startup reconciliation retries mail.
+		}
+		// Keep the entry cancellable until slot re-acquisition + live-state
+		// restoration succeed. retire()/dispose()/AbortSignal can therefore win a
+		// race after the human decision but before the guarded tool resumes.
 		void this._o
 			.onResolved(entry.record.agent, resolution)
-			.then(() => entry.settle(resolution))
-			.catch(() => entry.settle(resolution));
+			.then(() => {
+				if (this._pending.get(id) !== entry) return;
+				this._pending.delete(id);
+				entry.settle(resolution);
+			})
+			.catch((error) => {
+				if (this._pending.get(id) !== entry) return;
+				this._pending.delete(id);
+				const message = error instanceof Error ? error.message : String(error);
+				entry.cancel(`Could not resume after escalation resolution: ${message}`);
+			});
 		return true;
 	}
 
 	private _finalize(record: EscalationRecord, status: EscalationStatus, note: string | null): void {
+		const previous = { status: record.status, note: record.note, resolvedAt: record.resolvedAt };
 		record.status = status;
 		record.note = note;
 		record.resolvedAt = (this._o.now?.() ?? new Date()).toISOString();
-		this._persist(record);
-		this._o.emit?.({ type: "escalation-resolved", escalation: { ...record } });
+		try {
+			this._persist(record);
+		} catch (error) {
+			record.status = previous.status;
+			record.note = previous.note;
+			record.resolvedAt = previous.resolvedAt;
+			throw error;
+		}
+		try {
+			this._o.emit?.({ type: "escalation-resolved", escalation: { ...record } });
+		} catch {
+			// An observer cannot roll back a durable lifecycle decision.
+		}
 	}
 
 	private _persist(record: EscalationRecord): void {
-		mkdirSync(this._o.escalationsDir, { recursive: true });
-		writeFileSync(this._o.escalationFile(record.id), `${JSON.stringify(record, null, "\t")}\n`, "utf8");
+		atomicWriteJson(this._o.escalationFile(record.id), record);
 	}
 }
 

@@ -29,7 +29,7 @@
  * Run: node smoke-phase5.mjs
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
 
@@ -44,6 +44,7 @@ const paths = await jiti.import(join(EXT, "sandbox/paths.ts"));
 const bashGuard = await jiti.import(join(EXT, "sandbox/bash-guard.ts"));
 const toolsFilter = await jiti.import(join(EXT, "sandbox/tools-filter.ts"));
 const escalationMod = await jiti.import(join(EXT, "sandbox/escalation.ts"));
+const { makeEnvelope } = await jiti.import(join(EXT, "mail/envelope.ts"));
 const mailbox = await jiti.import(join(EXT, "mail/mailbox.ts"));
 const { createCore } = await jiti.import(join(EXT, "core.ts"));
 
@@ -505,7 +506,7 @@ await test("C3: env is a wrapper — the REAL command is classified; ambiguous e
 		["env LANG=C rm -rf /etc/x", "escalate", /rm target/], // benign env consumed, real command classified
 		["env -i LANG=C touch other/x", "escalate", /touch target/],
 		["env -u PATH frobnicate", "escalate", /unknown command/],
-		["/usr/bin/env rm /etc/x", "escalate", /rm target/],
+		["/usr/bin/env rm /etc/x", "escalate", /path-qualified/],
 		["env env rm /etc/x", "escalate", /rm target/],
 		["env bash -c 'rm x'", "escalate", /hides the real command/],
 		["env -C /tmp touch x", "escalate", /too ambiguous/], // -C changes cwd → relative targets untrustworthy
@@ -525,6 +526,64 @@ await test("C3: env is a wrapper — the REAL command is classified; ambiguous e
 		assert.equal(v.verdict, expected, cmd);
 		if (re) assert.match(v.reason, re, cmd);
 	}
+});
+
+await test("path-qualified executable names never inherit a trusted basename", async () => {
+	const cases = [
+		["./allowed/ls", rw],
+		["/tmp/git status", rw],
+		["/bin/ls -la", rw],
+		["command ./allowed/find . -type f", rw],
+		["./allowed/ls", ro],
+	];
+	for (const [cmd, opts] of cases) {
+		const verdict = classify(cmd, opts);
+		assert.equal(verdict.verdict, "escalate", cmd);
+		assert.match(verdict.reason, /path-qualified/, cmd);
+	}
+	assert.equal(classify("ls -la", rw).verdict, "allow", "bare trusted command remains allowed");
+	assert.equal(classify("git status", rw).verdict, "allow", "bare read-only git remains allowed");
+});
+
+await test("end-of-options keeps hyphen-leading mutation operands visible", async () => {
+	for (const cmd of [
+		"cp -- allowed/src -dest",
+		"mv -- allowed/src -dest",
+		"ln -- allowed/src -dest",
+		"install -- allowed/src -dest",
+		"rm -- -dest",
+	]) {
+		const verdict = classify(cmd, rw);
+		assert.equal(verdict.verdict, "escalate", cmd);
+		assert.match(verdict.reason, /-dest/, cmd);
+	}
+	assert.equal(classify("cp -- allowed/src allowed/dest", rw).verdict, "allow");
+
+	// Integrated realpath check: a hyphen-leading destination symlink points
+	// outside the only writable subtree. The parser must forward `-dest` to
+	// checkWrite rather than mistake the source for the destination.
+	const dashRoot = join(scratch, "dash-operands");
+	const outside = join(scratch, "dash-outside-victim");
+	rmSync(dashRoot, { recursive: true, force: true });
+	mkdirSync(join(dashRoot, "allowed"), { recursive: true });
+	writeFileSync(join(dashRoot, "allowed", "src"), "source\n");
+	writeFileSync(outside, "must not be selected as an allowed target\n");
+	symlinkSync(outside, join(dashRoot, "-dest"));
+	const policy = {
+		cwd: dashRoot,
+		readOnly: false,
+		writePaths: ["allowed/**"],
+		denyPaths: [],
+		systemDenyPrefixes: [],
+		realpath: realpathSync,
+	};
+	const integrated = bashGuard.classifyBashCommand("cp -- allowed/src -dest", {
+		readOnly: false,
+		checkWrite: (target) => paths.checkWrite(target, policy),
+	});
+	assert.equal(integrated.verdict, "escalate");
+	assert.match(integrated.reason, /outside allowed\/\*\*|outside the project cwd/);
+	assert.equal(readFileSync(outside, "utf8"), "must not be selected as an allowed target\n");
 });
 
 await test("M1: cp/mv/install attached target-dir forms are write targets", async () => {
@@ -795,6 +854,92 @@ await test("(f) ceilings wiring: frontmatter beats settings default; compactions
 	assert.equal(ceilingViolation({ tokens: 1e9, compactions: 1e9 }, {}), null, "no ceilings = unlimited");
 });
 
+await test("abort during escalation notification cannot strand a pending wait", async () => {
+	const managerDir = join(scratch, "escalation-abort-race");
+	rmSync(managerDir, { recursive: true, force: true });
+	const controller = new AbortController();
+	const obsolete = [];
+	let waitingCalls = 0;
+	const manager = new escalationMod.EscalationManager({
+		escalationsDir: managerDir,
+		escalationFile: (id) => join(managerDir, `${id}.json`),
+		notifyMain: () => {
+			controller.abort(); // synchronous re-entry inside the old listener gap
+			return makeEnvelope({ from: "scoped/race", to: "main", type: "escalation", text: "race" }).id;
+		},
+		onObsoleteNotification: (record) => obsolete.push(record),
+		onWaiting: () => { waitingCalls++; },
+		onResolved: async () => {},
+	});
+	const request = manager.request(
+		{ agent: "scoped/race", tool: "write", inputSummary: "outside.txt", reason: "outside scope" },
+		controller.signal,
+	);
+	await assert.rejects(request, /aborted while waiting/);
+	assert.equal(manager.active().length, 0);
+	assert.equal(waitingCalls, 0, "aborted request never releases a scheduler slot or enters waiting");
+	assert.ok(obsolete.some((record) => record.envelopeId !== null), "late notification id is settled");
+	assert.equal(escalationMod.readEscalationRecords(managerDir)[0].status, "cancelled");
+});
+
+await test("failed persistence leaves an escalation retryable instead of stuck resolving", async () => {
+	const managerDir = join(scratch, "escalation-persist-failure");
+	rmSync(managerDir, { recursive: true, force: true });
+	const manager = new escalationMod.EscalationManager({
+		escalationsDir: managerDir,
+		escalationFile: (id) => join(managerDir, `${id}.json`),
+		notifyMain: () => null,
+		onWaiting: () => {},
+		onResolved: async () => {},
+	});
+	const request = manager.request(
+		{ agent: "scoped/retry", tool: "write", inputSummary: "outside.txt", reason: "outside scope" },
+		undefined,
+	);
+	const id = manager.pending()[0].id;
+	const persist = manager._persist.bind(manager);
+	manager._persist = () => { throw new Error("disk unavailable"); };
+	assert.equal(manager.approve(id), false, "failed durable decision is not reported as accepted");
+	assert.equal(manager.pending()[0].id, id, "entry remains pending and retryable");
+	manager._persist = persist;
+	assert.equal(manager.deny(id, "retry succeeded"), true);
+	assert.deepEqual(await request, { approved: false, note: "retry succeeded" });
+});
+
+await test("failed or cancelled escalation resume never approves the guarded tool", async () => {
+	const managerDir = join(scratch, "escalation-manager-failures");
+	rmSync(managerDir, { recursive: true, force: true });
+	const makeManager = (onResolved) => new escalationMod.EscalationManager({
+		escalationsDir: managerDir,
+		escalationFile: (id) => join(managerDir, `${id}.json`),
+		notifyMain: () => null,
+		onWaiting: () => {},
+		onResolved,
+	});
+	const input = { agent: "scoped/race", tool: "write", inputSummary: "outside.txt", reason: "outside scope" };
+
+	const failed = makeManager(async () => {
+		throw new Error("scheduler unavailable");
+	});
+	const failedRequest = failed.request(input, undefined);
+	const failedId = failed.pending()[0].id;
+	assert.equal(failed.approve(failedId), true);
+	await assert.rejects(failedRequest, /could not resume after escalation/i);
+	assert.equal(escalationMod.readEscalationRecords(managerDir).find((r) => r.id === failedId)?.status, "cancelled");
+
+	let releaseResume;
+	const resumeGate = new Promise((resolve) => { releaseResume = resolve; });
+	const raced = makeManager(async () => resumeGate);
+	const racedRequest = raced.request(input, undefined);
+	const racedId = raced.pending()[0].id;
+	assert.equal(raced.approve(racedId), true);
+	// retire()/dispose() use cancelFor while slot reacquisition is still pending.
+	raced.cancelFor(input.agent, "Agent retired during escalation resolution.");
+	releaseResume();
+	await assert.rejects(racedRequest, /retired during escalation resolution/);
+	assert.equal(escalationMod.readEscalationRecords(managerDir).find((r) => r.id === racedId)?.status, "cancelled");
+});
+
 // ---------------------------------------------------------------------------
 // World A: escalation flow (maxConcurrent=1 to prove the slot releases)
 // ---------------------------------------------------------------------------
@@ -891,8 +1036,12 @@ await test("out-of-scope write → waiting + record + envelope; slot released; a
 	assert.equal(runtimeA.pendingEscalations().length, 1, "escalation still pending");
 	assert.equal(stateOf(layoutA, "scoped/main"), "waiting");
 
-	// human approves → tool proceeds, agent resumes and finishes its turn
+	// human approves → tool proceeds, agent resumes and finishes its turn.
+	// Its not-yet-consumed main prompt becomes obsolete immediately.
 	assert.equal(runtimeA.approveEscalation(record.id), true);
+	assert.ok(!existsSync(join(layoutA.mainMailboxDir, `${record.envelopeId}.json`)), "resolved prompt left pending mail");
+	assert.ok(!existsSync(join(layoutA.mainMailboxDeliveringDir, `${record.envelopeId}.json`)), "resolved prompt left no parked delivery");
+	assert.ok(existsSync(join(layoutA.mainMailboxDoneDir, `${record.envelopeId}.json`)), "resolved prompt retained as done audit");
 	await waitUntil(() => finishedA("scoped/main") >= 2, "approved turn finishes");
 	assert.equal(readFileSync(join(projectA, "forbidden", "out1.txt"), "utf8"), "needs approval\n");
 	assert.equal(runtimeA.pendingEscalations().length, 0);

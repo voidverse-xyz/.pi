@@ -10,7 +10,7 @@
  * Run: node smoke-phase2.mjs
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
 
@@ -383,7 +383,7 @@ await test("teammate rosters carry purviews (D18 layer 4)", async () => {
 console.log("oneshot:");
 await test("anonymous oneshot gets tmp-<short> id", async () => {
 	const res = await runtime.spawn({ type: "greeter", lifetime: "oneshot" });
-	assert.match(res.address, /^greeter\/tmp-[0-9a-f]{7}$/);
+	assert.match(res.address, /^greeter\/tmp-[0-9a-f]{20}$/);
 	assert.equal(res.created, true);
 	assert.equal(res.state, "dormant"); // no task → no turn
 	const rec = readRegistry(layout.registryFile).agents[res.address];
@@ -524,12 +524,12 @@ await test("subagent_spawn / subagent_status tools return spec-shaped JSON", asy
 });
 
 // ---------------------------------------------------------------------------
-// Type-def project-trust gate + symlink listing (Finding 7)
-// (Runs LAST — it adds a global `researcher.md` and a `linked.md` symlink that
-// would perturb the earlier availableTypes() assertions.)
+// Type-def project-trust gate + linked-file hardening (Finding 7)
+// (Runs LAST — it adds global fixtures that would perturb the earlier
+// availableTypes() assertions.)
 // ---------------------------------------------------------------------------
-console.log("type-def trust + symlink (Finding 7):");
-await test("untrusted project types are not resolved; global still resolves; symlinks listed", async () => {
+console.log("type-def trust + linked-file hardening (Finding 7):");
+await test("untrusted project types are skipped; global resolves; linked type files are rejected", async () => {
 	const { listTypeDefs, resolveTypeDef } = await jiti.import(join(EXT, "typedefs/discover.ts"));
 
 	// Trusted: project `researcher` and global `greeter` both resolve.
@@ -557,16 +557,22 @@ await test("untrusted project types are not resolved; global still resolves; sym
 	// Untrusted: the SAME name now resolves to the GLOBAL file (project ignored).
 	assert.equal(resolveTypeDef(layout, "researcher", { projectTrusted: false })?.source, "global");
 
-	// Symlink listing: a symlinked global type is listed AND resolvable (was
-	// omitted from listing because Dirent.isFile() is false for a symlink).
+	// Type files must be independent ordinary files. If a symlink or hardlink
+	// points outside the protected type library, an agent could edit the other
+	// path and silently retune its own constitution.
 	const realDir = join(scratch, "real-types");
 	mkdirSync(realDir, { recursive: true });
-	const realFile = join(realDir, "linked.md");
-	writeFileSync(realFile, ["---", "name: linked", "description: via symlink", "---", "LINKED_BODY", ""].join("\n"));
-	symlinkSync(realFile, join(home, ".pi", "agent", "subagents", "linked.md"));
+	const symlinkTarget = join(realDir, "linked.md");
+	writeFileSync(symlinkTarget, ["---", "name: linked", "description: via symlink", "---", "LINKED_BODY", ""].join("\n"));
+	symlinkSync(symlinkTarget, join(home, ".pi", "agent", "subagents", "linked.md"));
+	const hardlinkTarget = join(realDir, "hardlinked-source.md");
+	writeFileSync(hardlinkTarget, ["---", "name: hardlinked", "description: via hardlink", "---", "HARDLINKED_BODY", ""].join("\n"));
+	linkSync(hardlinkTarget, join(home, ".pi", "agent", "subagents", "hardlinked.md"));
 	const names = listTypeDefs(layout, {}).map((d) => d.name);
-	assert.ok(names.includes("linked"), "symlinked type def now LISTED (listing/resolution consistent)");
-	assert.ok(resolveTypeDef(layout, "linked", {}), "symlinked type resolves");
+	assert.ok(!names.includes("linked"), "symlinked type def is not listed");
+	assert.ok(!names.includes("hardlinked"), "multiply-linked type def is not listed");
+	assert.equal(resolveTypeDef(layout, "linked", {}), null, "symlinked type cannot resolve by direct name");
+	assert.equal(resolveTypeDef(layout, "hardlinked", {}), null, "hardlinked type cannot resolve by direct name");
 });
 
 await runtime.dispose();

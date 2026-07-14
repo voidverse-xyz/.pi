@@ -100,6 +100,8 @@ export const allowAllHopsGuard: HopsGuard = () => ({ allowed: true });
 // ---------------------------------------------------------------------------
 
 export interface DeliverySendOptions {
+	/** Pre-reserved envelope id for durable final-report evidence. */
+	envelopeId?: string;
 	/** Sender address: `<type>/<id>`, `main`, or `user`. */
 	from: string;
 	/** Recipient address: `<type>/<id>` or `main`. */
@@ -147,11 +149,15 @@ export interface DeliveryOutcome {
 
 export interface DelivererOptions {
 	layout: Layout;
+	/** Serialize sender bookkeeping + routing with spawn/retirement publication. */
+	withDeliveryLock?: <T>(run: () => T) => T;
 	/**
 	 * Registry lookup: the recipient's current state, or undefined for an
 	 * unknown/retired address (→ bounce).
 	 */
 	recipientState: (address: string) => AgentState | undefined;
+	/** Current durable incarnation of an agent sender (address-reuse fence). */
+	senderGenerationId?: (address: string) => string | undefined;
 	/** Start a mail turn on a dormant agent (fire-and-forget; runtime serializes). */
 	wake: (address: string) => void;
 	/** An envelope just landed in .main/mailbox/ (host auto-wake hook). */
@@ -179,6 +185,21 @@ export class Deliverer {
 
 	/** Build, guard, and route one envelope. Throws only on malformed addresses (caller bug/LLM typo). */
 	send(options: DeliverySendOptions): DeliveryOutcome {
+		const run = (): DeliveryOutcome => this._sendUnlocked(options);
+		return this._o.withDeliveryLock?.(run) ?? run();
+	}
+
+	/**
+	 * Funeral/route-failure bounce. It deliberately skips team/hops guards just
+	 * like the engine's ordinary unknown-recipient bounce, so the error route
+	 * cannot itself bounce and strand the original sender.
+	 */
+	bounceUndelivered(failed: Envelope, reason: string): DeliveryOutcome {
+		const run = (): DeliveryOutcome => this._bounce(failed, reason);
+		return this._o.withDeliveryLock?.(run) ?? run();
+	}
+
+	private _sendUnlocked(options: DeliverySendOptions): DeliveryOutcome {
 		const to = parseAddress(options.to);
 		if (to === null || to.kind === "user") {
 			// Permanent design: no envelope is ever addressed TO `user` — the
@@ -208,8 +229,11 @@ export class Deliverer {
 			throw new Error("final is valid only for report envelopes.");
 		}
 
+		const fromGenerationId = from.kind === "agent" ? this._o.senderGenerationId?.(options.from) : undefined;
 		const draft = {
+			...(options.envelopeId !== undefined ? { id: options.envelopeId } : {}),
 			from: options.from,
+			...(fromGenerationId !== undefined ? { fromGenerationId } : {}),
 			to: options.to,
 			type: options.type,
 			text: options.text,
@@ -295,8 +319,11 @@ export class Deliverer {
 	 */
 	private _bounce(failed: Envelope, reason: string): DeliveryOutcome {
 		const bounceTo = failed.from === USER_ADDRESS ? MAIN_ADDRESS : failed.from;
+		const bounceFrom = parseAddress(failed.to);
+		const bounceGenerationId = bounceFrom?.kind === "agent" ? this._o.senderGenerationId?.(failed.to) : undefined;
 		const bounce = makeEnvelope({
 			from: failed.to,
+			...(bounceGenerationId !== undefined ? { fromGenerationId: bounceGenerationId } : {}),
 			to: bounceTo,
 			type: "error",
 			correlationId: failed.id,

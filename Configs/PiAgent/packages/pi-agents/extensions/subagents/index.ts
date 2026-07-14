@@ -41,7 +41,6 @@ import {
 	createCore,
 	mainAutoWakeBlockedFor,
 	MAIN_MAIL_CUSTOM_TYPE,
-	reconcileMainMailFor,
 	runGcSweepFor,
 	setMainAutoWakeBlockedFor,
 	type ScopeLocator,
@@ -159,17 +158,30 @@ export default function (pi: ExtensionAPI) {
 	const triggerWake = (): void => {
 		const current = core;
 		if (!current || !current.settings.autoWake || autoWakeBlockedByAbort || mainBusy) return;
-		const digest = current.drainMainMail(currentSessionFile());
-		if (digest === null) return; // raced — someone else drained the box
-		mainBusy = true; // suppress double-triggers until agent_start lands
-		pi.sendMessage(
-			{
-				customType: `${MAIL_CUSTOM_TYPE}-wake`,
-				content: `${WAKE_TRIGGER_TEXT}\n\n${digest}`,
-				display: true,
-			},
-			{ triggerTurn: true },
-		);
+		try {
+			const digest = current.drainMainMail(currentSessionFile());
+			if (digest === null) return; // raced — someone else drained the box
+			mainBusy = true; // suppress double-triggers until agent_start lands
+			pi.sendMessage(
+				{
+					customType: `${MAIL_CUSTOM_TYPE}-wake`,
+					content: `${WAKE_TRIGGER_TEXT}\n\n${digest}`,
+					display: true,
+				},
+				{ triggerTurn: true },
+			);
+			current.commitMainMailDrain();
+		} catch (error) {
+			current.rollbackMainMailDrain();
+			mainBusy = false;
+			const ctx = uiCtx;
+			if (ctx?.hasUI) {
+				ctx.ui.notify(
+					`Could not inject subagent mail; it was safely requeued: ${error instanceof Error ? error.message : String(error)}`,
+					"warning",
+				);
+			}
+		}
 	};
 
 	const releaseCore = async (): Promise<void> => {
@@ -539,9 +551,21 @@ export default function (pi: ExtensionAPI) {
 		// While abort-latched, extension-started turns cannot drain or revive the
 		// main mailbox. The input hook above clears the latch for real user input.
 		if (autoWakeBlockedByAbort) return;
-		const digest = core.drainMainMail(currentSessionFile());
-		if (digest === null) return;
-		return { message: { customType: MAIL_CUSTOM_TYPE, content: digest, display: true } };
+		try {
+			const digest = core.drainMainMail(currentSessionFile());
+			if (digest === null) return;
+			core.commitMainMailDrain();
+			return { message: { customType: MAIL_CUSTOM_TYPE, content: digest, display: true } };
+		} catch (error) {
+			core.rollbackMainMailDrain();
+			if (ctx?.hasUI) {
+				ctx.ui.notify(
+					`Could not inject subagent mail; it remains queued: ${error instanceof Error ? error.message : String(error)}`,
+					"warning",
+				);
+			}
+			return;
+		}
 	});
 
 	pi.on("agent_start", async () => {
@@ -613,8 +637,9 @@ export default function (pi: ExtensionAPI) {
 
 		try {
 			if (!recoverySafe) throw new Error("Subagent scope stayed closed because legacy-adoption recovery needs manual attention.");
+			// createCore acquires the host lease, validates the manifest, and only
+			// then reconciles crash-lost main mail under that exclusive ownership.
 			getCore(ctx); // eagerly acquires the session host lease in every mode
-			reconcileMainMailFor(ctx.cwd, activeScope);
 		} catch (error) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(

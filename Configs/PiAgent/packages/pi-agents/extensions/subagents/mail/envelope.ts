@@ -166,6 +166,8 @@ export interface Envelope {
 	id: string;
 	/** Sender address: `<type>/<id>`, `main`, or `user`. */
 	from: string;
+	/** Durable sender incarnation fence for agent-originated mail. */
+	fromGenerationId?: string;
 	/** Recipient address: `<type>/<id>`, `main`, or `user`. */
 	to: string;
 	type: EnvelopeType;
@@ -183,7 +185,11 @@ export interface Envelope {
 export const ENVELOPE_ID_RE = /^msg_[0-9A-HJKMNP-TV-Z]{26}$/;
 
 export interface MakeEnvelopeOptions {
+	/** Pre-reserved id for a durable multi-step protocol; normally generated here. */
+	id?: string;
 	from: Address | string;
+	/** Runtime-provided agent generation; omitted for main/user and legacy mail. */
+	fromGenerationId?: string;
 	to: Address | string;
 	type: EnvelopeType;
 	text: string;
@@ -205,8 +211,9 @@ export interface MakeEnvelopeOptions {
 export function makeEnvelope(options: MakeEnvelopeOptions): Envelope {
 	const now = options.now ?? new Date();
 	const envelope: Envelope = {
-		id: `msg_${ulid(now.getTime())}`,
+		id: options.id ?? `msg_${ulid(now.getTime())}`,
 		from: typeof options.from === "string" ? options.from : formatAddress(options.from),
+		...(options.fromGenerationId !== undefined ? { fromGenerationId: options.fromGenerationId } : {}),
 		to: typeof options.to === "string" ? options.to : formatAddress(options.to),
 		type: options.type,
 		correlationId: options.correlationId ?? null,
@@ -244,6 +251,14 @@ export function validateEnvelope(value: unknown): string[] {
 		const raw = env[field];
 		if (typeof raw !== "string" || parseAddress(raw) === null) {
 			errors.push(`${field} must be "<type>/<id>", "main", or "user", got ${JSON.stringify(raw)}`);
+		}
+	}
+	if (env.fromGenerationId !== undefined) {
+		if (typeof env.fromGenerationId !== "string" || !/^gen_[0-9a-f]{32}$/.test(env.fromGenerationId)) {
+			errors.push("fromGenerationId must match gen_<32 lowercase hex digits> when present");
+		}
+		if (typeof env.from !== "string" || parseAddress(env.from)?.kind !== "agent") {
+			errors.push("fromGenerationId is valid only for agent senders");
 		}
 	}
 	if (typeof env.type !== "string" || !(ENVELOPE_TYPES as readonly string[]).includes(env.type)) {

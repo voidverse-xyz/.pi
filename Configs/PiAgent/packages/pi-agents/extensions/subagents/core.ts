@@ -42,13 +42,18 @@ import { collectResultNote, validateAgainstSchema } from "./mail/collect.ts";
 import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
 import { ENVELOPE_ID_RE, type Envelope } from "./mail/envelope.ts";
 import {
+	addHostDeliveryMarker,
 	claimPendingForHost,
 	type HostDeliveryReconcile,
+	lookupAwaitAnchorGeneration,
 	lookupSentQuestion,
 	peekCollectRequest,
 	pendingCount,
 	readPending,
+	readStoredHostEnvelopes,
 	reconcileHostDelivery,
+	recordCollectRequest,
+	requeueDoneHostClaim,
 	requeueHostClaim,
 	takeCollectRequest,
 } from "./mail/mailbox.ts";
@@ -72,7 +77,12 @@ import type {
 } from "./runtime/types.ts";
 import { gcSweep, type GcSweepResult } from "./store/archive.ts";
 import { createLayout, type Layout } from "./store/layout.ts";
-import { claimHostScope, ensureScopeManifest, type HostScopeLease } from "./store/session-scope.ts";
+import {
+	claimHostScope,
+	ensureScopeManifest,
+	type HostScopeLease,
+	SessionScopeLockedError,
+} from "./store/session-scope.ts";
 import { atomicWriteJson, getAgent, listAgents, readRegistry } from "./store/registry.ts";
 import { isValidTeamName } from "./store/teams.ts";
 import {
@@ -261,6 +271,10 @@ export interface SubagentsCore {
 	 * time, as nothing durable could ever verify them.
 	 */
 	drainMainMail(sessionFile?: string | null): string | null;
+	/** Acknowledge that the host accepted the most recently composed digest. */
+	commitMainMailDrain(): void;
+	/** Requeue the most recent digest after synchronous host injection failure. */
+	rollbackMainMailDrain(): void;
 
 	dispose(): Promise<void>;
 }
@@ -332,11 +346,49 @@ async function awaitMainResult(
 	}
 	const deadline = Date.now() + timeoutSeconds * 1000;
 	const mailbox = layout.mainMailboxDir;
+	// Fence address reuse for the lifetime of this await. Exact correlation is
+	// still causal across retirement/clock rollback, while unrelated attention
+	// from a replacement generation must never satisfy the old join.
+	const initialRecord = getAgent(readRegistry(layout.registryFile), options.to);
+	const awaitedGenerationId =
+		lookupAwaitAnchorGeneration(mailbox, options.anchorId, options.to) ?? initialRecord?.generationId;
+
+	type Candidate = {
+		envelope: Envelope;
+		state: "pending" | "delivering" | "done";
+	};
 
 	for (;;) {
 		if (options.signal?.aborted) throw new Error("subagent_await cancelled");
-		const relevant = readPending(mailbox)
-			.filter((pending) => pending.envelope.from === options.to && pending.envelope.id > options.anchorId)
+		// A prior await/digest claim may now be proven by the host JSONL. Finalize
+		// it before ordering candidates so an already-returned question in
+		// .delivering cannot starve a later final report in the same main turn.
+		reconcileHostDelivery(mailbox, {
+			marker: AWAIT_DELIVERY_MARKER,
+			requeueUndelivered: false,
+		});
+		const currentRecord = getAgent(readRegistry(layout.registryFile), options.to);
+		const sameGeneration =
+			awaitedGenerationId !== undefined && currentRecord?.generationId === awaitedGenerationId;
+		const candidates: Candidate[] = [
+			...readPending(mailbox).map(({ envelope }) => ({ envelope, state: "pending" as const })),
+			...readStoredHostEnvelopes(mailbox).map(({ envelope, state }) => ({ envelope, state })),
+		];
+		const seen = new Set<string>();
+		const relevant = candidates
+			.filter(({ envelope, state }) => {
+				if (envelope.from !== options.to || seen.has(envelope.id)) return false;
+				seen.add(envelope.id);
+				const exactlyCorrelated = envelope.correlationId === options.anchorId;
+				if (exactlyCorrelated) return true;
+				if (state === "done" || envelope.id <= options.anchorId) return false;
+				// New envelopes carry an exact sender-incarnation fence. Legacy
+				// envelopes are eligible only while the registry still names the
+				// generation captured when this await began.
+				return envelope.fromGenerationId !== undefined
+					? awaitedGenerationId !== undefined && envelope.fromGenerationId === awaitedGenerationId
+					: sameGeneration;
+			})
 			.sort((a, b) => a.envelope.id.localeCompare(b.envelope.id));
 		const terminalIndex = relevant.findIndex(({ envelope }) => {
 			if (envelope.type === "question" || envelope.type === "escalation" || envelope.type === "error") return true;
@@ -364,13 +416,51 @@ async function awaitMainResult(
 				options.sessionFile,
 				AWAIT_DELIVERY_MARKER,
 			);
-			const terminalId = relevant[terminalIndex]!.envelope.id;
-			const terminal = claimed.find(({ envelope }) => envelope.id === terminalId)?.envelope;
-			if (!terminal) continue; // a concurrent claim won; re-scan durable state
-			const progress = claimed
-				.map(({ envelope }) => envelope)
-				.filter((envelope) => envelope.type === "report" && envelope.id !== terminal.id)
-				.map(awaitEnvelopeView);
+			const claimedById = new Map(claimed.map(({ envelope }) => [envelope.id, envelope]));
+			const durableStoredIds = new Set<string>();
+			const terminalCandidate = relevant[terminalIndex]!;
+			let terminal: Envelope;
+			if (terminalCandidate.state === "pending") {
+				const won = claimedById.get(terminalCandidate.envelope.id);
+				if (!won) continue; // drain won; next scan observes .delivering/.done
+				terminal = won;
+			} else if (terminalCandidate.state === "delivering") {
+				// The ordinary digest claimed first. Register await as an alternate
+				// durable proof, so either racing host append can finalize the mail.
+				if (addHostDeliveryMarker(mailbox, terminalCandidate.envelope.id, AWAIT_DELIVERY_MARKER) === null) continue;
+				durableStoredIds.add(terminalCandidate.envelope.id);
+				terminal = terminalCandidate.envelope;
+			} else {
+				durableStoredIds.add(terminalCandidate.envelope.id);
+				terminal = terminalCandidate.envelope; // idempotent retry from .done
+			}
+			// Progress already parked by the competing digest needs the same
+			// alternate proof if it is included in this await tool result.
+			for (const candidate of throughTerminal) {
+				if (
+					candidate.state === "delivering" &&
+					candidate.envelope.type === "report" &&
+					candidate.envelope.id !== terminal.id &&
+					candidate.envelope.payload.final !== true &&
+					candidate.envelope.correlationId === options.anchorId &&
+					addHostDeliveryMarker(mailbox, candidate.envelope.id, AWAIT_DELIVERY_MARKER) !== null
+				) {
+					durableStoredIds.add(candidate.envelope.id);
+				}
+			}
+			const progress = throughTerminal
+				.filter(({ envelope }) =>
+					envelope.type === "report" &&
+					envelope.id !== terminal.id &&
+					envelope.payload.final !== true &&
+					envelope.correlationId === options.anchorId,
+				)
+				.filter(({ envelope, state }) =>
+					state === "pending"
+						? claimedById.has(envelope.id)
+						: state === "done" || durableStoredIds.has(envelope.id),
+				)
+				.map(({ envelope }) => awaitEnvelopeView(envelope));
 			if (terminal.type === "question" || terminal.type === "escalation" || terminal.type === "error") {
 				return {
 					status: "attention",
@@ -386,9 +476,13 @@ async function awaitMainResult(
 				const schema = peekCollectRequest(mailbox, options.anchorId, options.to);
 				if (schema !== undefined) validation = validateAgainstSchema(terminal.payload.data, schema);
 			}
-			// Non-persisted host delivery finalized at claim time, so this is the
-			// collect-index finalization point for that path.
-			if (!options.sessionFile && options.waitFor === "collect") {
+			// Non-persisted pending claims finalized at claim time. Stored/done
+			// observations were finalized by their original durable delivery.
+			if (
+				terminalCandidate.state === "pending" &&
+				!options.sessionFile &&
+				options.waitFor === "collect"
+			) {
 				takeCollectRequest(mailbox, options.anchorId, options.to);
 			}
 			return {
@@ -402,7 +496,11 @@ async function awaitMainResult(
 			};
 		}
 
-		if (!getAgent(readRegistry(layout.registryFile), options.to)) {
+		if (
+			awaitedGenerationId === undefined ||
+			currentRecord === undefined ||
+			currentRecord.generationId !== awaitedGenerationId
+		) {
 			return {
 				status: "retired",
 				to: options.to,
@@ -431,6 +529,13 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 	const hostLease: HostScopeLease = claimHostScope(layout);
 	try {
 		ensureScopeManifest(layout, { persisted });
+		// This host just acquired exclusive ownership, so any unverified parked
+		// append belongs to a dead predecessor and is safe to requeue. Keeping
+		// recovery inside the lease removes the startup check→claim race.
+		reconcileHostDelivery(layout.mainMailboxDir, {
+			marker: MAIN_MAIL_CUSTOM_TYPE,
+			requeueUndelivered: true,
+		});
 	} catch (error) {
 		hostLease.release();
 		throw error;
@@ -467,6 +572,11 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 		throw error;
 	}
 	const mainMailbox = layout.mainMailboxDir;
+	let lastMainDrain: {
+		ids: string[];
+		persisted: boolean;
+		collects: Array<{ envelopeId: string; correlationId: string; from: string; schema: unknown }>;
+	} | null = null;
 
 	return {
 		layout,
@@ -547,6 +657,9 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 		mainUnreadCount: () => pendingCount(mainMailbox),
 		mainHasPendingMail: () => readPending(mainMailbox).length > 0,
 		drainMainMail: (sessionFile) => {
+			// A subsequent drain is an implicit acknowledgement of any prior
+			// successfully returned digest from direct/core callers.
+			lastMainDrain = null;
 			// Settle earlier batches first: digests verified in their session
 			// JSONL finalize to .done/ now (the "exactly once" half of the
 			// contract); unverified ones stay in .delivering/ — in-process we
@@ -565,6 +678,7 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 			);
 			if (pending.length === 0) return null;
 			const ids = pending.map((p) => p.envelope.id);
+			const collects: Array<{ envelopeId: string; correlationId: string; from: string; schema: unknown }> = [];
 
 			const items: DigestItem[] = pending.map((p) => {
 				// Collect-result validation on arrival (03-tool-surface): a
@@ -579,6 +693,12 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 					const schema = peekCollectRequest(mainMailbox, p.envelope.correlationId, p.envelope.from);
 					if (schema !== undefined) {
 						note = collectResultNote(validateAgainstSchema(p.envelope.payload.data, schema));
+						collects.push({
+							envelopeId: p.envelope.id,
+							correlationId: p.envelope.correlationId,
+							from: p.envelope.from,
+							schema,
+						});
 					}
 				}
 				return {
@@ -598,6 +718,8 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 				// Persisted claims were parked before rendering. Put them back if a
 				// formatter unexpectedly fails so no mail is stranded in-flight.
 				if (typeof sessionFile === "string" && sessionFile.length > 0) requeueHostClaim(mainMailbox, ids);
+				else requeueDoneHostClaim(mainMailbox, ids);
+				lastMainDrain = null;
 				throw error;
 			}
 			if (!(typeof sessionFile === "string" && sessionFile.length > 0)) {
@@ -609,7 +731,32 @@ export function createCore(options: CreateCoreOptions): SubagentsCore {
 					}
 				}
 			}
+			lastMainDrain = {
+				ids,
+				persisted: typeof sessionFile === "string" && sessionFile.length > 0,
+				collects,
+			};
 			return digest;
+		},
+		commitMainMailDrain: () => {
+			lastMainDrain = null;
+		},
+		rollbackMainMailDrain: () => {
+			const batch = lastMainDrain;
+			lastMainDrain = null;
+			if (!batch) return;
+			if (batch.persisted) requeueHostClaim(mainMailbox, batch.ids);
+			else requeueDoneHostClaim(mainMailbox, batch.ids);
+			const pendingIds = new Set(readPending(mainMailbox).map(({ envelope }) => envelope.id));
+			for (const collect of batch.collects) {
+				// An alternate await marker may have finalized this report while
+				// the racing ordinary digest injection failed. Restore schema only
+				// when the report was actually requeued, never resurrect metadata
+				// for an envelope already durable in .done/.
+				if (pendingIds.has(collect.envelopeId)) {
+					recordCollectRequest(mainMailbox, collect.correlationId, collect.schema, collect.from);
+				}
+			}
 		},
 
 		dispose: async () => {
@@ -639,21 +786,37 @@ export function runGcSweepFor(cwd: string, locator: ScopeLocator): GcSweepResult
 }
 
 /**
- * Session-start reconciliation of the main mailbox's .delivering/ state,
- * without needing a live core (index.ts fires this before the lazy core
- * exists). A fresh session_start is the one point where "not in the recorded
- * session JSONL" can only mean the injection was LOST (no host append can
- * still be in flight), so undelivered envelopes are requeued as pending —
- * the next drain re-composes them into a fresh digest (at-least-once);
- * verified ones finalize to .done/ (exactly once). Idempotent and cheap
- * (one directory scan; session files read once each).
+ * Out-of-band reconciliation helper for tests/recovery tooling. Normal startup
+ * performs the same reconciliation inside createCore's newly acquired host
+ * lease. This helper first claims a temporary lease; only that exclusive path
+ * may classify an unverified append as crash-lost and requeue it. If a live
+ * host owns the scope, verified mail may finalize but unverified mail remains
+ * in flight. Idempotent and cheap (one directory scan; session files cached).
  */
 export function reconcileMainMailFor(cwd: string, locator: ScopeLocator): HostDeliveryReconcile {
 	const layout = layoutFor(cwd, locator);
-	return reconcileHostDelivery(layout.mainMailboxDir, {
-		marker: MAIN_MAIL_CUSTOM_TYPE,
-		requeueUndelivered: true,
-	});
+	let recoveryLease: HostScopeLease | null = null;
+	try {
+		// Claiming a temporary host lease makes the "fresh process, therefore an
+		// unverified append was lost" inference atomic with normal host startup.
+		// If a live owner already exists, reconciliation may finalize verified
+		// records but MUST leave unverified delivery in flight.
+		recoveryLease = claimHostScope(layout);
+	} catch (error) {
+		if (!(error instanceof SessionScopeLockedError)) throw error;
+		return reconcileHostDelivery(layout.mainMailboxDir, {
+			marker: MAIN_MAIL_CUSTOM_TYPE,
+			requeueUndelivered: false,
+		});
+	}
+	try {
+		return reconcileHostDelivery(layout.mainMailboxDir, {
+			marker: MAIN_MAIL_CUSTOM_TYPE,
+			requeueUndelivered: true,
+		});
+	} finally {
+		recoveryLease.release();
+	}
 }
 
 // ---------------------------------------------------------------------------

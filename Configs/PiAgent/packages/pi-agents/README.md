@@ -34,7 +34,7 @@ human. Design docs are authoritative:
 | `subagent_steer` | Inject into a RUNNING turn (main-agent-only; `steered:false` if idle) |
 | `subagent_status` | Roster (state, lifetime, teams, vitals: ctx %, tokens, cost, turns) or per-agent detail + transcript tail. Read-only |
 | `subagent_collect` | Non-blocking: sends a collect request carrying a JSON schema and returns `requestId`; the result is validated on arrival |
-| `subagent_await` | Cancellably wait for a final report correlated to `taskEnvelopeId`/`envelopeId`, or a collect result correlated to `requestId`. Questions/escalations/errors return early as `attention`; timeout consumes nothing |
+| `subagent_await` | Cancellably wait for a final report correlated to `taskEnvelopeId`/`envelopeId`, or a collect result correlated to `requestId`. Searches pending/parked/finalized durable mail; questions/escalations/errors return generation-fenced `attention`; timeout consumes nothing |
 | `subagent_interrupt` | Abort the current turn; agent stays alive, goes dormant |
 | `subagent_retire` | The ONLY destructive tool: deregister, scrub from teams, move the dir to `.archive/` (post-mortem viewable, GC'd after N days) |
 
@@ -77,7 +77,9 @@ You are a refactoring specialist. You own a specific purview of the codebase.
 Frontmatter is **type-fixed** (D19): spawn carries only instance identity
 (`id`, `team`, `lifetime`, `task`) — need a variant, write another type file.
 Types are live-resolved at wake: editing a `.md` retunes every instance at its
-next wake (memory persists, constitution is live).
+next wake (memory persists, constitution is live). Type definitions must be
+independent regular files; symbolic links and multiply-linked files are ignored
+so an agent cannot retune its constitution through an unprotected alias path.
 
 ## Teams (D12)
 
@@ -116,7 +118,10 @@ Older cwd-wide state is never silently assigned. Close other Pi processes and
 run `/agents adopt-legacy` to copy it into the current persisted session while
 retaining an inactive backup. `/agents rollback-legacy` restores that backup only
 while the adopted scope remains unchanged; after divergence, export/recover
-manually rather than guessing at a merge.
+manually rather than guessing at a merge. Host and per-agent ownership markers
+include process-start identity so PID reuse cannot strand a scope or agent.
+Retirement archives memory and scrubs teams before deregistration publishes the
+address as reusable; startup completes any crash-interrupted funeral.
 
 ## Safety model (D10/D20/D21)
 
@@ -130,7 +135,8 @@ manually rather than guessing at a merge.
   frontmatter, never by session-wide grants.
 - **Implicit system denials**: no agent can ever write the subagents state
   tree or any type-definition dir (self-retuning / mail forging), realpath-
-  anchored against symlink tricks.
+  anchored against symlink tricks. Path-qualified shell executables never
+  inherit trust from a safe basename; they require human review.
 - **Rails** (D21): a **subagent autonomy pool** (`autonomousTurns` /
   `autonomousTokens`) caps autonomous agent turns; **maxHops** (default 8)
   kills question ping-pong. Main-agent mailbox wakeups do not consume or obey

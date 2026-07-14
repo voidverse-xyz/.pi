@@ -76,8 +76,16 @@ validation); one-tool-per-power (context bloat).
 - Final mode matches `payload.final:true` correlated to a task/send anchor; collect mode
   matches a report correlated to requestId.
 - Questions/escalations/errors return `attention` early so waiting cannot deadlock.
-- Timeout/cancellation consumes no mail. Completed results are parked until the
-  main-session JSONL durably contains the await tool result (D26).
+  Attention is sender-generation-fenced through a durable anchor→generation
+  index: a replacement at the same address cannot satisfy an await begun before
+  either generation retired.
+- Await searches pending, host-parked, and already-finalized mail by exact
+  anchor. If the ordinary main digest claimed the terminal report first, await
+  registers its tool-result marker as an alternate durable proof instead of
+  polling pending forever. Each retry first reconciles a previously persisted
+  attention result, so an old parked question cannot starve a later final.
+- Timeout/cancellation consumes no mail. Newly claimed results are parked until
+  the main-session JSONL durably contains an accepted delivery record (D26).
 
 ### subagent_interrupt
 ```

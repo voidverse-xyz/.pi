@@ -9,6 +9,7 @@ system, regardless of direction (main→sub, sub→sub, sub→main).
 {
   "id": "msg_<ulid>",
   "from": "refactorer/auth",
+  "fromGenerationId": "gen_<32 lowercase hex>",
   "to": "refactorer/api",
   "type": "message",
   "correlationId": null,
@@ -23,6 +24,7 @@ system, regardless of direction (main→sub, sub→sub, sub→main).
 |---|---|
 | id | unique, sortable (ulid) — doubles as the mailbox filename |
 | from / to | agent address `<type>/<id>`, or the specials `main` and `user` |
+| fromGenerationId | optional durable sender-incarnation fence on agent-originated mail; omitted for main/user and accepted as absent on legacy envelopes |
 | type | see table below |
 | correlationId | links answer→question, final report→task assignment, or collect report→request; null otherwise |
 | team | the team the send was authorized under (sub→sub only; null for main/user traffic) |
@@ -64,5 +66,14 @@ envelope only after the receiving turn has been durably appended to the session
 JSONL — a crash between delivery and append re-delivers (at-least-once; the
 digest labels re-delivered mail as such). Main digest/await delivery atomically
 claims files into `.delivering/` before rendering and finalizes only after the
-owning main-session JSONL contains both envelope id and delivery marker. A crash
-before append requeues the claim; timeout/cancelled await consumes nothing (D26).
+owning main-session JSONL contains both envelope id and an accepted delivery
+marker. If an await races a normal digest claim, it registers its tool-result
+marker as an alternate proof and can read the parked result instead of
+stranding. A crash before append requeues the claim only under a newly acquired
+exclusive host-scope lease; a live host leaves unverified mail in flight.
+Timeout/cancelled await consumes nothing. The main mailbox's aged/GC-bounded
+`.await-anchors.json` records each task/collect anchor's recipient generation;
+combined with envelope `fromGenerationId`, this prevents traffic from a reused
+or already-retired address generation from settling an older join. Startup also
+reconstructs an assignment anchor from the agent mailbox when a crash lands
+after task-envelope delivery but before anchor persistence (D26).
