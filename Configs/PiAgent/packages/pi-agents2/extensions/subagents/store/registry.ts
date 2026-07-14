@@ -112,11 +112,20 @@ export function removeAgent(registry: Registry, address: string): boolean {
 	return true;
 }
 
-export function patchAgent(registry: Registry, address: string, patch: Partial<Omit<AgentRecord, "type" | "id">>): AgentRecord | undefined {
+export interface AgentPatch {
+	lifetime?: Lifetime;
+	generationId?: string;
+	typeFileHash?: string;
+	lastActiveAt?: string;
+	vitals?: Partial<AgentVitals>;
+}
+
+export function patchAgent(registry: Registry, address: string, patch: AgentPatch): AgentRecord | undefined {
 	const record = registry.agents[address];
 	if (!record) return undefined;
-	Object.assign(record, patch);
-	if (patch.vitals) record.vitals = { ...record.vitals, ...patch.vitals };
+	const { vitals, ...rest } = patch;
+	Object.assign(record, rest);
+	if (vitals) record.vitals = { ...record.vitals, ...vitals };
 	return record;
 }
 

@@ -1,35 +1,96 @@
 /**
- * Subagents (v2) — persistent Pi subagents, clean-slate rebuild.
+ * Subagents (v2) — extension entry.
  *
- * Design: ~/Agents/Documents/Configs/Subagent-Docs/ (revised decision log
- * D1'–D27'). This is the v2 reimplementation; the v1 package is archived at
- * packages/_archive/pi-agents-v1/.
+ * Design: ~/Agents/Documents/Configs/Subagent-Docs/ (D1'–D27'). v1 is archived
+ * at packages/_archive/pi-agents-v1/.
  *
- * Key differences from v1:
- *  - Flat session-scoped state: ~/.pi/agent/sessions/<cwd-slug>/subagents/<sessionId>/ (D3).
- *  - In-process runtime, single host-scope lease (no per-agent run-owner locks) (D7).
- *  - Flat peer communication, no teams (D12).
- *  - No pi-agents sandbox: human confirmation delegated to pi-safety over pi.events;
- *    pi-agents keeps only a thin non-overridable system-deny guard (D10a/D20).
- *  - Completion: background-by-default, explicit subagent_await to join;
- *    all-mail auto-wake of idle main (D24'/D26'/D27').
+ * At session_start the core is acquired under a single host-scope lease (D7),
+ * keyed by the owning main session id (D3/D25'). Non-persisted (temporary)
+ * sessions cannot spawn subagents at all (D25'). Torn down on shutdown.
  *
- * Build order (see plan): 1 data layer, 2 runtime+spawn/status, 3 mail,
- * 4 rails, 5 pi-safety integration, 6 TUI, 7 completion + polish.
- *
- * Install: packages/pi-agents2/extensions/subagents/index.ts. Reload: /reload.
- *
- * NOTE: skeleton entry — not yet enabled in settings.json. Tools/TUI/events are
- * wired here phase by phase; each phase talks only to the core facade.
+ * Registration grows phase by phase. Phase 2: subagent_spawn / subagent_status.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createCore, type SubagentsCore } from "./core.ts";
+import { createLayout } from "./store/layout.ts";
+import { claimHostScope, HostScopeLockedError, type HostScopeLease } from "./store/host-lease.ts";
+import { SettingsLoader } from "./store/settings.ts";
+import { createSpawnTool, createStatusTool } from "./tools/main-agent.ts";
 
-export default function (_pi: ExtensionAPI): void {
-	// Phase 0 skeleton. Registration is added incrementally:
-	//   Phase 2 → subagent_spawn / subagent_status + session_start core lease
-	//   Phase 3 → subagent_send / subagent_steer / subagent_collect
-	//   Phase 5 → pi-safety confirmation bridge
-	//   Phase 6 → /agents command + widget/picker/viewer
-	//   Phase 7 → subagent_await + main-mail auto-wake
+export default function (pi: ExtensionAPI): void {
+	let core: SubagentsCore | null = null;
+	let lease: HostScopeLease | null = null;
+	/** Set when subagents are unavailable this session (non-persisted, or lease held elsewhere). */
+	let unavailableReason: string | null = null;
+
+	const getCore = (_ctx: ExtensionContext): SubagentsCore => {
+		if (core) return core;
+		throw new Error(unavailableReason ?? "Subagents are not available in this session.");
+	};
+
+	pi.registerTool(createSpawnTool(getCore));
+	pi.registerTool(createStatusTool(getCore));
+
+	pi.on("session_start", async (_event, ctx) => {
+		// Fresh scope per session_start (reload/resume rebuilds it).
+		await teardown();
+
+		const sessionId = ctx.sessionManager.getSessionId();
+		const persisted = ctx.sessionManager.getSessionFile() !== undefined;
+		if (!persisted) {
+			unavailableReason = "Subagents require a persisted session (start or resume a saved session).";
+			return;
+		}
+
+		const layout = createLayout(ctx.cwd, { sessionId });
+		try {
+			lease = claimHostScope(layout);
+		} catch (error) {
+			if (error instanceof HostScopeLockedError) {
+				unavailableReason = `Another process (pid ${error.ownerPid}) owns this session's subagents.`;
+				if (ctx.hasUI) ctx.ui.notify(unavailableReason, "warning");
+				return;
+			}
+			throw error;
+		}
+
+		const { settings, warnings } = new SettingsLoader(layout.globalSettingsFile, layout.projectSettingsFile).load();
+		if (ctx.hasUI) for (const warning of warnings) ctx.ui.notify(`pi-agents: ${warning}`, "warning");
+
+		unavailableReason = null;
+		core = createCore({
+			layout,
+			maxConcurrent: settings.maxConcurrent,
+			// settingsManager/authStorage are not on ExtensionContext — the SDK
+			// defaults them; only modelRegistry is host-provided.
+			...(ctx.modelRegistry ? { modelRegistry: ctx.modelRegistry } : {}),
+			projectTrusted: () => {
+				try {
+					return ctx.isProjectTrusted?.() === true;
+				} catch {
+					return false; // trust uncertainty fails closed (finding #7)
+				}
+			},
+		});
+	});
+
+	pi.on("session_shutdown", async () => {
+		await teardown();
+	});
+
+	async function teardown(): Promise<void> {
+		if (core) {
+			try {
+				await core.dispose();
+			} catch {
+				/* best effort */
+			}
+			core = null;
+		}
+		if (lease) {
+			lease.release();
+			lease = null;
+		}
+	}
 }

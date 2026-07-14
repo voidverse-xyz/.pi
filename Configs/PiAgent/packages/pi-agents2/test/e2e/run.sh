@@ -46,6 +46,8 @@ fi
 # ---------------------------------------------------------------------------
 TESTS=(
 	phase1-data-layer.mjs
+	phase2-runtime.mjs
+	loadcheck.mjs
 )
 for t in "${TESTS[@]}"; do
 	echo ""
