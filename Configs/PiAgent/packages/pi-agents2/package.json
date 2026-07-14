@@ -1,0 +1,19 @@
+{
+	"name": "pi-agents2",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Persistent Pi subagents (v2, clean-slate rebuild): flat session-scoped durable memory, disk-backed mailboxes, explicit anchored result awaiting, flat peer communication, markdown-defined types, and a session-viewer TUI. Human confirmation delegated to pi-safety. Adopts the name pi-agents once it lands.",
+	"keywords": [
+		"pi-package"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	}
+}
