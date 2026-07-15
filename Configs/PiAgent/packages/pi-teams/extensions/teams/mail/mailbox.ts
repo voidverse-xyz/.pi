@@ -125,19 +125,20 @@ export function beginDelivery(mailboxDir: string, envelopeId: string): void {
 export function markDone(mailboxDir: string, envelopeId: string): void {
 	const doneDir = mailboxDoneDirOf(mailboxDir);
 	mkdirSync(doneDir, { recursive: true });
-	// Drop the attempt marker BEFORE moving the envelope: a crash between the two
-	// then leaves the (moved) envelope in .done with no orphaned `.attempt` cruft
-	// accumulating in the live mailbox. (The envelope is gone from the top level
-	// either way, so this ordering never causes a false redelivery.)
-	try {
-		rmSync(attemptMarkerOf(envelopeFileOf(mailboxDir, envelopeId)), { force: true });
-	} catch {
-		/* ignore */
-	}
+	// Move the envelope to .done BEFORE dropping the attempt marker: a crash between
+	// the two leaves only an orphaned `<id>.json.attempt` in the live mailbox, which
+	// is inert (it fails every endsWith(".json") filter in readPending/pendingCount/
+	// maxEnvelopeId). The reverse order would leave the envelope in the live mailbox
+	// with NO marker, so a crash would redeliver it unlabeled (redelivered:false).
 	try {
 		renameSync(envelopeFileOf(mailboxDir, envelopeId), doneEnvelopeFileOf(mailboxDir, envelopeId));
 	} catch {
 		/* already moved */
+	}
+	try {
+		rmSync(attemptMarkerOf(envelopeFileOf(mailboxDir, envelopeId)), { force: true });
+	} catch {
+		/* ignore */
 	}
 }
 

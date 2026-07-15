@@ -14,8 +14,10 @@
  *     the turn boundary (D11 — mail never interrupts a running turn).
  *   - Draining flips the host to non-idle BEFORE injecting, so the turn started by
  *     the injection cannot re-enter the pump for the same mail.
- *   - Mail is committed (consumed) only AFTER the injection is handed off; the
- *     digest reaching the session transcript is the durability boundary.
+ *   - Mail is committed (consumed) only AFTER inject() returned — i.e. after the
+ *     SDK accepted the message synchronously (pi.sendMessage returns void). If the
+ *     SDK's internally-floated delivery later fails, the mail is already consumed:
+ *     accepted-synchronously is the durability boundary, not appended-to-transcript.
  *   - After shutdown nothing is ever drained or injected, so pending mail survives
  *     for the next session (at-least-once).
  */

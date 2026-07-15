@@ -7,8 +7,9 @@
  * Run: node phase6-tui.mjs
  */
 import { strict as assert } from "node:assert";
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { EXT, jiti } from "./env.mjs";
+import { EXT, WORLDS, jiti } from "./env.mjs";
 
 const widget = await jiti.import(join(EXT, "tui/widget.ts"));
 const picker = await jiti.import(join(EXT, "tui/picker.ts"));
@@ -113,6 +114,63 @@ await testAsync("the advertised stop key is the one index.ts actually binds", as
 		shortcuts.some((s) => s.key === tree.STOP_KEY),
 		`index.ts must bind STOP_KEY (${tree.STOP_KEY}); bound: ${JSON.stringify(shortcuts.map((s) => s.key))}`,
 	);
+});
+
+await testAsync("session_shutdown clears the ambient teams status", async () => {
+	// Boot index.ts's real session_start in TUI mode under a temp HOME, then shut
+	// down and assert setStatus("teams", undefined) — a stale "󱘎 N running…" must
+	// not outlive the session (pi-safety idiom).
+	const scratch = join(WORLDS, "phase6-world");
+	rmSync(scratch, { recursive: true, force: true });
+	const home = join(scratch, "home");
+	const project = join(scratch, "project");
+	mkdirSync(home, { recursive: true });
+	mkdirSync(project, { recursive: true });
+
+	const handlers = new Map();
+	const statusCalls = [];
+	const stubPi = {
+		registerTool: () => {},
+		registerCommand: () => {},
+		registerShortcut: () => {},
+		on: (event, handler) => handlers.set(event, handler),
+		events: { emit: () => {}, on: () => {} },
+		sendMessage: () => {},
+	};
+	const ext = await jiti.import(join(EXT, "index.ts"));
+	(ext.default ?? ext)(stubPi);
+
+	const ctx = {
+		cwd: project,
+		hasUI: true,
+		mode: "tui",
+		isProjectTrusted: () => true,
+		sessionManager: { getSessionId: () => "p6-sess", getSessionFile: () => join(project, "s.jsonl") },
+		ui: {
+			notify: () => {},
+			setStatus: (key, value) => statusCalls.push({ key, value }),
+			setWidget: () => {},
+			theme: { fg: (_c, s) => s },
+		},
+	};
+	const realHome = process.env.HOME;
+	process.env.HOME = home;
+	try {
+		await handlers.get("session_start")({ type: "session_start" }, ctx);
+		assert.ok(
+			statusCalls.some((c) => c.key === "teams"),
+			"session_start publishes the teams status",
+		);
+		await handlers.get("session_shutdown")({ type: "session_shutdown" }, ctx);
+		assert.deepEqual(
+			statusCalls.at(-1),
+			{ key: "teams", value: undefined },
+			"shutdown must clear the teams status",
+		);
+	} finally {
+		if (realHome === undefined) delete process.env.HOME;
+		else process.env.HOME = realHome;
+	}
 });
 
 console.log(`\nPhase 6: ${passed} checks passed.`);

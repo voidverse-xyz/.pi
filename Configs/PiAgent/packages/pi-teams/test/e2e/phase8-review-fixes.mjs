@@ -155,7 +155,7 @@ ok("an id ending in -digits is reported with its true address", () => {
 
 // ------------------------------------------------------- MAIL-5/6/M17: mailbox
 console.log("mailbox hygiene (MAIL-5/6, M17):");
-ok("markDone leaves no orphan .attempt marker; pendingCount has no side effects", () => {
+ok("markDone renames before dropping the marker; pendingCount has no side effects", () => {
 	const box = join(scratch, "mbox");
 	const env = envelope.makeEnvelope({ from: "main", to: "worker/main", type: "message", text: "hi" });
 	mailbox.writeEnvelope(box, env);
@@ -163,8 +163,28 @@ ok("markDone leaves no orphan .attempt marker; pendingCount has no side effects"
 	assert.equal(mailbox.pendingCount(box), 1);
 	mailbox.markDone(box, env.id);
 	const leftover = readdirSync(box).filter((n) => n.endsWith(".attempt"));
-	assert.equal(leftover.length, 0, "no orphaned attempt marker");
+	assert.equal(leftover.length, 0, "no orphaned attempt marker in the normal path");
 	assert.equal(mailbox.pendingCount(box), 0);
+});
+ok("an orphaned .attempt marker (crash between rename and rm) is inert", () => {
+	// markDone moves the envelope to .done BEFORE removing the marker; a crash in
+	// between leaves only the marker. It must not count as, or redeliver as, mail —
+	// the reverse ordering would instead leave the ENVELOPE with no marker, which
+	// redelivers unlabeled (redelivered:false).
+	const box = join(scratch, "mbox-orphan");
+	mkdirSync(box, { recursive: true });
+	const orphanId = "msg_" + "0".repeat(26);
+	writeFileSync(join(box, `${orphanId}.json.attempt`), "");
+	assert.equal(mailbox.pendingCount(box), 0, "marker not counted as pending");
+	assert.deepEqual(mailbox.readPending(box), [], "marker not read as an envelope");
+	assert.equal(mailbox.maxEnvelopeId(box), null, "marker not counted as an id");
+	// And a redelivery after a crash BEFORE the rename is labeled honestly.
+	const env = envelope.makeEnvelope({ from: "main", to: "worker/main", type: "message", text: "again" });
+	mailbox.writeEnvelope(box, env);
+	mailbox.beginDelivery(box, env.id);
+	const pending = mailbox.readPending(box);
+	assert.equal(pending.length, 1);
+	assert.equal(pending[0].redelivered, true, "attempt marker present → labeled redelivered");
 });
 ok("a corrupt sender-index is quarantined, not silently overwritten", () => {
 	const box = join(scratch, "mbox2");

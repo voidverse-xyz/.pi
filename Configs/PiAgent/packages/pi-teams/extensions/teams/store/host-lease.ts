@@ -58,20 +58,19 @@ function pidAlive(pid: number): boolean {
 /** Is a foreign owner marker still live (so we must NOT steal the scope)? */
 function markerIsLive(marker: HostOwnerMarker, now: number): boolean {
 	if (!pidAlive(marker.pid)) return false;
-	// Can we POSITIVELY confirm this is the original process (not a reused pid)?
-	// Only a readable, matching start-time counts as positive confirmation.
-	let startConfirmed = false;
 	if (marker.startTime !== null) {
+		// The owner recorded a start-time fence (Linux). A readable current start time
+		// gives a positive verdict either way; unreadable-now falls back to the
+		// heartbeat window so a dead owner with a recycled pid can't block forever.
 		const current = processStartTime(marker.pid);
-		if (current !== null) {
-			if (current !== marker.startTime) return false; // pid reused → original owner is dead
-			startConfirmed = true;
-		}
+		if (current !== null) return current === marker.startTime;
+		return now - marker.updatedAt <= STALE_AFTER_MS;
 	}
-	// Without positive confirmation (start-time absent or unreadable), a live pid may
-	// be an unrelated reused pid — trust it only within the heartbeat staleness
-	// window, so a dead owner whose pid got recycled can't block reclaim forever.
-	if (!startConfirmed && now - marker.updatedAt > STALE_AFTER_MS) return false;
+	// No fence was ever recorded (non-Linux): a live pid is honored, period. The
+	// heartbeat runs on the owner's event loop, so a busy-but-alive owner can miss
+	// the window — sweeping on staleness alone would break the single-owner
+	// guarantee. Cost: PID reuse can block reclaim until the reused process exits
+	// (HostScopeLockedError names the pid so the user can check it).
 	return true;
 }
 
@@ -118,6 +117,18 @@ function publishMarkerExclusive(path: string, marker: HostOwnerMarker): boolean 
 	}
 	try {
 		linkSync(tmp, path);
+		// Persist the directory entry too (same discipline as atomicWriteJson): the
+		// marker's creation should survive a power cut, not just its content.
+		try {
+			const dirFd = openSync(dirname(path), "r");
+			try {
+				fsyncSync(dirFd);
+			} finally {
+				closeSync(dirFd);
+			}
+		} catch {
+			/* best effort — not all platforms allow dir fsync */
+		}
 		return true;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;

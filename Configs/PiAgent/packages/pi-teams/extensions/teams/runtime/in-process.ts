@@ -765,6 +765,11 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			if (!leavePending) handle.assignment = null;
 		} finally {
 			this.activity.delete(address);
+			// Consume any interrupt intent that landed in the sliver where the session
+			// was prompted but not yet streaming (isStreaming still false → interrupt()
+			// records intent instead of aborting). Left in the set, the stale flag would
+			// stand down the NEXT, unrelated turn for this address.
+			this.pendingInterrupt.delete(address);
 			release();
 		}
 

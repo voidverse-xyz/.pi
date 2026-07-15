@@ -68,8 +68,9 @@ export interface SubagentsCore {
 	/**
 	 * Compose a wake digest from the main mailbox WITHOUT consuming it, plus a
 	 * `commit()` that marks the drained envelopes done and clears fulfilled collect
-	 * requests. The caller commits only AFTER the wake has been durably handed off
-	 * (D24 auto-wake) so a dropped/throwing injection can't silently lose main mail.
+	 * requests. The caller commits only AFTER handing the wake to the SDK — which
+	 * accepts synchronously (pi.sendMessage returns void), so a throwing injection
+	 * can't lose main mail; a later async delivery failure inside the SDK can.
 	 * Collect results are validated against their request schema (findings #9/#10).
 	 * Returns null when there is no pending main mail.
 	 */

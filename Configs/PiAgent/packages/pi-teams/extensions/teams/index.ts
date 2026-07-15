@@ -94,6 +94,7 @@ export default function (pi: ExtensionAPI): void {
 			// alt+j: next agent in address order; past the last → done.
 			const roster = (await core.status()).sort((a, b) => a.address.localeCompare(b.address));
 			const at = roster.findIndex((r) => r.address === address);
+			if (at < 0) break; // viewed agent left the roster (retired) — exit, don't wrap to roster[0]
 			address = roster[at + 1]?.address;
 		}
 	};
@@ -272,8 +273,9 @@ export default function (pi: ExtensionAPI): void {
 	const pump = createWakePump({
 		takeDigest: () => (core && uiCtx ? core.takeMainMailDigest() : null),
 		inject: (digest) => {
-			// sendMessage is fire-and-forget (the SDK floats the promise and routes any
-			// rejection to its own error channel), so there is nothing to catch here.
+			// sendMessage is fire-and-forget (returns void; the SDK floats the promise
+			// and routes any rejection to its own error channel), so there is nothing to
+			// catch here — synchronous acceptance is the commit boundary (wake-pump.ts).
 			pi.sendMessage({ content: digest, customType: "teams-mail", display: true, details: undefined }, WAKE_DELIVERY);
 		},
 	});
@@ -288,9 +290,12 @@ export default function (pi: ExtensionAPI): void {
 		pump.onSettled(); // drains background work that finished during the turn
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (_event, ctx) => {
 		pump.shutdown(); // no stale turn after teardown
 		await teardown();
+		// Clear the ambient status we published — otherwise the last "󱘎 N running…"
+		// outlives the fleet it described (same idiom as pi-safety).
+		if (ctx.mode === "tui") ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
 
 	async function teardown(): Promise<void> {
