@@ -96,12 +96,12 @@ export function makeCommandDenyCheck(protectedDirs: string[], realpath: Realpath
 			needles.add(`$HOME${dir.slice(home.length)}`);
 		}
 	}
-	const canonNeedles = [...needles].map(canonical);
+	const pairs = [...needles].map((needle) => ({ needle, canon: canonical(needle) }));
 	return (command: string): SystemDenyResult => {
 		const c = canonical(command);
-		for (let i = 0; i < canonNeedles.length; i++) {
-			if (c.includes(canonNeedles[i]!)) {
-				return { denied: true, reason: `the command references the protected path ${[...needles][i]} — writes there are never allowed` };
+		for (const { needle, canon } of pairs) {
+			if (c.includes(canon)) {
+				return { denied: true, reason: `the command references the protected path ${needle} — writes there are never allowed` };
 			}
 		}
 		return { denied: false };

@@ -15,13 +15,15 @@ import { parseAddress } from "./mail/envelope.ts";
 import { markDone, peekCollectRequest, pendingCount, readPending, takeCollectRequest } from "./mail/mailbox.ts";
 import { makeHopsGuard } from "./rails/hops.ts";
 import type { ConfirmFn } from "./sandbox/safety-bridge.ts";
-import { type AgentActivityRow, InProcessRuntime, type PeerMode } from "./runtime/in-process.ts";
+import { InProcessRuntime } from "./runtime/in-process.ts";
 import type {
+	AgentActivityRow,
 	AgentDetail,
 	AwaitOptions,
 	AwaitResult,
 	CollectResult,
 	InterruptResult,
+	PeerMode,
 	RetireResult,
 	RosterEntry,
 	RuntimeEventListener,
@@ -34,7 +36,7 @@ import type {
 } from "./runtime/types.ts";
 import type { Layout } from "./store/layout.ts";
 import { isWorking } from "./store/registry.ts";
-import { listTypeDefs, resolveTypeDef } from "./typedefs/discover.ts";
+import { listTypeDefs, resolveFromSource } from "./typedefs/discover.ts";
 
 export interface AvailableType {
 	name: string;
@@ -134,7 +136,7 @@ export function createCore(options: CoreOptions): SubagentsCore {
 		send: (sendOptions) => runtime.send(sendOptions),
 		sendAsUser: (sendOptions) => runtime.sendAsUser(sendOptions),
 		collect: (to, schema) => runtime.collect(to, schema),
-		awaitResult: (awaitOptions) => (runtime as InProcessRuntime).awaitResult(awaitOptions),
+		awaitResult: (awaitOptions) => runtime.awaitResult(awaitOptions),
 		status: () => runtime.status(),
 		peek: (address, tail) => runtime.peek(address, tail),
 		steer: (to, text) => runtime.steer(to, text),
@@ -178,16 +180,16 @@ export function createCore(options: CoreOptions): SubagentsCore {
 			const to = parseAddress(address);
 			return to?.kind === "agent" ? pendingCount(options.layout.mailboxDir(to.type, to.id)) : 0;
 		},
-		archived: () => (runtime as InProcessRuntime).archived(),
-		activitySnapshot: () => (runtime as InProcessRuntime).activitySnapshot(),
-		setUserPeerMode: (mode) => (runtime as InProcessRuntime).setUserPeerMode(mode),
-		setMainPeerOverride: (value) => (runtime as InProcessRuntime).setMainPeerOverride(value),
-		peerState: () => (runtime as InProcessRuntime).peerState(),
-		whenIdle: () => (runtime as InProcessRuntime).whenIdle(),
+		archived: () => runtime.archived(),
+		activitySnapshot: () => runtime.activitySnapshot(),
+		setUserPeerMode: (mode) => runtime.setUserPeerMode(mode),
+		setMainPeerOverride: (value) => runtime.setMainPeerOverride(value),
+		peerState: () => runtime.peerState(),
+		whenIdle: () => runtime.whenIdle(),
 		dispose: () => runtime.dispose(),
 		availableTypes(): AvailableType[] {
 			return listTypeDefs(options.layout, { projectTrusted: projectTrusted() }).map((source) => {
-				const resolved = resolveTypeDef(options.layout, source.name, { projectTrusted: projectTrusted() });
+				const resolved = resolveFromSource(source);
 				if (resolved.ok) {
 					return { name: source.name, source: source.origin, description: resolved.resolved.definition.config.description };
 				}

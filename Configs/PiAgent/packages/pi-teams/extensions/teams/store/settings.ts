@@ -10,9 +10,8 @@
  *
  * Precedence: defaults → global (`~/.pi/agent/subagents.json`) → project
  * (`<cwd>/.pi/subagents.json`). Each layer overrides field-by-field. A layer
- * that fails to parse is NOT treated as empty (that would silently drop
- * restrictive values, v1 finding #12) — the last-known-good value for that
- * absolute path is retained and a warning surfaced.
+ * that fails to read/parse contributes nothing and surfaces a warning — never
+ * a silent fallback (v1 finding #12). Settings load once per session_start.
  */
 
 import { readFileSync } from "node:fs";
@@ -57,7 +56,7 @@ function readIntField(
 
 export interface LayerReadResult {
 	patch: Patch;
-	/** True when the file existed but could not be read/parsed (retain last-known-good). */
+	/** True when the file existed but could not be read/parsed (layer contributes nothing). */
 	degraded: boolean;
 	warnings: string[];
 }
@@ -77,10 +76,10 @@ export function readSettingsFile(path: string): LayerReadResult {
 	try {
 		parsed = JSON.parse(text);
 	} catch {
-		return { patch: {}, degraded: true, warnings: [`${path}: invalid JSON — retaining last-known-good`] };
+		return { patch: {}, degraded: true, warnings: [`${path}: invalid JSON — layer ignored`] };
 	}
 	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-		return { patch: {}, degraded: true, warnings: [`${path}: not a JSON object — retaining last-known-good`] };
+		return { patch: {}, degraded: true, warnings: [`${path}: not a JSON object — layer ignored`] };
 	}
 	const raw = parsed as Record<string, unknown>;
 	const warnings: string[] = [];
@@ -103,37 +102,17 @@ export function readSettingsFile(path: string): LayerReadResult {
 }
 
 /**
- * A live-reloadable settings loader. Holds last-known-good patches per absolute
- * path so a transiently-broken file never reverts to defaults (finding #12).
+ * Load both layers now and merge over defaults. Stateless — settings are read
+ * exactly once per session_start; a broken layer degrades to defaults for that
+ * layer (with a warning), the other layer still applies.
  */
-export class SettingsLoader {
-	private lastGood = new Map<string, Patch>();
-
-	constructor(
-		private readonly globalPath: string,
-		private readonly projectPath: string,
-	) {}
-
-	/** Read both layers now and merge over defaults. Returns settings + warnings. */
-	load(): { settings: SubagentsSettings; warnings: string[] } {
-		const warnings: string[] = [];
-		const layers: Patch[] = [];
-		for (const path of [this.globalPath, this.projectPath]) {
-			const result = readSettingsFile(path);
-			warnings.push(...result.warnings);
-			if (result.degraded) {
-				const lastGood = this.lastGood.get(path);
-				if (lastGood === undefined) {
-					warnings.push(`${path}: no last-known-good yet — using built-in defaults for this layer until it parses`);
-				}
-				layers.push(lastGood ?? {});
-			} else {
-				this.lastGood.set(path, result.patch);
-				layers.push(result.patch);
-			}
-		}
-		const settings: SubagentsSettings = { ...DEFAULT_SETTINGS };
-		for (const layer of layers) Object.assign(settings, layer);
-		return { settings, warnings };
+export function loadSettings(globalPath: string, projectPath: string): { settings: SubagentsSettings; warnings: string[] } {
+	const warnings: string[] = [];
+	const settings: SubagentsSettings = { ...DEFAULT_SETTINGS };
+	for (const path of [globalPath, projectPath]) {
+		const result = readSettingsFile(path);
+		warnings.push(...result.warnings);
+		Object.assign(settings, result.patch);
 	}
+	return { settings, warnings };
 }

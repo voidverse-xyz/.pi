@@ -82,6 +82,8 @@ import { buildSandboxedTools } from "../sandbox/tools-filter.ts";
 import { makeCommandDenyCheck, makeSystemDenyCheck } from "../sandbox/system-deny.ts";
 import { type ConfirmFn, denyAllConfirm } from "../sandbox/safety-bridge.ts";
 import type {
+	AgentActivity,
+	AgentActivityRow,
 	AgentDetail,
 	AwaitEnvelopeView,
 	AwaitOptions,
@@ -89,6 +91,7 @@ import type {
 	CollectResult,
 	InheritedDefaults,
 	InterruptResult,
+	PeerMode,
 	RetireResult,
 	RosterEntry,
 	RuntimeEvent,
@@ -133,9 +136,6 @@ interface Handle {
 	/** This type's frontmatter peer default (D12); the effective setting layers user/main over it. */
 	peersDefault: boolean;
 }
-
-/** Peer-messaging control (D12). "llm" = the main agent decides via team_peers. */
-export type PeerMode = "on" | "off" | "llm";
 
 function vitalsFrom(session: AgentSession, state: AgentState): AgentVitals {
 	const stats = session.getSessionStats();
@@ -225,7 +225,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 		let taskEnvelopeId: string | undefined;
 		if (options.task !== undefined) {
-			this.inheritCache.set(address, options.inherit);
+			if (options.inherit !== undefined) this.inheritCache.set(address, options.inherit);
 			const outcome = this.deliverer.send({ from: { kind: "main" }, to: address, type: "message", text: options.task });
 			taskEnvelopeId = outcome.envelopeId;
 		}
@@ -539,7 +539,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	}
 
 	// ----------------------------------------------------------------- internals
-	private readonly inheritCache = new Map<string, InheritedDefaults | undefined>();
+	private readonly inheritCache = new Map<string, InheritedDefaults>();
 
 	private projectTrusted(): boolean {
 		return this.options.projectTrusted ? this.options.projectTrusted() : true;
@@ -878,18 +878,6 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		}
 		return resolved.model;
 	}
-}
-
-export interface AgentActivity {
-	/** The current tool name (e.g. "bash", "read"), or "" while thinking. */
-	tool: string;
-	/** A short human summary (e.g. "Bash: find CLI files"). */
-	summary: string;
-	/** Tool calls made this turn. */
-	toolUses: number;
-}
-export interface AgentActivityRow extends AgentActivity {
-	address: string;
 }
 
 /** Extract the latest tool call from an appended session entry, or null. */

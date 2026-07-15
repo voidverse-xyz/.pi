@@ -103,6 +103,9 @@ function wrapBashTool(tool: ToolDefinition, ports: SandboxPorts): ToolDefinition
 			if (deny.denied) hardDeny("bash", deny.reason ?? "protected path");
 			const result = await ports.confirm({ tool: "bash", command: summarize(command, 4096) });
 			if (!result.approved) confirmDenied("bash", result.note);
+			// No post-confirm re-check (unlike wrapPathTool's TOCTOU re-deny): the deny
+			// is a pure text scan of the same immutable command string — re-scanning
+			// could not change the verdict.
 			return inner(toolCallId, params, signal, onUpdate, ctx);
 		},
 	};

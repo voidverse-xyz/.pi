@@ -6,14 +6,14 @@
  * Tools talk ONLY to the core facade.
  */
 
-import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { SubagentsCore } from "../core.ts";
 import { parseAddress } from "../mail/envelope.ts";
 import type { Lifetime } from "../store/registry.ts";
 import { errorResult, jsonResult } from "./results.ts";
 
-type GetCore = (ctx: ExtensionContext) => SubagentsCore;
+type GetCore = () => SubagentsCore;
 
 /** These tools target a subagent instance — `main`/`user`/garbage are rejected up front. */
 function agentTargetError(address: string): ReturnType<typeof errorResult> | null {
@@ -44,7 +44,7 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 			"observe progress with team_status.",
 		parameters: SpawnParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const core = getCore(ctx);
+			const core = getCore();
 			try {
 				const result = await core.spawn({
 					type: params.type,
@@ -82,10 +82,10 @@ export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendPara
 			"Send mail to a subagent (or answer its question with correlationId). Never interrupts a running turn — " +
 			"delivered at the recipient's turn boundary, or it wakes a dormant agent.",
 		parameters: SendParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params) {
 			const badTarget = agentTargetError(params.to);
 			if (badTarget) return badTarget;
-			const core = getCore(ctx);
+			const core = getCore();
 			try {
 				const result = await core.send({
 					to: params.to,
@@ -116,11 +116,11 @@ export function createSteerTool(getCore: GetCore): ToolDefinition<typeof SteerPa
 		label: "Steer subagent",
 		description: "Inject guidance into a subagent's CURRENT turn (main-agent-only). No-op if it isn't running; use team_send otherwise.",
 		parameters: SteerParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params) {
 			const badTarget = agentTargetError(params.to);
 			if (badTarget) return badTarget;
 			try {
-				return jsonResult(await getCore(ctx).steer(params.to, params.text));
+				return jsonResult(await getCore().steer(params.to, params.text));
 			} catch (error) {
 				return errorResult(error);
 			}
@@ -141,11 +141,11 @@ export function createCollectTool(getCore: GetCore): ToolDefinition<typeof Colle
 			"Ask a subagent for a schema-conforming structured result. Non-blocking: the agent delivers it later as a report " +
 			"whose data is validated against the schema. Only a restricted JSON-schema subset is honored.",
 		parameters: CollectParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params) {
 			const badTarget = agentTargetError(params.to);
 			if (badTarget) return badTarget;
 			try {
-				return jsonResult(await getCore(ctx).collect(params.to, params.schema));
+				return jsonResult(await getCore().collect(params.to, params.schema));
 			} catch (error) {
 				return errorResult(error);
 			}
@@ -169,11 +169,11 @@ export function createAwaitTool(getCore: GetCore): ToolDefinition<typeof AwaitPa
 			"Returns early with 'attention' if the agent needs an answer/escalation/errors (so it can't deadlock), 'retired' " +
 			"if the agent is gone, or 'timeout'. Subagents are background by default — use this to join their work in-turn.",
 		parameters: AwaitParams,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal) {
 			const badTarget = agentTargetError(params.to);
 			if (badTarget) return badTarget;
 			try {
-				const result = await getCore(ctx).awaitResult({
+				const result = await getCore().awaitResult({
 					to: params.to,
 					waitFor: params.waitFor,
 					anchorId: params.anchorId,
@@ -196,11 +196,11 @@ export function createInterruptTool(getCore: GetCore): ToolDefinition<typeof Int
 		label: "Interrupt subagent",
 		description: "Abort a subagent's current turn. It stays alive with memory intact and goes dormant; its triggering mail stays pending.",
 		parameters: InterruptParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params) {
 			const badTarget = agentTargetError(params.to);
 			if (badTarget) return badTarget;
 			try {
-				return jsonResult(await getCore(ctx).interrupt(params.to));
+				return jsonResult(await getCore().interrupt(params.to));
 			} catch (error) {
 				return errorResult(error);
 			}
@@ -218,11 +218,11 @@ export function createRetireTool(getCore: GetCore): ToolDefinition<typeof Retire
 			"Permanently retire a subagent: deregister it and archive its memory. The ONLY destructive action — the address " +
 			"bounces afterward. Use for finished persistent agents; oneshots retire themselves.",
 		parameters: RetireParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params) {
 			const badTarget = agentTargetError(params.to);
 			if (badTarget) return badTarget;
 			try {
-				return jsonResult(await getCore(ctx).retire(params.to));
+				return jsonResult(await getCore().retire(params.to));
 			} catch (error) {
 				return errorResult(error);
 			}
@@ -242,12 +242,13 @@ export function createPeersTool(getCore: GetCore): ToolDefinition<typeof PeersPa
 		label: "Set peer messaging",
 		description:
 			"Turn subagent-to-subagent messaging on or off for the fleet (D12). off makes YOU the sole coordinator — " +
-			"agents can only report to you, and you relay between them. Takes effect on each agent's next turn. " +
+			"agents can only report to you, and you relay between them. Applies from each agent's next wake (off is also " +
+			"enforced immediately at delivery; an agent mid-turn keeps its current tool set until it rebuilds). " +
 			"Note: if the user pinned peer messaging on/off, your setting is recorded but the user's choice wins.",
 		parameters: PeersParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params) {
 			try {
-				const core = getCore(ctx);
+				const core = getCore();
 				core.setMainPeerOverride(params.mode === "on" ? true : params.mode === "off" ? false : null);
 				const state = core.peerState();
 				return jsonResult({
@@ -276,8 +277,8 @@ export function createStatusTool(getCore: GetCore): ToolDefinition<typeof Status
 			"Inspect subagents. With no address: the full roster (address, state, vitals). With an address: " +
 			"detail plus the last transcript entries (read-only; never perturbs the agent).",
 		parameters: StatusParams,
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const core = getCore(ctx);
+		async execute(_toolCallId, params) {
+			const core = getCore();
 			try {
 				if (params.address !== undefined) {
 					const detail = await core.peek(params.address, params.tail ?? 20);

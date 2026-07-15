@@ -115,9 +115,14 @@ export type ResolveResult =
 export function resolveTypeDef(layout: Layout, name: string, options: DiscoverOptions = {}): ResolveResult {
 	const source = listTypeDefs(layout, options).find((s) => s.name === name);
 	if (!source) return { ok: false, error: `Unknown subagent type ${JSON.stringify(name)}.` };
+	return resolveFromSource(source);
+}
+
+/** Resolve an already-listed source (lets catalog builders list ONCE instead of per type). */
+export function resolveFromSource(source: TypeDefSource): ResolveResult {
 	const content = readIndependentTypeFile(source.path);
-	if (content === null) return { ok: false, error: `Type file for ${JSON.stringify(name)} is not an independent regular file.` };
-	const parsed = parseTypeFile(content, name);
+	if (content === null) return { ok: false, error: `Type file for ${JSON.stringify(source.name)} is not an independent regular file.` };
+	const parsed = parseTypeFile(content, source.name);
 	if (!parsed.ok) return { ok: false, error: `Invalid type file ${source.path}: ${parsed.errors.join("; ")}` };
 	return { ok: true, resolved: { ...source, definition: parsed.definition, hash: sha256(content) } };
 }

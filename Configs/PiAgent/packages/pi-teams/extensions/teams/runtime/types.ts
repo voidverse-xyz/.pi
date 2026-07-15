@@ -17,8 +17,26 @@
  * Contract-only module: types + one interface, no implementation.
  */
 
+import type { ArchivedInfo } from "../store/archive.ts";
 import type { AgentState, AgentVitals, Lifetime } from "../store/registry.ts";
 import type { ThinkingLevel } from "../typedefs/parse.ts";
+
+/** Peer-messaging control (D12). "llm" = the main agent decides via team_peers. */
+export type PeerMode = "on" | "off" | "llm";
+
+export interface AgentActivity {
+	/** The current tool name (e.g. "bash", "read"), or "" while thinking. */
+	tool: string;
+	/** A short human summary (e.g. "Bash: find CLI files"). */
+	summary: string;
+	/** Tool calls made this turn. */
+	toolUses: number;
+}
+
+/** One tree-widget row: an agent's live activity keyed by address. */
+export interface AgentActivityRow extends AgentActivity {
+	address: string;
+}
 
 /**
  * Session defaults used when the type's frontmatter leaves them unset
@@ -194,6 +212,32 @@ export interface SubagentRuntime {
 
 	/** The ONLY destructive power: deregister + archive the dir (D13). Address bounces after. */
 	retire(to: string): Promise<RetireResult>;
+
+	/**
+	 * Explicit in-run join (D24'/D26'/D27'): block until a matching final/collect
+	 * report from `to` correlated to `anchorId` lands in the main mailbox, or the
+	 * agent needs attention (question/escalation/error — so it can't deadlock),
+	 * or it retired, or the timeout elapses.
+	 */
+	awaitResult(options: AwaitOptions): Promise<AwaitResult>;
+
+	/** Retired agents still on disk in .archive/ (D13). */
+	archived(): ArchivedInfo[];
+
+	/** Live per-agent activity for currently-working agents (tree widget). */
+	activitySnapshot(): AgentActivityRow[];
+
+	/** User-level peer control (D12): "on"/"off" force it, "llm" delegates to main. */
+	setUserPeerMode(mode: PeerMode): void;
+
+	/** Main-agent peer override (D12), honored only while the user delegates. null = per-type default. */
+	setMainPeerOverride(value: boolean | null): void;
+
+	/** Current peer-control state. */
+	peerState(): { userMode: PeerMode; mainOverride: boolean | null; userControls: boolean };
+
+	/** Await all in-flight subagent turns (host shutdown / tests). */
+	whenIdle(): Promise<void>;
 
 	/** Subscribe to runtime events. Returns the unsubscribe function. */
 	onEvent(listener: RuntimeEventListener): () => void;

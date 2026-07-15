@@ -101,28 +101,27 @@ mkdirSync(settingsDir, { recursive: true });
 const globalSettings = join(settingsDir, "subagents.json");
 const projectSettings = join(settingsDir, "project-subagents.json");
 ok("defaults when no files", () => {
-	const loader = new settings.SettingsLoader(globalSettings, projectSettings);
-	assert.deepEqual(loader.load().settings, settings.DEFAULT_SETTINGS);
+	assert.deepEqual(settings.loadSettings(globalSettings, projectSettings).settings, settings.DEFAULT_SETTINGS);
 });
 ok("project overrides global field-by-field", () => {
 	writeFileSync(globalSettings, JSON.stringify({ maxConcurrent: 8, maxHops: 4 }));
 	writeFileSync(projectSettings, JSON.stringify({ maxHops: 12 }));
-	const { settings: s } = new settings.SettingsLoader(globalSettings, projectSettings).load();
+	const { settings: s } = settings.loadSettings(globalSettings, projectSettings);
 	assert.equal(s.maxConcurrent, 8);
 	assert.equal(s.maxHops, 12);
 	assert.equal(s.archiveGcDays, 7);
 });
-ok("broken file retains last-known-good, not defaults (finding #12)", () => {
-	const loader = new settings.SettingsLoader(globalSettings, projectSettings);
-	loader.load(); // primes last-known-good {maxConcurrent:8,...}
+ok("a broken layer degrades to defaults for that layer with a warning; the other layer still applies", () => {
 	writeFileSync(globalSettings, "{ not json");
-	const { settings: s, warnings } = loader.load();
-	assert.equal(s.maxConcurrent, 8, "should retain last-known-good");
+	const { settings: s, warnings } = settings.loadSettings(globalSettings, projectSettings);
+	assert.equal(s.maxConcurrent, settings.DEFAULT_SETTINGS.maxConcurrent, "broken global layer contributes nothing");
+	assert.equal(s.maxHops, 12, "the valid project layer still applies");
 	assert.ok(warnings.some((w) => w.includes("invalid JSON")));
 });
 ok("invalid field values are ignored with a warning", () => {
 	writeFileSync(globalSettings, JSON.stringify({ maxConcurrent: -1, bogus: 1 }));
-	const { settings: s, warnings } = new settings.SettingsLoader(globalSettings, projectSettings).load();
+	writeFileSync(projectSettings, JSON.stringify({}));
+	const { settings: s, warnings } = settings.loadSettings(globalSettings, projectSettings);
 	assert.equal(s.maxConcurrent, settings.DEFAULT_SETTINGS.maxConcurrent);
 	assert.ok(warnings.some((w) => w.includes("maxConcurrent")));
 	assert.ok(warnings.some((w) => w.includes("unknown key")));

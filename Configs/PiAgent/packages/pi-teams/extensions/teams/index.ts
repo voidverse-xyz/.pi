@@ -17,7 +17,7 @@ import { gcArchive, gcDoneMail } from "./store/archive.ts";
 import { createLayout } from "./store/layout.ts";
 import { createWakePump } from "./mail/wake-pump.ts";
 import { claimHostScope, HostScopeLockedError, type HostScopeLease } from "./store/host-lease.ts";
-import { SettingsLoader } from "./store/settings.ts";
+import { loadSettings } from "./store/settings.ts";
 import { makeSafetyConfirm } from "./sandbox/safety-bridge.ts";
 import {
 	createAwaitTool,
@@ -59,13 +59,29 @@ export default function (pi: ExtensionAPI): void {
 	let overlayOpen = false;
 	/** Set when subagents are unavailable this session (non-persisted, or lease held elsewhere). */
 	let unavailableReason: string | null = null;
+	/** The latest ExtensionContext, captured at session_start/input/settle for the wake pump. */
+	let uiCtx: ExtensionContext | null = null;
 
 	const unavailable = (): string => unavailableReason ?? "Teams are not available in this session.";
 
-	const getCore = (_ctx: ExtensionContext): SubagentsCore => {
+	const getCore = (): SubagentsCore => {
 		if (core) return core;
 		throw new Error(unavailable());
 	};
+
+	// --- Main-mail auto-wake (D24): all mail wakes an idle host. ---
+	// The POLICY lives in mail/wake-pump.ts (pure, unit-tested). This is only the
+	// port binding: core for the digest, pi.sendMessage for the injection. Keep it
+	// that way — logic added here is logic the suite cannot reach.
+	const pump = createWakePump({
+		takeDigest: () => (core && uiCtx ? core.takeMainMailDigest() : null),
+		inject: (digest) => {
+			// sendMessage is fire-and-forget (returns void; the SDK floats the promise
+			// and routes any rejection to its own error channel), so there is nothing to
+			// catch here — synchronous acceptance is the commit boundary (wake-pump.ts).
+			pi.sendMessage({ content: digest, customType: "teams-mail", display: true, details: undefined }, WAKE_DELIVERY);
+		},
+	});
 
 	pi.registerTool(createSpawnTool(getCore));
 	pi.registerTool(createSendTool(getCore));
@@ -208,65 +224,65 @@ export default function (pi: ExtensionAPI): void {
 		}
 
 		try {
-		const { settings, warnings } = new SettingsLoader(layout.globalSettingsFile, layout.projectSettingsFile).load();
-		if (ctx.hasUI) for (const warning of warnings) ctx.ui.notify(`pi-agents: ${warning}`, "warning");
+			const { settings, warnings } = loadSettings(layout.globalSettingsFile, layout.projectSettingsFile);
+			if (ctx.hasUI) for (const warning of warnings) ctx.ui.notify(`pi-agents: ${warning}`, "warning");
 
-		unavailableReason = null;
-		core = createCore({
-			layout,
-			maxConcurrent: settings.maxConcurrent,
-			maxHops: settings.maxHops,
-			peersMode: settings.peers,
-			// Guarded subagent tool calls (bash/edit/write) confirm via pi-safety
-			// over pi.events (D10a); fail-closed if pi-safety is absent.
-			confirm: makeSafetyConfirm(pi),
-			// settingsManager/authStorage are not on ExtensionContext — the SDK
-			// defaults them; only modelRegistry is host-provided.
-			...(ctx.modelRegistry ? { modelRegistry: ctx.modelRegistry } : {}),
-			projectTrusted: () => {
-				try {
-					return ctx.isProjectTrusted?.() === true;
-				} catch {
-					return false; // trust uncertainty fails closed (finding #7)
-				}
-			},
-		});
-
-		uiCtx = ctx;
-		// A subagent that finishes/reports while the host is idle should wake it.
-		core.onEvent((event) => {
-			if (event.type === "turn-finished" || event.type === "agent-retired") pump.onMailArrived();
-		});
-
-		// One best-effort retention sweep per session (D13): retired agent dirs and
-		// processed .done mail older than archiveGcDays. Hygiene only — fire and
-		// forget, never blocks startup.
-		const gcCore = core;
-		void (async () => {
-			try {
-				const roster = await gcCore.status();
-				const boxes = [layout.mainMailboxDir, ...roster.map((entry) => layout.mailboxDir(entry.type, entry.id))];
-				gcArchive(layout, settings.archiveGcDays, Date.now());
-				gcDoneMail(boxes, settings.archiveGcDays, Date.now());
-			} catch {
-				/* best effort */
-			}
-		})();
-
-		// Ambient widget: publish plain status text; pi-status-line styles it.
-		if (ctx.mode === "tui") {
-			const publish = (): void => {
-				if (!widget) return;
-				ctx.ui.setStatus(STATUS_KEY, widgetStatusText(widget.snapshot()));
-			};
-			widget = createWidgetController({ core, onChange: publish });
-			publish();
-			// The live "Running N team agents…" tree above the editor (Phase 8).
-			tree = createTreeWidget(core, {
-				setWidget: (key, content, opts) => ctx.ui.setWidget(key, content, opts),
-				theme: ctx.ui.theme,
+			unavailableReason = null;
+			core = createCore({
+				layout,
+				maxConcurrent: settings.maxConcurrent,
+				maxHops: settings.maxHops,
+				peersMode: settings.peers,
+				// Guarded subagent tool calls (bash/edit/write) confirm via pi-safety
+				// over pi.events (D10a); fail-closed if pi-safety is absent.
+				confirm: makeSafetyConfirm(pi),
+				// settingsManager/authStorage are not on ExtensionContext — the SDK
+				// defaults them; only modelRegistry is host-provided.
+				...(ctx.modelRegistry ? { modelRegistry: ctx.modelRegistry } : {}),
+				projectTrusted: () => {
+					try {
+						return ctx.isProjectTrusted?.() === true;
+					} catch {
+						return false; // trust uncertainty fails closed (finding #7)
+					}
+				},
 			});
-		}
+
+			uiCtx = ctx;
+			// A subagent that finishes/reports while the host is idle should wake it.
+			core.onEvent((event) => {
+				if (event.type === "turn-finished" || event.type === "agent-retired") pump.onMailArrived();
+			});
+
+			// One best-effort retention sweep per session (D13): retired agent dirs and
+			// processed .done mail older than archiveGcDays. Hygiene only — fire and
+			// forget, never blocks startup.
+			const gcCore = core;
+			void (async () => {
+				try {
+					const roster = await gcCore.status();
+					const boxes = [layout.mainMailboxDir, ...roster.map((entry) => layout.mailboxDir(entry.type, entry.id))];
+					gcArchive(layout, settings.archiveGcDays, Date.now());
+					gcDoneMail(boxes, settings.archiveGcDays, Date.now());
+				} catch {
+					/* best effort */
+				}
+			})();
+
+			// Ambient widget: publish plain status text; pi-status-line styles it.
+			if (ctx.mode === "tui") {
+				const publish = (): void => {
+					if (!widget) return;
+					ctx.ui.setStatus(STATUS_KEY, widgetStatusText(widget.snapshot()));
+				};
+				widget = createWidgetController({ core, onChange: publish });
+				publish();
+				// The live "Running N team agents…" tree above the editor (Phase 8).
+				tree = createTreeWidget(core, {
+					setWidget: (key, content, opts) => ctx.ui.setWidget(key, content, opts),
+					theme: ctx.ui.theme,
+				});
+			}
 		} catch (error) {
 			// Setup failed AFTER the lease was claimed — tear everything down so the
 			// lease is released (otherwise it blocks resume in another process), and
@@ -277,23 +293,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 	});
 
-	// --- Main-mail auto-wake (D24): all mail wakes an idle host. ---
-	// The POLICY lives in mail/wake-pump.ts (pure, unit-tested). Everything below is
-	// literal plumbing: map Pi's lifecycle events onto the pump, and bind its port to
-	// core + pi.sendMessage. Keep it that way — logic added here is logic the suite
-	// cannot reach.
-	let uiCtx: ExtensionContext | null = null;
-
-	const pump = createWakePump({
-		takeDigest: () => (core && uiCtx ? core.takeMainMailDigest() : null),
-		inject: (digest) => {
-			// sendMessage is fire-and-forget (returns void; the SDK floats the promise
-			// and routes any rejection to its own error channel), so there is nothing to
-			// catch here — synchronous acceptance is the commit boundary (wake-pump.ts).
-			pi.sendMessage({ content: digest, customType: "teams-mail", display: true, details: undefined }, WAKE_DELIVERY);
-		},
-	});
-
+	// Map Pi's lifecycle events onto the wake pump — literal plumbing only.
 	pi.on("input", (_event, ctx) => {
 		uiCtx = ctx;
 		pump.onInput();

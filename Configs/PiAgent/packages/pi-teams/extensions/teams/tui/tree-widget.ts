@@ -15,7 +15,7 @@
  */
 
 import type { SubagentsCore } from "../core.ts";
-import type { AgentActivityRow } from "../runtime/in-process.ts";
+import type { AgentActivityRow } from "../runtime/types.ts";
 
 export const AGENTS_ICON = "󱘎";
 

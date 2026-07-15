@@ -16,6 +16,9 @@ export const DEFAULT_MAX_HOPS = 8;
 // An upward message to main is a safety valve and is NEVER hop-limited — including
 // a `question`, which is exactly how a subagent stuck deep in a peer chain surfaces
 // a blocking ask to the human/main. (Peer→peer questions are still hop-limited.)
+// A plain `message` to main is deliberately NOT an escape: bulk chatter must still
+// respect the hop cap; only the structured report/escalation/error/question
+// channels are exempt.
 const MAIN_ESCAPE_TYPES = new Set<Envelope["type"]>(["report", "escalation", "error", "question"]);
 
 /** An upward escape to main (never hop-limited). */
