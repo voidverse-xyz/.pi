@@ -36,8 +36,8 @@ ok("cwd slug matches Pi's encodeCwd", () => {
 	assert.equal(cwdSlug("/home/user/fake-project"), "--home-user-fake-project--");
 });
 const layout = createLayout(project, { home, sessionId: "sess-A" });
-ok("flat layout: subagents/<sessionId>, no digest/owners nesting", () => {
-	const root = join(home, ".pi/agent/sessions/--home-user-fake-project--/subagents/sess-A");
+ok("flat layout: teams/<sessionId>, no digest/owners nesting", () => {
+	const root = join(home, ".pi/agent/sessions/--home-user-fake-project--/teams/sess-A");
 	assert.equal(layout.subagentsRoot, root);
 	assert.equal(layout.registryFile, join(root, "registry.json"));
 	assert.equal(layout.mainMailboxDir, join(root, ".main/mailbox"));
@@ -98,8 +98,8 @@ ok("parseAddress handles agent + specials", () => {
 console.log("settings:");
 const settingsDir = join(scratch, "settings");
 mkdirSync(settingsDir, { recursive: true });
-const globalSettings = join(settingsDir, "subagents.json");
-const projectSettings = join(settingsDir, "project-subagents.json");
+const globalSettings = join(settingsDir, "teams.json");
+const projectSettings = join(settingsDir, "project-teams.json");
 ok("defaults when no files", () => {
 	assert.deepEqual(settings.loadSettings(globalSettings, projectSettings).settings, settings.DEFAULT_SETTINGS);
 });

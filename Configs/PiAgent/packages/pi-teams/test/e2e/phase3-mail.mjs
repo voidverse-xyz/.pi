@@ -25,9 +25,9 @@ const scratch = join(WORLDS, "phase3-world");
 rmSync(scratch, { recursive: true, force: true });
 const home = join(scratch, "home");
 const project = join(scratch, "project");
-mkdirSync(join(home, ".pi", "agent", "subagents"), { recursive: true });
-mkdirSync(join(project, ".pi", "subagents"), { recursive: true });
-const defs = join(home, ".pi", "agent", "subagents");
+mkdirSync(join(home, ".pi", "agent", "teams"), { recursive: true });
+mkdirSync(join(project, ".pi", "teams"), { recursive: true });
+const defs = join(home, ".pi", "agent", "teams");
 for (const [name, body] of [
 	["researcher", "You are RESEARCHER."],
 	["greeter", "You are GREETER."],

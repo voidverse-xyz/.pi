@@ -29,8 +29,8 @@ async function test(name, fn) {
 console.log("system-deny (pure):");
 await test("denies the state tree + type-def dirs, ancestors; allows project files", () => {
 	const id = (p) => p; // identity realpath (no fs)
-	const stateTree = "/home/u/.pi/agent/sessions/--proj--/subagents";
-	const typeDefs = "/proj/.pi/subagents";
+	const stateTree = "/home/u/.pi/agent/sessions/--proj--/teams";
+	const typeDefs = "/proj/.pi/teams";
 	const deny = makeSystemDenyCheck([stateTree, typeDefs], id);
 	assert.equal(deny(join(stateTree, "sess-A/registry.json")).denied, true, "below state tree");
 	assert.equal(deny(stateTree).denied, true, "the state tree itself");
@@ -80,9 +80,9 @@ const scratch = join(WORLDS, "phase5-world");
 rmSync(scratch, { recursive: true, force: true });
 const home = join(scratch, "home");
 const project = join(scratch, "project");
-mkdirSync(join(home, ".pi", "agent", "subagents"), { recursive: true });
+mkdirSync(join(home, ".pi", "agent", "teams"), { recursive: true });
 mkdirSync(join(project, "src"), { recursive: true });
-writeFileSync(join(home, ".pi", "agent", "subagents", "coder.md"), ["---", "name: coder", "description: writes code", "model: mock/mock-1", "projectContext: false", "tools: [read, write, bash]", "---", "You are CODER."].join("\n"));
+writeFileSync(join(home, ".pi", "agent", "teams", "coder.md"), ["---", "name: coder", "description: writes code", "model: mock/mock-1", "projectContext: false", "tools: [read, write, bash]", "---", "You are CODER."].join("\n"));
 
 // Confirm port: record requests; approve unless the command/path contains DENY.
 const confirmCalls = [];

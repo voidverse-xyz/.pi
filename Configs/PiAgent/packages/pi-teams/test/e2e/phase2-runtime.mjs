@@ -24,18 +24,18 @@ const scratch = join(WORLDS, "phase2-world");
 rmSync(scratch, { recursive: true, force: true });
 const home = join(scratch, "home");
 const project = join(scratch, "project");
-mkdirSync(join(home, ".pi", "agent", "subagents"), { recursive: true });
-mkdirSync(join(project, ".pi", "subagents"), { recursive: true });
+mkdirSync(join(home, ".pi", "agent", "teams"), { recursive: true });
+mkdirSync(join(project, ".pi", "teams"), { recursive: true });
 writeFileSync(join(project, "AGENTS.md"), "MARKER_PROJECT_CONTEXT: always use tabs.\n");
 
 // researcher pins the mock model + opts OUT of project context.
 writeFileSync(
-	join(project, ".pi", "subagents", "researcher.md"),
+	join(project, ".pi", "teams", "researcher.md"),
 	["---", "name: researcher", "description: Digs into questions", "model: mock/mock-1", "projectContext: false", "---", "You are a RESEARCHER_BODY_MARKER."].join("\n"),
 );
 // greeter inherits the session model + keeps default projectContext:true.
 writeFileSync(
-	join(home, ".pi", "agent", "subagents", "greeter.md"),
+	join(home, ".pi", "agent", "teams", "greeter.md"),
 	["---", "name: greeter", "description: Says hello", "---", "You are a GREETER_BODY_MARKER."].join("\n"),
 );
 

@@ -44,8 +44,8 @@ const scratch = join(WORLDS, "phase4-world");
 rmSync(scratch, { recursive: true, force: true });
 const home = join(scratch, "home");
 const project = join(scratch, "project");
-mkdirSync(join(home, ".pi", "agent", "subagents"), { recursive: true });
-writeFileSync(join(home, ".pi", "agent", "subagents", "worker.md"), ["---", "name: worker", "description: worker", "model: mock/mock-1", "projectContext: false", "---", "You are WORKER."].join("\n"));
+mkdirSync(join(home, ".pi", "agent", "teams"), { recursive: true });
+writeFileSync(join(home, ".pi", "agent", "teams", "worker.md"), ["---", "name: worker", "description: worker", "model: mock/mock-1", "projectContext: false", "---", "You are WORKER."].join("\n"));
 
 let pings = 0;
 const HARD_CAP = 30; // safety: if the rail is broken, stop the mock looping forever

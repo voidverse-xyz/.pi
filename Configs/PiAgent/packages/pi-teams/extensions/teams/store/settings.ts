@@ -8,8 +8,8 @@
  *   maxHops        — causal-chain depth before a message bounces (D21).
  *   archiveGcDays  — N-day retention for retired dirs + processed mail (D13).
  *
- * Precedence: defaults → global (`~/.pi/agent/subagents.json`) → project
- * (`<cwd>/.pi/subagents.json`). Each layer overrides field-by-field. A layer
+ * Precedence: defaults → global (`~/.pi/agent/teams.json`) → project
+ * (`<cwd>/.pi/teams.json`). Each layer overrides field-by-field. A layer
  * that fails to read/parse contributes nothing and surfaces a warning — never
  * a silent fallback (v1 finding #12). Settings load once per session_start.
  */

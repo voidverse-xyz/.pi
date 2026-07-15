@@ -10,7 +10,7 @@
  *
  *   ~/.pi/agent/sessions/<cwd-slug>/                # Pi's per-project dir
  *     <timestamp>_<uuid>.jsonl                      # main sessions (untouched)
- *     subagents/<sessionId>/                        # ONE owning main session
+ *     teams/<sessionId>/                            # ONE owning main session
  *       scope.json  .host-owner.json                # ownership + host lease
  *       registry.json
  *       .main/mailbox/  (.done/ + sender indexes)
@@ -123,7 +123,7 @@ export interface Layout {
 	readonly sessionsRoot: string;
 	/** ~/.pi/agent/sessions/<cwd-slug> — Pi's own dir for this project. */
 	readonly projectSessionDir: string;
-	/** <projectSessionDir>/subagents — parent of all session scopes for this project. */
+	/** <projectSessionDir>/teams — parent of all session scopes for this project. */
 	readonly projectSubagentsRoot: string;
 	/** <projectSubagentsRoot>/<sessionId> — root of all mutable state for this conversation. */
 	readonly subagentsRoot: string;
@@ -145,16 +145,16 @@ export interface Layout {
 	/** <archiveRoot>/<type>/<id> — where retire moves an agent dir (D13). */
 	archiveDir(type: string, id: string): string;
 
-	/** ~/.pi/agent/subagents — global type-definition library (D6). */
+	/** ~/.pi/agent/teams — global type-definition library (D6). */
 	readonly globalTypeDefsDir: string;
-	/** <cwd>/.pi/subagents — repo-shipped type definitions (D6; wins on conflict). */
+	/** <cwd>/.pi/teams — repo-shipped type definitions (D6; wins on conflict). */
 	readonly projectTypeDefsDir: string;
 	/** A type definition file inside either discovery dir. */
 	typeDefFile(dir: string, typeName: string): string;
 
-	/** ~/.pi/agent/subagents.json — global extension settings. */
+	/** ~/.pi/agent/teams.json — global extension settings. */
 	readonly globalSettingsFile: string;
-	/** <cwd>/.pi/subagents.json — per-project overrides. */
+	/** <cwd>/.pi/teams.json — per-project overrides. */
 	readonly projectSettingsFile: string;
 }
 
@@ -169,13 +169,13 @@ export function createLayout(cwd: string, options: LayoutOptions): Layout {
 	const agentDir = join(home, ".pi", "agent");
 	const sessionsRoot = join(agentDir, "sessions");
 	const projectSessionDir = join(sessionsRoot, cwdSlug(cwd));
-	const projectSubagentsRoot = join(projectSessionDir, "subagents");
+	const projectSubagentsRoot = join(projectSessionDir, "teams");
 	const subagentsRoot = options.subagentsRoot ?? join(projectSubagentsRoot, options.sessionId);
 	const archiveRoot = join(subagentsRoot, ".archive");
 	const mainMailboxDir = join(subagentsRoot, ".main", "mailbox");
 
-	const globalTypeDefsDir = join(agentDir, "subagents");
-	const projectTypeDefsDir = join(cwd, ".pi", "subagents");
+	const globalTypeDefsDir = join(agentDir, "teams");
+	const projectTypeDefsDir = join(cwd, ".pi", "teams");
 
 	const agentInstanceDir = (type: string, id: string): string => join(subagentsRoot, type, id);
 	const mailboxDir = (type: string, id: string): string => join(agentInstanceDir(type, id), "mailbox");
