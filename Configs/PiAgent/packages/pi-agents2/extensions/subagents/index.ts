@@ -65,6 +65,7 @@ export default function (pi: ExtensionAPI): void {
 		core = createCore({
 			layout,
 			maxConcurrent: settings.maxConcurrent,
+			maxHops: settings.maxHops,
 			// settingsManager/authStorage are not on ExtensionContext — the SDK
 			// defaults them; only modelRegistry is host-provided.
 			...(ctx.modelRegistry ? { modelRegistry: ctx.modelRegistry } : {}),

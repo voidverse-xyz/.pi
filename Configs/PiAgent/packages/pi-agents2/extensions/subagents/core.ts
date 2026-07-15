@@ -9,6 +9,7 @@
  */
 
 import type { AuthStorage, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { makeHopsGuard } from "./rails/hops.ts";
 import { InProcessRuntime } from "./runtime/in-process.ts";
 import type {
 	AgentDetail,
@@ -56,6 +57,8 @@ export interface SubagentsCore {
 export interface CoreOptions {
 	layout: Layout;
 	maxConcurrent?: number;
+	/** Chain-depth cap (D21). May be a live getter. Default DEFAULT_MAX_HOPS. */
+	maxHops?: number | (() => number);
 	modelRegistry?: ModelRegistry;
 	settingsManager?: SettingsManager;
 	authStorage?: AuthStorage;
@@ -66,6 +69,7 @@ export function createCore(options: CoreOptions): SubagentsCore {
 	const runtime = new InProcessRuntime({
 		layout: options.layout,
 		...(options.maxConcurrent !== undefined ? { maxConcurrent: options.maxConcurrent } : {}),
+		...(options.maxHops !== undefined ? { hopsGuard: makeHopsGuard(options.maxHops) } : {}),
 		...(options.modelRegistry ? { modelRegistry: options.modelRegistry } : {}),
 		...(options.settingsManager ? { settingsManager: options.settingsManager } : {}),
 		...(options.authStorage ? { authStorage: options.authStorage } : {}),
