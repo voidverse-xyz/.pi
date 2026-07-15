@@ -23,6 +23,10 @@ assert.equal(result.extensions.length, 1, "exactly one extension loads");
 const ext = result.extensions[0];
 const keysOf = (v) => (v?.keys ? [...v.keys()] : v ? Object.keys(v) : []);
 
-assert.deepEqual(keysOf(ext.tools).sort(), ["subagent_spawn", "subagent_status"], "Phase 2 tool surface");
+assert.deepEqual(
+	keysOf(ext.tools).sort(),
+	["subagent_collect", "subagent_send", "subagent_spawn", "subagent_status", "subagent_steer"],
+	"Phase 3 tool surface",
+);
 
 console.log("loadcheck ok — tools:", keysOf(ext.tools).sort().join(", "));

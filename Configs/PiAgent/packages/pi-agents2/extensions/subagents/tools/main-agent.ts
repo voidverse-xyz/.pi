@@ -71,6 +71,82 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 	};
 }
 
+const SendParams = Type.Object({
+	to: Type.String({ description: "Recipient subagent address <type>/<id>." }),
+	text: Type.String(),
+	correlationId: Type.Optional(Type.String({ description: "Set to answer a subagent's question (the question envelope's id)." })),
+	background: Type.Optional(Type.Boolean({ description: "Reserved for the completion barrier (Phase 7)." })),
+});
+
+export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendParams> {
+	return {
+		name: "subagent_send",
+		label: "Message a subagent",
+		description:
+			"Send mail to a subagent (or answer its question with correlationId). Never interrupts a running turn — " +
+			"delivered at the recipient's turn boundary, or it wakes a dormant agent.",
+		parameters: SendParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const core = getCore(ctx);
+			try {
+				const result = await core.send({
+					to: params.to,
+					text: params.text,
+					...(params.correlationId !== undefined ? { correlationId: params.correlationId } : {}),
+					...(params.background !== undefined ? { background: params.background } : {}),
+				});
+				return jsonResult(result);
+			} catch (error) {
+				return errorResult(error);
+			}
+		},
+	};
+}
+
+const SteerParams = Type.Object({
+	to: Type.String({ description: "The running subagent to steer." }),
+	text: Type.String({ description: "Guidance injected mid-turn to redirect current work." }),
+});
+
+export function createSteerTool(getCore: GetCore): ToolDefinition<typeof SteerParams> {
+	return {
+		name: "subagent_steer",
+		label: "Steer subagent",
+		description: "Inject guidance into a subagent's CURRENT turn (main-agent-only). No-op if it isn't running; use subagent_send otherwise.",
+		parameters: SteerParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				return jsonResult(await getCore(ctx).steer(params.to, params.text));
+			} catch (error) {
+				return errorResult(error);
+			}
+		},
+	};
+}
+
+const CollectParams = Type.Object({
+	to: Type.String({ description: "The subagent to collect a structured result from." }),
+	schema: Type.Any({ description: "JSON-schema subset (type/properties/required/items/enum/const/additionalProperties:false) the result must conform to." }),
+});
+
+export function createCollectTool(getCore: GetCore): ToolDefinition<typeof CollectParams> {
+	return {
+		name: "subagent_collect",
+		label: "Collect result",
+		description:
+			"Ask a subagent for a schema-conforming structured result. Non-blocking: the agent delivers it later as a report " +
+			"whose data is validated against the schema. Only a restricted JSON-schema subset is honored.",
+		parameters: CollectParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				return jsonResult(await getCore(ctx).collect(params.to, params.schema));
+			} catch (error) {
+				return errorResult(error);
+			}
+		},
+	};
+}
+
 const StatusParams = Type.Object({
 	address: Type.Optional(Type.String({ description: "A <type>/<id> to inspect in detail. Omit for the full roster." })),
 	tail: Type.Optional(Type.Integer({ minimum: 0, maximum: 200, description: "With address: number of trailing transcript entries (default 20)." })),

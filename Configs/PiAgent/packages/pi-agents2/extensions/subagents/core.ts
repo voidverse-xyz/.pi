@@ -12,9 +12,12 @@ import type { AuthStorage, ModelRegistry, SettingsManager } from "@earendil-work
 import { InProcessRuntime } from "./runtime/in-process.ts";
 import type {
 	AgentDetail,
+	CollectResult,
 	InterruptResult,
 	RosterEntry,
 	RuntimeEventListener,
+	SendOptions,
+	SendResult,
 	SpawnOptions,
 	SpawnResult,
 	SteerResult,
@@ -33,6 +36,9 @@ export interface AvailableType {
 
 export interface SubagentsCore {
 	spawn(options: SpawnOptions): Promise<SpawnResult>;
+	send(options: SendOptions): Promise<SendResult>;
+	sendAsUser(options: SendOptions): Promise<SendResult>;
+	collect(to: string, schema: unknown): Promise<CollectResult>;
 	status(): Promise<RosterEntry[]>;
 	peek(address: string, tail?: number): Promise<AgentDetail | null>;
 	steer(to: string, text: string): Promise<SteerResult>;
@@ -70,6 +76,9 @@ export function createCore(options: CoreOptions): SubagentsCore {
 	return {
 		runtime,
 		spawn: (spawnOptions) => runtime.spawn(spawnOptions),
+		send: (sendOptions) => runtime.send(sendOptions),
+		sendAsUser: (sendOptions) => runtime.sendAsUser(sendOptions),
+		collect: (to, schema) => runtime.collect(to, schema),
 		status: () => runtime.status(),
 		peek: (address, tail) => runtime.peek(address, tail),
 		steer: (to, text) => runtime.steer(to, text),

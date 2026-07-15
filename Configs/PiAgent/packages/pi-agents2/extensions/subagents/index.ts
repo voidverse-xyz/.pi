@@ -16,7 +16,7 @@ import { createCore, type SubagentsCore } from "./core.ts";
 import { createLayout } from "./store/layout.ts";
 import { claimHostScope, HostScopeLockedError, type HostScopeLease } from "./store/host-lease.ts";
 import { SettingsLoader } from "./store/settings.ts";
-import { createSpawnTool, createStatusTool } from "./tools/main-agent.ts";
+import { createCollectTool, createSendTool, createSpawnTool, createStatusTool, createSteerTool } from "./tools/main-agent.ts";
 
 export default function (pi: ExtensionAPI): void {
 	let core: SubagentsCore | null = null;
@@ -30,6 +30,9 @@ export default function (pi: ExtensionAPI): void {
 	};
 
 	pi.registerTool(createSpawnTool(getCore));
+	pi.registerTool(createSendTool(getCore));
+	pi.registerTool(createSteerTool(getCore));
+	pi.registerTool(createCollectTool(getCore));
 	pi.registerTool(createStatusTool(getCore));
 
 	pi.on("session_start", async (_event, ctx) => {

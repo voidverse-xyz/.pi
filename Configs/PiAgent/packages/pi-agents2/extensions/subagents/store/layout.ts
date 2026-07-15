@@ -72,6 +72,16 @@ export function mailboxCorruptDirOf(mailboxDir: string): string {
 	return join(mailboxDir, ".corrupt");
 }
 
+/** <mailboxDir>/<envelopeId>.json — an envelope's file (pending). */
+export function envelopeFileOf(mailboxDir: string, envelopeId: string): string {
+	return join(mailboxDir, `${envelopeId}.json`);
+}
+
+/** <mailboxDir>/.done/<envelopeId>.json — a processed envelope. */
+export function doneEnvelopeFileOf(mailboxDir: string, envelopeId: string): string {
+	return join(mailboxDoneDirOf(mailboxDir), `${envelopeId}.json`);
+}
+
 /**
  * <envelopeFile>.attempt — delivery-attempt marker (at-least-once): stamped
  * before the receiving turn runs, removed on markDone. A marker present at read

@@ -57,6 +57,31 @@ export interface SpawnResult {
 	taskEnvelopeId?: string;
 }
 
+export interface SendOptions {
+	to: string;
+	text: string;
+	/** Set when this send answers a question envelope. */
+	correlationId?: string;
+	/** Reserved for the completion barrier (Phase 7); v2 is background by default. */
+	background?: boolean;
+}
+
+export interface SendResult {
+	/** "delivered" = woke a dormant agent; "queued" = held for a busy recipient / queued to main. */
+	delivery: "delivered" | "queued";
+	disposition: "woken" | "held" | "queued" | "main" | "bounced" | "dropped";
+	recipientState?: AgentState;
+	envelopeId: string;
+	bounceReason?: string;
+}
+
+export interface CollectResult {
+	requested: true;
+	/** The collect-request envelope's id; the fulfilling report carries it as correlationId. */
+	requestId: string;
+	recipientState?: AgentState;
+}
+
 export interface SteerResult {
 	/** false = agent wasn't running; steering is mid-turn-only (D11). */
 	steered: boolean;
@@ -113,6 +138,15 @@ export interface SubagentRuntime {
 	 * the agent is registered and queued/running.
 	 */
 	spawn(options: SpawnOptions): Promise<SpawnResult>;
+
+	/** Deliver text to an agent as the MAIN agent. Never interrupts a running turn (D11). */
+	send(options: SendOptions): Promise<SendResult>;
+
+	/** Deliver text to an agent as the USER (D17); also drops a quiet FYI report to main. */
+	sendAsUser(options: SendOptions): Promise<SendResult>;
+
+	/** Non-blocking collect: send a collect-request; the result arrives later as a report. */
+	collect(to: string, schema: unknown): Promise<CollectResult>;
 
 	/** Full roster: registry + live vitals (D15). */
 	status(): Promise<RosterEntry[]>;
