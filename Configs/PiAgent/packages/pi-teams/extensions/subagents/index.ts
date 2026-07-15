@@ -16,6 +16,7 @@ import { createCore, type SubagentsCore } from "./core.ts";
 import { createLayout } from "./store/layout.ts";
 import { claimHostScope, HostScopeLockedError, type HostScopeLease } from "./store/host-lease.ts";
 import { SettingsLoader } from "./store/settings.ts";
+import { makeSafetyConfirm } from "./sandbox/safety-bridge.ts";
 import { createCollectTool, createSendTool, createSpawnTool, createStatusTool, createSteerTool } from "./tools/main-agent.ts";
 
 export default function (pi: ExtensionAPI): void {
@@ -66,6 +67,9 @@ export default function (pi: ExtensionAPI): void {
 			layout,
 			maxConcurrent: settings.maxConcurrent,
 			maxHops: settings.maxHops,
+			// Guarded subagent tool calls (bash/edit/write) confirm via pi-safety
+			// over pi.events (D10a); fail-closed if pi-safety is absent.
+			confirm: makeSafetyConfirm(pi),
 			// settingsManager/authStorage are not on ExtensionContext — the SDK
 			// defaults them; only modelRegistry is host-provided.
 			...(ctx.modelRegistry ? { modelRegistry: ctx.modelRegistry } : {}),

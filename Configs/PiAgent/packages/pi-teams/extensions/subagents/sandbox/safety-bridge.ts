@@ -1,0 +1,67 @@
+/**
+ * sandbox/safety-bridge.ts — human confirmation for subagent tool calls,
+ * delegated to pi-safety over `pi.events` (D10a). PURE of pi-safety internals:
+ * no import — a runtime rendezvous, so dropping pi-safety can't break loading.
+ *
+ * Protocol (the pi.events synchronous-claim idiom, as pi-show-files' ipc):
+ *   requester: pi.events.emit("teams:confirm-request", { method:"confirm", claim })
+ *   provider (pi-safety): during emit, calls claim(async (req) => ConfirmResult)
+ *   requester: awaits the claimed fn; if nobody claimed → FAIL CLOSED (deny).
+ *
+ * Confirmations stay human (no LLM ever approves — D10). The main agent can
+ * still DENY a subagent's call via the deny-by-mail channel (Phase 7), but never
+ * approve.
+ */
+
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export const CONFIRM_CHANNEL = "teams:confirm-request";
+
+export interface ConfirmRequest {
+	/** The subagent address making the call. */
+	agent: string;
+	tool: "bash" | "edit" | "write";
+	/** For bash. */
+	command?: string;
+	/** For edit/write — the absolute target path. */
+	path?: string;
+}
+
+export interface ConfirmResult {
+	approved: boolean;
+	/** A note shown to the agent on denial. */
+	note?: string;
+}
+
+export type ConfirmFn = (request: ConfirmRequest) => Promise<ConfirmResult>;
+
+type ClaimFn = (request: ConfirmRequest) => Promise<ConfirmResult> | ConfirmResult;
+
+/**
+ * Build a confirm function backed by pi-safety over pi.events. Fails CLOSED: if
+ * no provider claims (pi-safety absent, or no UI), the call is denied.
+ */
+export function makeSafetyConfirm(pi: ExtensionAPI): ConfirmFn {
+	return (request: ConfirmRequest): Promise<ConfirmResult> => {
+		let claimed: ClaimFn | null = null;
+		pi.events.emit(CONFIRM_CHANNEL, {
+			method: "confirm",
+			request,
+			claim: (fn: ClaimFn) => {
+				claimed = fn;
+			},
+		});
+		if (!claimed) {
+			return Promise.resolve({ approved: false, note: "no confirmation provider available (pi-safety not installed or no UI) — failing closed" });
+		}
+		return Promise.resolve()
+			.then(() => (claimed as ClaimFn)(request))
+			.then(
+				(result) => result,
+				(error) => ({ approved: false, note: error instanceof Error ? error.message : String(error) }),
+			);
+	};
+}
+
+/** A confirm that always denies — the safe default when no port is wired. */
+export const denyAllConfirm: ConfirmFn = () => Promise.resolve({ approved: false, note: "no confirmation provider configured" });

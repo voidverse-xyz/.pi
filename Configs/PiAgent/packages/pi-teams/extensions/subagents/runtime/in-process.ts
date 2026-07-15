@@ -15,7 +15,7 @@
  * interrupt, dispose. Retire/await and pi-safety land later.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import {
 	type AgentSession,
@@ -67,6 +67,9 @@ import type { Layout } from "../store/layout.ts";
 import { resolveTypeDef } from "../typedefs/discover.ts";
 import type { TypeDefinition } from "../typedefs/parse.ts";
 import { createSubagentTools, type SubagentMailPort } from "../tools/sub-agent.ts";
+import { buildSandboxedTools } from "../sandbox/tools-filter.ts";
+import { makeSystemDenyCheck } from "../sandbox/system-deny.ts";
+import { type ConfirmFn, denyAllConfirm } from "../sandbox/safety-bridge.ts";
 import type {
 	AgentDetail,
 	CollectResult,
@@ -96,6 +99,8 @@ export interface RuntimeOptions {
 	projectTrusted?: () => boolean;
 	/** Chain-depth guard (D21), injected in Phase 4; default allows everything. */
 	hopsGuard?: HopsGuard;
+	/** Human confirmation for guarded tool calls (D10a); default fail-closed deny. */
+	confirm?: ConfirmFn;
 }
 
 interface Handle {
@@ -129,11 +134,18 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	private activeTurns = new Set<Promise<void>>();
 	private disposed = false;
 	private readonly deliverer: Deliverer;
+	private readonly confirm: ConfirmFn;
+	private readonly systemDeny: (target: string) => { denied: boolean; reason?: string };
 
 	constructor(private readonly options: RuntimeOptions) {
 		this.layout = options.layout;
 		this.scheduler = new Scheduler(options.maxConcurrent);
 		this.registry = readRegistry(this.layout.registryFile);
+		this.confirm = options.confirm ?? denyAllConfirm;
+		this.systemDeny = makeSystemDenyCheck(
+			[this.layout.projectSubagentsRoot, this.layout.globalTypeDefsDir, this.layout.projectTypeDefsDir],
+			realpathSync,
+		);
 		const hooks: DelivererHooks = {
 			mainMailboxDir: this.layout.mainMailboxDir,
 			agentMailboxDir: (type, id) =>
@@ -515,7 +527,13 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			...(this.options.settingsManager ? { settingsManager: this.options.settingsManager } : {}),
 			...(this.options.authStorage ? { authStorage: this.options.authStorage } : {}),
 			noTools: "builtin",
-			customTools: [...createSubagentTools(address, this)],
+			customTools: [
+				...createSubagentTools(address, this),
+				...buildSandboxedTools(def.config, layout.cwd, {
+					systemDeny: (path) => this.systemDeny(path),
+					confirm: (request) => this.confirm({ agent: address, ...request }),
+				}),
+			],
 		};
 		const model = this.resolveModel(def, inherit);
 		if (model) sessionOptions.model = model;

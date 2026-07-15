@@ -10,6 +10,7 @@
 
 import type { AuthStorage, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { makeHopsGuard } from "./rails/hops.ts";
+import type { ConfirmFn } from "./sandbox/safety-bridge.ts";
 import { InProcessRuntime } from "./runtime/in-process.ts";
 import type {
 	AgentDetail,
@@ -63,6 +64,8 @@ export interface CoreOptions {
 	settingsManager?: SettingsManager;
 	authStorage?: AuthStorage;
 	projectTrusted?: () => boolean;
+	/** Human confirmation for guarded tool calls (D10a); default fail-closed deny. */
+	confirm?: ConfirmFn;
 }
 
 export function createCore(options: CoreOptions): SubagentsCore {
@@ -74,6 +77,7 @@ export function createCore(options: CoreOptions): SubagentsCore {
 		...(options.settingsManager ? { settingsManager: options.settingsManager } : {}),
 		...(options.authStorage ? { authStorage: options.authStorage } : {}),
 		...(options.projectTrusted ? { projectTrusted: options.projectTrusted } : {}),
+		...(options.confirm ? { confirm: options.confirm } : {}),
 	});
 	const projectTrusted = (): boolean => (options.projectTrusted ? options.projectTrusted() : true);
 

@@ -69,6 +69,9 @@ function updateStatus(ctx: ExtensionContext, mode: SafetyMode): void {
 export default function safetyExtension(pi: ExtensionAPI): void {
 	let currentMode = loadMode().mode;
 	let confirmationTail: Promise<void> = Promise.resolve();
+	// Captured at session_start so the pi.events confirmation provider can render
+	// on this process's TUI when a pi-teams subagent forwards a guarded tool call.
+	let currentCtx: ExtensionContext | undefined;
 
 	async function confirmSerial(ctx: ExtensionContext, category: Category, command: string): Promise<boolean> {
 		const previous = confirmationTail;
@@ -122,6 +125,53 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 		if (approved) return;
 		ctx.ui.notify(`Blocked ${CATEGORY_META[category].label.toLowerCase()} command`, "warning");
 		return { block: true, reason: `Blocked by pi-safety (${category}; declined by user)` };
+	});
+
+	// pi-teams confirmation provider: a subagent's guarded bash/edit/write call is
+	// forwarded here over pi.events (the synchronous-claim idiom). We reuse the
+	// same classifier, modes, and confirmation UI as main-agent Bash. Claim only
+	// when we can actually confirm (a live TUI); otherwise don't claim, and the
+	// requester fails closed (denies). Confirmations stay human (D10).
+	pi.events.on("teams:confirm-request", (data) => {
+		const { method, claim } = data as {
+			method: string;
+			claim: (fn: (req: { agent?: string; tool?: string; command?: string; path?: string }) => Promise<{ approved: boolean; note?: string }>) => void;
+		};
+		if (method !== "confirm") return;
+		const ctx = currentCtx;
+		if (!ctx || ctx.mode !== "tui" || !ctx.hasUI) return; // can't confirm → don't claim → requester fails closed
+		claim(async (req) => {
+			const agent = typeof req.agent === "string" ? req.agent : "subagent";
+			let category: Category;
+			let display: string;
+			if (req.tool === "bash") {
+				const command = typeof req.command === "string" ? req.command : "";
+				const classified = command.length > MAX_CLASSIFIED_COMMAND_LENGTH ? "destructive" : classifyCommand(command);
+				if (!classified) {
+					auditLog({ rawCommand: `[${agent}] ${command}`, category: "read-only", mode: currentMode, decision: "auto-allowed", source: "auto" });
+					return { approved: true };
+				}
+				category = classified;
+				display = command;
+			} else {
+				// edit/write: a subagent file mutation. Gate as "other" (confirmed in max mode).
+				category = "other";
+				display = `${req.tool ?? "write"} ${req.path ?? ""}`.trim();
+			}
+			if (!MODE_CATEGORIES[currentMode].has(category)) {
+				auditLog({ rawCommand: `[${agent}] ${display}`, category, mode: currentMode, decision: "auto-allowed", source: "auto" });
+				return { approved: true };
+			}
+			let approved: boolean;
+			try {
+				approved = await confirmSerial(ctx, category, `[${agent}] ${display}`);
+			} catch (error) {
+				auditLog({ rawCommand: `[${agent}] ${display}`, category, mode: currentMode, decision: "denied", source: "auto" });
+				return { approved: false, note: `confirmation failed: ${error instanceof Error ? error.message : String(error)}` };
+			}
+			auditLog({ rawCommand: `[${agent}] ${display}`, category, mode: currentMode, decision: approved ? "approved" : "denied", source: "user" });
+			return approved ? { approved: true } : { approved: false, note: "declined by the human" };
+		});
 	});
 
 	pi.registerCommand("safety", {
@@ -184,12 +234,14 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", (_event, ctx) => {
+		currentCtx = ctx;
 		const loaded = loadMode();
 		currentMode = loaded.mode;
 		updateStatus(ctx, currentMode);
 		if (loaded.warning && ctx.hasUI) ctx.ui.notify(loaded.warning, "warning");
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
+		currentCtx = undefined;
 		if (ctx.mode === "tui") ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
 }

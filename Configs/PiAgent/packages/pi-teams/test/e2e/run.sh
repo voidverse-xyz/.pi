@@ -49,6 +49,7 @@ TESTS=(
 	phase2-runtime.mjs
 	phase3-mail.mjs
 	phase4-rails.mjs
+	phase5-sandbox.mjs
 	loadcheck.mjs
 )
 for t in "${TESTS[@]}"; do
