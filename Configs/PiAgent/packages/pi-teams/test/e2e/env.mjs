@@ -3,7 +3,7 @@
  *
  * Every e2e file imports { PI_PKG, EXT, WORLDS, jiti } from here:
  *   PI_PKG — installed @earendil-works/pi-coding-agent dir (PI_SDK_DIR overrides).
- *   EXT    — this package's extensions/subagents source dir.
+ *   EXT    — this package's extensions/teams source dir.
  *   WORLDS — scratch root for test worlds (os tmpdir; wiped per file).
  *   jiti   — jiti instance aliasing the SDK's bare specifiers to the installed
  *            package, exactly the way Pi's extension loader does, so the
@@ -17,8 +17,8 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** extensions/subagents, two levels up from test/e2e/. */
-export const EXT = join(HERE, "..", "..", "extensions", "subagents");
+/** extensions/teams, two levels up from test/e2e/. */
+export const EXT = join(HERE, "..", "..", "extensions", "teams");
 
 function findPiPkg() {
 	const home = process.env.HOME ?? "";
