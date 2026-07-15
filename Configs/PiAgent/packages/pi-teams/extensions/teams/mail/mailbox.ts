@@ -29,7 +29,7 @@ import {
 	mailboxDoneDirOf,
 	sentQuestionsFileOf,
 } from "../store/layout.ts";
-import { atomicWriteJson } from "../store/registry.ts";
+import { atomicWriteJson } from "../store/atomic.ts";
 import { type Envelope, validateEnvelope } from "./envelope.ts";
 
 /** Write an envelope into a mailbox (atomic). */

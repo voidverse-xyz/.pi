@@ -16,7 +16,7 @@
 import { randomBytes } from "node:crypto";
 import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { atomicWriteJson } from "./registry.ts";
+import { atomicWriteJson, fsyncDirBestEffort } from "./atomic.ts";
 import type { Layout } from "./layout.ts";
 
 const HEARTBEAT_MS = 5000;
@@ -119,16 +119,7 @@ function publishMarkerExclusive(path: string, marker: HostOwnerMarker): boolean 
 		linkSync(tmp, path);
 		// Persist the directory entry too (same discipline as atomicWriteJson): the
 		// marker's creation should survive a power cut, not just its content.
-		try {
-			const dirFd = openSync(dirname(path), "r");
-			try {
-				fsyncSync(dirFd);
-			} finally {
-				closeSync(dirFd);
-			}
-		} catch {
-			/* best effort — not all platforms allow dir fsync */
-		}
+		fsyncDirBestEffort(dirname(path));
 		return true;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;

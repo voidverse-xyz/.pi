@@ -57,7 +57,7 @@ export function formatAddress(address: Address): string {
 		case "user":
 			return USER_ADDRESS;
 		case "agent":
-			return `${address.type}/${address.id}`;
+			return formatAgentAddress(address.type, address.id);
 	}
 }
 

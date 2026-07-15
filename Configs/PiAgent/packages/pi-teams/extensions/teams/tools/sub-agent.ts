@@ -13,6 +13,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { DeliveryOutcome } from "../mail/deliver.ts";
 import type { EnvelopeType } from "../mail/envelope.ts";
+import { errorResult, jsonResult } from "./results.ts";
 
 /** The narrow seam the runtime implements for subagent-originated mail. */
 export interface SubagentMailPort {
@@ -24,11 +25,6 @@ export interface SubagentMailPort {
 
 const MAX_REPORT_TEXT_CHARS = 16_000;
 const MAX_DATA_BYTES = 64_000;
-
-function result(value: unknown, isError = false): { content: [{ type: "text"; text: string }]; details: undefined; isError?: true } {
-	const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-	return isError ? { content: [{ type: "text", text }], details: undefined, isError: true } : { content: [{ type: "text", text }], details: undefined };
-}
 
 const SendParams = Type.Object({
 	to: Type.String({ description: "A peer agent address <type>/<id> (not 'main' — use report/ask for the main agent)." }),
@@ -60,8 +56,8 @@ export function createSubagentTools(address: string, port: SubagentMailPort, opt
 		description: "Send mail to a PEER subagent (flat team — any peer listed in your context). Not for the main agent (use report/ask).",
 		parameters: SendParams,
 		async execute(_id, params) {
-			if (params.to === "main" || params.to === "user") return result("send_message is peer-only; use `report` or `ask` for the main agent.", true);
-			if (params.expectReply && params.correlationId !== undefined) return result("expectReply and correlationId are mutually exclusive.", true);
+			if (params.to === "main" || params.to === "user") return errorResult("send_message is peer-only; use `report` or `ask` for the main agent.");
+			if (params.expectReply && params.correlationId !== undefined) return errorResult("expectReply and correlationId are mutually exclusive.");
 			const type: EnvelopeType = params.expectReply ? "question" : params.correlationId !== undefined ? "answer" : "message";
 			const outcome = port.sendFromAgent(address, {
 				to: params.to,
@@ -69,8 +65,8 @@ export function createSubagentTools(address: string, port: SubagentMailPort, opt
 				text: params.text,
 				...(params.correlationId !== undefined ? { correlationId: params.correlationId } : {}),
 			});
-			if (!outcome.delivered && outcome.disposition === "bounced") return result(`Message bounced: ${outcome.bounceReason}`, true);
-			return result({ sent: true, envelopeId: outcome.envelopeId, disposition: outcome.disposition });
+			if (!outcome.delivered && outcome.disposition === "bounced") return errorResult(`Message bounced: ${outcome.bounceReason}`);
+			return jsonResult({ sent: true, envelopeId: outcome.envelopeId, disposition: outcome.disposition });
 		},
 	};
 
@@ -81,7 +77,7 @@ export function createSubagentTools(address: string, port: SubagentMailPort, opt
 		parameters: ReportParams,
 		async execute(_id, params) {
 			if (params.data !== undefined && Buffer.byteLength(JSON.stringify(params.data)) > MAX_DATA_BYTES) {
-				return result(`report data exceeds ${MAX_DATA_BYTES} bytes.`, true);
+				return errorResult(`report data exceeds ${MAX_DATA_BYTES} bytes.`);
 			}
 			const outcome = port.sendFromAgent(address, {
 				to: "main",
@@ -91,7 +87,7 @@ export function createSubagentTools(address: string, port: SubagentMailPort, opt
 				...(params.data !== undefined ? { data: params.data } : {}),
 				...(params.correlationId !== undefined ? { correlationId: params.correlationId } : {}),
 			});
-			return result({ reported: true, final: params.final === true, envelopeId: outcome.envelopeId });
+			return jsonResult({ reported: true, final: params.final === true, envelopeId: outcome.envelopeId });
 		},
 	};
 
@@ -102,7 +98,7 @@ export function createSubagentTools(address: string, port: SubagentMailPort, opt
 		parameters: AskParams,
 		async execute(_id, params) {
 			const outcome = port.sendFromAgent(address, { to: "main", type: "question", text: params.text });
-			return result({ asked: true, envelopeId: outcome.envelopeId, note: "End your turn now — you'll be woken with the answer." });
+			return jsonResult({ asked: true, envelopeId: outcome.envelopeId, note: "End your turn now — you'll be woken with the answer." });
 		},
 	};
 

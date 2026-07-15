@@ -60,9 +60,11 @@ export default function (pi: ExtensionAPI): void {
 	/** Set when subagents are unavailable this session (non-persisted, or lease held elsewhere). */
 	let unavailableReason: string | null = null;
 
+	const unavailable = (): string => unavailableReason ?? "Teams are not available in this session.";
+
 	const getCore = (_ctx: ExtensionContext): SubagentsCore => {
 		if (core) return core;
-		throw new Error(unavailableReason ?? "Subagents are not available in this session.");
+		throw new Error(unavailable());
 	};
 
 	pi.registerTool(createSpawnTool(getCore));
@@ -124,28 +126,24 @@ export default function (pi: ExtensionAPI): void {
 	 */
 	const stopAllAgents = async (ctx: ExtensionContext): Promise<void> => {
 		if (!core) {
-			ctx.ui.notify(unavailableReason ?? "Teams are not available in this session.", "warning");
+			ctx.ui.notify(unavailable(), "warning");
 			return;
 		}
-		const roster = await core.status();
-		const working = roster.filter((entry) => entry.state === "running" || entry.state === "queued" || entry.state === "waiting");
-		if (working.length === 0) {
+		const { stopped, failed } = await core.interruptAllWorking();
+		if (stopped.length === 0 && failed.length === 0) {
 			ctx.ui.notify("No team agents are working.", "info");
 			return;
 		}
-		const results = await Promise.allSettled(working.map((entry) => core!.interrupt(entry.address)));
-		const stopped = working.filter((_, i) => results[i]?.status === "fulfilled").map((entry) => entry.address);
-		const failed = working.length - stopped.length;
 		ctx.ui.notify(
-			`Stopped ${stopped.length} team agent${stopped.length === 1 ? "" : "s"}${failed > 0 ? ` (${failed} failed)` : ""}: ${stopped.join(", ")}. Their mail stays pending — message an agent to resume it.`,
-			failed > 0 ? "warning" : "info",
+			`Stopped ${stopped.length} team agent${stopped.length === 1 ? "" : "s"}${failed.length > 0 ? ` (${failed.length} failed)` : ""}: ${stopped.join(", ")}. Their mail stays pending — message an agent to resume it.`,
+			failed.length > 0 ? "warning" : "info",
 		);
 	};
 
 	/** User control (D12): pin peer messaging on/off, or hand it to the main agent ("llm"). */
 	const setPeers = (ctx: ExtensionContext, arg: string): void => {
 		if (!core) {
-			ctx.ui.notify(unavailableReason ?? "Teams are not available in this session.", "warning");
+			ctx.ui.notify(unavailable(), "warning");
 			return;
 		}
 		const mode = arg.trim().toLowerCase();
@@ -169,7 +167,7 @@ export default function (pi: ExtensionAPI): void {
 		description: "Teams roster. /teams <type>/<id> jump · /teams stop · /teams peers on|off|llm.",
 		handler: async (args, ctx) => {
 			if (!core) {
-				ctx.ui.notify(unavailableReason ?? "Teams are not available in this session.", "warning");
+				ctx.ui.notify(unavailable(), "warning");
 				return;
 			}
 			const target = args.trim();

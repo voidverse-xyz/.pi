@@ -184,9 +184,7 @@ export function createPicker(options: PickerOptions): PickerComponent {
 			// pending). Uppercase, like retire — a fleet-wide action shouldn't be a
 			// stray lowercase keypress away.
 			if (data === "S") {
-				const working = roster.filter((e) => e.state === "running" || e.state === "queued" || e.state === "waiting");
-				if (working.length === 0) return;
-				return void Promise.allSettled(working.map((e) => core.interrupt(e.address))).then(reload, reload);
+				return void core.interruptAllWorking().then(reload, reload);
 			}
 			const row = rows[selected];
 			if (!row) return;

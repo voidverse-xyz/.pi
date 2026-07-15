@@ -12,12 +12,17 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { formatAgentAddress } from "../mail/envelope.ts";
+import { readFileSync } from "node:fs";
+import { formatAgentAddress, GENERATION_ID_RE } from "../mail/envelope.ts";
+import { atomicWriteJson } from "./atomic.ts";
 
 export type AgentState = "queued" | "running" | "dormant" | "waiting";
 export type Lifetime = "persistent" | "oneshot";
+
+/** The one definition of "working" — what the fleet-wide stop brake targets. */
+export function isWorking(state: AgentState): boolean {
+	return state === "running" || state === "queued" || state === "waiting";
+}
 
 export interface AgentVitals {
 	state: AgentState;
@@ -46,8 +51,6 @@ export interface Registry {
 	/** Keyed by `<type>/<id>`. */
 	agents: Record<string, AgentRecord>;
 }
-
-const GENERATION_ID_RE = /^gen_[0-9a-f]{32}$/;
 
 export function newGenerationId(): string {
 	return `gen_${randomBytes(16).toString("hex")}`;
@@ -190,47 +193,6 @@ export function readRegistry(path: string): Registry {
 		}
 	}
 	return registry;
-}
-
-/**
- * Atomic + crash-durable write: write a tmp file in the same dir, fsync its data,
- * rename over the target, then fsync the directory so the rename itself survives a
- * crash (ext4 data=writeback / xfs can otherwise resurrect a zero-length file). The
- * tmp file is cleaned up if the write fails (no `.<hex>.tmp` litter on ENOSPC).
- */
-export function atomicWriteJson(path: string, value: unknown): void {
-	const dir = dirname(path);
-	mkdirSync(dir, { recursive: true });
-	const tmp = join(dir, `.${randomBytes(6).toString("hex")}.tmp`);
-	try {
-		const fd = openSync(tmp, "w");
-		try {
-			writeFileSync(fd, JSON.stringify(value, null, 2), "utf8");
-			fsyncSync(fd);
-		} finally {
-			closeSync(fd);
-		}
-		renameSync(tmp, path);
-	} catch (error) {
-		try {
-			rmSync(tmp, { force: true });
-		} catch {
-			/* ignore */
-		}
-		throw error;
-	}
-	// Durably record the rename in the directory entry (best-effort — some
-	// platforms/filesystems reject O_RDONLY fsync on a directory).
-	try {
-		const dfd = openSync(dir, "r");
-		try {
-			fsyncSync(dfd);
-		} finally {
-			closeSync(dfd);
-		}
-	} catch {
-		/* ignore */
-	}
 }
 
 export function writeRegistry(path: string, registry: Registry): void {

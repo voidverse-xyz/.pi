@@ -16,6 +16,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { DEFAULT_MAX_HOPS } from "../rails/hops.ts";
 
 export type PeerControl = "on" | "off" | "llm";
 const PEER_CONTROLS: PeerControl[] = ["on", "off", "llm"];
@@ -30,7 +31,7 @@ export interface SubagentsSettings {
 
 export const DEFAULT_SETTINGS: SubagentsSettings = {
 	maxConcurrent: 5,
-	maxHops: 8,
+	maxHops: DEFAULT_MAX_HOPS,
 	archiveGcDays: 7,
 	peers: "llm",
 };

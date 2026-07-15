@@ -11,17 +11,9 @@ import { Type } from "typebox";
 import type { SubagentsCore } from "../core.ts";
 import { parseAddress } from "../mail/envelope.ts";
 import type { Lifetime } from "../store/registry.ts";
+import { errorResult, jsonResult } from "./results.ts";
 
 type GetCore = (ctx: ExtensionContext) => SubagentsCore;
-
-function jsonResult(value: unknown): { content: [{ type: "text"; text: string }]; details: undefined } {
-	return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], details: undefined };
-}
-
-function errorResult(error: unknown): { content: [{ type: "text"; text: string }]; details: undefined; isError: true } {
-	const message = error instanceof Error ? error.message : String(error);
-	return { content: [{ type: "text", text: message }], details: undefined, isError: true };
-}
 
 /** These tools target a subagent instance — `main`/`user`/garbage are rejected up front. */
 function agentTargetError(address: string): ReturnType<typeof errorResult> | null {

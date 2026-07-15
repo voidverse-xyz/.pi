@@ -11,6 +11,7 @@
 import type { AuthStorage, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { collectResultNote, validateAgainstSchema } from "./mail/collect.ts";
 import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
+import { parseAddress } from "./mail/envelope.ts";
 import { markDone, peekCollectRequest, pendingCount, readPending, takeCollectRequest } from "./mail/mailbox.ts";
 import { makeHopsGuard } from "./rails/hops.ts";
 import type { ConfirmFn } from "./sandbox/safety-bridge.ts";
@@ -32,6 +33,7 @@ import type {
 	SubagentRuntime,
 } from "./runtime/types.ts";
 import type { Layout } from "./store/layout.ts";
+import { isWorking } from "./store/registry.ts";
 import { listTypeDefs, resolveTypeDef } from "./typedefs/discover.ts";
 
 export interface AvailableType {
@@ -60,6 +62,8 @@ export interface SubagentsCore {
 	peek(address: string, tail?: number): Promise<AgentDetail | null>;
 	steer(to: string, text: string): Promise<SteerResult>;
 	interrupt(to: string): Promise<InterruptResult>;
+	/** The human brake (D22): interrupt every working (running/queued/waiting) agent. */
+	interruptAllWorking(): Promise<{ stopped: string[]; failed: string[] }>;
 	retire(to: string): Promise<RetireResult>;
 	/** The type catalog, for the spawn tool's not-found hint and the picker. */
 	availableTypes(): AvailableType[];
@@ -135,6 +139,14 @@ export function createCore(options: CoreOptions): SubagentsCore {
 		peek: (address, tail) => runtime.peek(address, tail),
 		steer: (to, text) => runtime.steer(to, text),
 		interrupt: (to) => runtime.interrupt(to),
+		async interruptAllWorking() {
+			const working = (await runtime.status()).filter((entry) => isWorking(entry.state));
+			const results = await Promise.allSettled(working.map((entry) => runtime.interrupt(entry.address)));
+			const stopped: string[] = [];
+			const failed: string[] = [];
+			working.forEach((entry, i) => (results[i]?.status === "fulfilled" ? stopped : failed).push(entry.address));
+			return { stopped, failed };
+		},
 		retire: (to) => runtime.retire(to),
 		onEvent: (listener) => runtime.onEvent(listener),
 		mainUnreadCount: () => pendingCount(options.layout.mainMailboxDir),
@@ -163,8 +175,8 @@ export function createCore(options: CoreOptions): SubagentsCore {
 			return { digest, commit };
 		},
 		agentUnreadCount: (address) => {
-			const parts = address.split("/");
-			return parts.length === 2 ? pendingCount(options.layout.mailboxDir(parts[0]!, parts[1]!)) : 0;
+			const to = parseAddress(address);
+			return to?.kind === "agent" ? pendingCount(options.layout.mailboxDir(to.type, to.id)) : 0;
 		},
 		archived: () => (runtime as InProcessRuntime).archived(),
 		activitySnapshot: () => (runtime as InProcessRuntime).activitySnapshot(),
