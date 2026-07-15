@@ -13,7 +13,10 @@ import type { HopsGuard } from "../mail/deliver.ts";
 
 export const DEFAULT_MAX_HOPS = 8;
 
-const MAIN_ESCAPE_TYPES = new Set<Envelope["type"]>(["report", "escalation", "error"]);
+// An upward message to main is a safety valve and is NEVER hop-limited — including
+// a `question`, which is exactly how a subagent stuck deep in a peer chain surfaces
+// a blocking ask to the human/main. (Peer→peer questions are still hop-limited.)
+const MAIN_ESCAPE_TYPES = new Set<Envelope["type"]>(["report", "escalation", "error", "question"]);
 
 /** An upward escape to main (never hop-limited). */
 export function isMainEscape(envelope: Envelope): boolean {

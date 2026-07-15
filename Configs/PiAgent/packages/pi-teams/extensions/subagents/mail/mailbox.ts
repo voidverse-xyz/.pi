@@ -17,6 +17,7 @@
  * Sender-side indexes (sent-questions, collect-requests) also live here.
  */
 
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -82,9 +83,37 @@ export function readPending(mailboxDir: string): PendingEnvelope[] {
 	return pending;
 }
 
-/** Count of valid pending envelopes (used to decide whether to schedule a turn). */
+/**
+ * Cheap pending count for scheduling decisions — a plain directory listing with NO
+ * parse and NO quarantine side effects (readPending mutates state by moving corrupt
+ * files, which is surprising on a hot path). May transiently over-count a corrupt
+ * file until the next readPending drain quarantines it — self-correcting.
+ */
 export function pendingCount(mailboxDir: string): number {
-	return readPending(mailboxDir).length;
+	if (!existsSync(mailboxDir)) return 0;
+	try {
+		return readdirSync(mailboxDir).filter((name) => name.endsWith(".json") && !name.startsWith(".")).length;
+	} catch {
+		return 0;
+	}
+}
+
+/** The lexically-max envelope id (= newest, since ids are ULIDs) across a mailbox's pending + .done, or null. */
+export function maxEnvelopeId(mailboxDir: string): string | null {
+	let max: string | null = null;
+	for (const dir of [mailboxDir, mailboxDoneDirOf(mailboxDir)]) {
+		if (!existsSync(dir)) continue;
+		try {
+			for (const name of readdirSync(dir)) {
+				if (!name.endsWith(".json") || name.startsWith(".")) continue;
+				const id = name.slice(0, -5);
+				if (max === null || id > max) max = id;
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+	return max;
 }
 
 /** Stamp the delivery-attempt marker before running the receiving turn. */
@@ -96,15 +125,19 @@ export function beginDelivery(mailboxDir: string, envelopeId: string): void {
 export function markDone(mailboxDir: string, envelopeId: string): void {
 	const doneDir = mailboxDoneDirOf(mailboxDir);
 	mkdirSync(doneDir, { recursive: true });
-	try {
-		renameSync(envelopeFileOf(mailboxDir, envelopeId), doneEnvelopeFileOf(mailboxDir, envelopeId));
-	} catch {
-		/* already moved */
-	}
+	// Drop the attempt marker BEFORE moving the envelope: a crash between the two
+	// then leaves the (moved) envelope in .done with no orphaned `.attempt` cruft
+	// accumulating in the live mailbox. (The envelope is gone from the top level
+	// either way, so this ordering never causes a false redelivery.)
 	try {
 		rmSync(attemptMarkerOf(envelopeFileOf(mailboxDir, envelopeId)), { force: true });
 	} catch {
 		/* ignore */
+	}
+	try {
+		renameSync(envelopeFileOf(mailboxDir, envelopeId), doneEnvelopeFileOf(mailboxDir, envelopeId));
+	} catch {
+		/* already moved */
 	}
 }
 
@@ -119,11 +152,25 @@ interface SentQuestion {
 }
 
 function readJsonMap<T>(path: string): Record<string, T> {
+	let text: string;
 	try {
-		const parsed = JSON.parse(readFileSync(path, "utf8"));
+		text = readFileSync(path, "utf8");
+	} catch {
+		return {}; // missing → empty (normal)
+	}
+	try {
+		const parsed = JSON.parse(text);
 		if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) return parsed as Record<string, T>;
 	} catch {
-		/* missing / corrupt → empty */
+		/* fall through to quarantine */
+	}
+	// The file EXISTS but is corrupt/non-object. Don't silently overwrite it with a
+	// near-empty map on the next record*() call (that would drop every other
+	// outstanding entry with no trace) — move it aside for forensics first.
+	try {
+		renameSync(path, `${path}.corrupt-${randomBytes(4).toString("hex")}`);
+	} catch {
+		/* best effort */
 	}
 	return {};
 }

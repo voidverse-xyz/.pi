@@ -18,6 +18,16 @@ import { sep } from "node:path";
 
 export type RealpathFn = (path: string) => string;
 
+/**
+ * Normalize a path for containment comparison. Unicode NF-C always (an NFD spelling
+ * of the same file must not slip past); case-fold on case-insensitive platforms
+ * (macOS/Windows) so `.../SubAgents/x` can't evade `.../subagents/x`.
+ */
+function canonical(path: string): string {
+	const nfc = path.normalize("NFC");
+	return process.platform === "darwin" || process.platform === "win32" ? nfc.toLowerCase() : nfc;
+}
+
 /** Resolve the deepest existing ancestor via realpath, re-appending the missing tail. */
 export function realpathDeep(path: string, realpath: RealpathFn): string {
 	let normalized = path;
@@ -34,11 +44,13 @@ export function realpathDeep(path: string, realpath: RealpathFn): string {
 	}
 }
 
-/** True iff `path` is `prefix` or below it. */
+/** True iff `path` is `prefix` or below it (platform-aware, NF-C + case). */
 function isWithin(prefix: string, path: string): boolean {
-	if (path === prefix) return true;
-	const withSep = prefix.endsWith(sep) ? prefix : prefix + sep;
-	return path.startsWith(withSep);
+	const p = canonical(prefix);
+	const t = canonical(path);
+	if (t === p) return true;
+	const withSep = p.endsWith(sep) ? p : p + sep;
+	return t.startsWith(withSep);
 }
 
 export interface SystemDenyResult {
@@ -58,6 +70,38 @@ export function makeSystemDenyCheck(protectedDirs: string[], realpath: RealpathF
 			// target is/inside a protected dir, OR target is an ancestor of one
 			if (isWithin(prefix, real) || isWithin(real, prefix)) {
 				return { denied: true, reason: `writes to the protected path ${prefix} are never allowed` };
+			}
+		}
+		return { denied: false };
+	};
+}
+
+/**
+ * A best-effort hard-deny for BASH commands that reference a protected path (H1).
+ * edit/write resolve a single target and are checked precisely; bash is opaque, so
+ * we scan the command TEXT for any protected root — the resolved realpath, the raw
+ * configured dir, and (when the dir is under $HOME) its `~`-relative spelling. This
+ * closes the trivial `echo x > ~/.pi/agent/subagents/self.md` self-modification and
+ * mailbox-forgery paths. It is NOT a complete bash sandbox (env vars, `cd`, symlinks
+ * planted at runtime can still evade a text scan) — a bash-capable type remains an
+ * explicit trust decision — but it removes the silent, one-line bypass.
+ */
+export function makeCommandDenyCheck(protectedDirs: string[], realpath: RealpathFn, home?: string): (command: string) => SystemDenyResult {
+	const needles = new Set<string>();
+	for (const dir of protectedDirs) {
+		needles.add(dir);
+		needles.add(realpathDeep(dir, realpath));
+		if (home && dir.startsWith(home + sep)) {
+			needles.add(`~${dir.slice(home.length)}`);
+			needles.add(`$HOME${dir.slice(home.length)}`);
+		}
+	}
+	const canonNeedles = [...needles].map(canonical);
+	return (command: string): SystemDenyResult => {
+		const c = canonical(command);
+		for (let i = 0; i < canonNeedles.length; i++) {
+			if (c.includes(canonNeedles[i]!)) {
+				return { denied: true, reason: `the command references the protected path ${[...needles][i]} — writes there are never allowed` };
 			}
 		}
 		return { denied: false };

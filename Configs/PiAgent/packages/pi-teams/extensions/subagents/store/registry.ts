@@ -12,7 +12,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { formatAgentAddress } from "../mail/envelope.ts";
 
@@ -135,7 +135,17 @@ export function patchAgent(registry: Registry, address: string, patch: AgentPatc
 
 const STATES = new Set<AgentState>(["queued", "running", "dormant", "waiting"]);
 
-function isValidRecord(value: unknown): value is AgentRecord {
+function vitalsAreValid(v: unknown): v is AgentVitals {
+	if (!v || typeof v !== "object") return false;
+	const r = v as Record<string, unknown>;
+	if (typeof r.state !== "string" || !STATES.has(r.state as AgentState)) return false;
+	if (r.ctxPercent !== null && typeof r.ctxPercent !== "number") return false;
+	if (typeof r.tokens !== "number" || typeof r.cost !== "number" || typeof r.turns !== "number") return false;
+	return true;
+}
+
+/** The record's IDENTITY fields (which key/anchor its on-disk dir) must be intact. */
+function hasValidIdentity(value: unknown): value is AgentRecord {
 	if (typeof value !== "object" || value === null) return false;
 	const r = value as Record<string, unknown>;
 	if (typeof r.type !== "string" || typeof r.id !== "string") return false;
@@ -143,15 +153,16 @@ function isValidRecord(value: unknown): value is AgentRecord {
 	if (typeof r.generationId !== "string" || !GENERATION_ID_RE.test(r.generationId)) return false;
 	if (typeof r.typeFileHash !== "string") return false;
 	if (typeof r.createdAt !== "string" || typeof r.lastActiveAt !== "string") return false;
-	const v = r.vitals as Record<string, unknown> | undefined;
-	if (!v || typeof v !== "object") return false;
-	if (typeof v.state !== "string" || !STATES.has(v.state as AgentState)) return false;
-	if (v.ctxPercent !== null && typeof v.ctxPercent !== "number") return false;
-	if (typeof v.tokens !== "number" || typeof v.cost !== "number" || typeof v.turns !== "number") return false;
 	return true;
 }
 
-/** Read the registry; malformed records are dropped (defensive), missing file → empty. */
+/**
+ * Read the registry; missing file → empty. A record whose IDENTITY is intact but
+ * whose vitals are corrupt is REPAIRED (vitals reset to dormant defaults) rather
+ * than dropped — dropping would orphan a live agent's instance dir/mailbox with no
+ * roster entry to reference or GC it (finding: silent live-state loss). Only a
+ * record whose identity itself is unusable (can't be keyed) is discarded.
+ */
 export function readRegistry(path: string): Registry {
 	let text: string;
 	try {
@@ -170,21 +181,56 @@ export function readRegistry(path: string): Registry {
 		const agents = (parsed as Record<string, unknown>).agents;
 		if (typeof agents === "object" && agents !== null) {
 			for (const [address, record] of Object.entries(agents)) {
-				if (isValidRecord(record) && formatAgentAddress(record.type, record.id) === address) {
-					registry.agents[address] = record;
+				if (!hasValidIdentity(record) || formatAgentAddress(record.type, record.id) !== address) continue;
+				if (!vitalsAreValid((record as AgentRecord).vitals)) {
+					(record as AgentRecord).vitals = defaultVitals("dormant");
 				}
+				registry.agents[address] = record as AgentRecord;
 			}
 		}
 	}
 	return registry;
 }
 
-/** Atomic write: tmp file in the same dir, then rename over the target. */
+/**
+ * Atomic + crash-durable write: write a tmp file in the same dir, fsync its data,
+ * rename over the target, then fsync the directory so the rename itself survives a
+ * crash (ext4 data=writeback / xfs can otherwise resurrect a zero-length file). The
+ * tmp file is cleaned up if the write fails (no `.<hex>.tmp` litter on ENOSPC).
+ */
 export function atomicWriteJson(path: string, value: unknown): void {
-	mkdirSync(dirname(path), { recursive: true });
-	const tmp = join(dirname(path), `.${randomBytes(6).toString("hex")}.tmp`);
-	writeFileSync(tmp, JSON.stringify(value, null, 2), "utf8");
-	renameSync(tmp, path);
+	const dir = dirname(path);
+	mkdirSync(dir, { recursive: true });
+	const tmp = join(dir, `.${randomBytes(6).toString("hex")}.tmp`);
+	try {
+		const fd = openSync(tmp, "w");
+		try {
+			writeFileSync(fd, JSON.stringify(value, null, 2), "utf8");
+			fsyncSync(fd);
+		} finally {
+			closeSync(fd);
+		}
+		renameSync(tmp, path);
+	} catch (error) {
+		try {
+			rmSync(tmp, { force: true });
+		} catch {
+			/* ignore */
+		}
+		throw error;
+	}
+	// Durably record the rename in the directory entry (best-effort — some
+	// platforms/filesystems reject O_RDONLY fsync on a directory).
+	try {
+		const dfd = openSync(dir, "r");
+		try {
+			fsyncSync(dfd);
+		} finally {
+			closeSync(dfd);
+		}
+	} catch {
+		/* ignore */
+	}
 }
 
 export function writeRegistry(path: string, registry: Registry): void {

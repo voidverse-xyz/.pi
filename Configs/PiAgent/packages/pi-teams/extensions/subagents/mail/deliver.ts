@@ -95,12 +95,16 @@ export class Deliverer {
 		if (bounceReason !== null) return this.bounce(params, bounceReason);
 
 		// Record a question we're sending so the answer can be quoted on wake (D14).
-		if (envelope.type === "question") {
+		// Deferred until AFTER the recipient is confirmed to exist, so a question that
+		// bounces to an unknown agent doesn't leak an entry that will never be answered.
+		const recordQuestion = (): void => {
+			if (envelope.type !== "question") return;
 			const senderMailbox = this.hooks.senderMailboxDir(params.from);
 			if (senderMailbox) recordSentQuestion(senderMailbox, envelope.id, envelope.payload.text, envelope.to);
-		}
+		};
 
 		if (toAddress.kind === "main") {
+			recordQuestion();
 			writeEnvelope(this.hooks.mainMailboxDir, envelope);
 			return { delivered: true, disposition: "main", envelopeId: envelope.id };
 		}
@@ -112,6 +116,7 @@ export class Deliverer {
 		if (state === undefined || mailboxDir === undefined) {
 			return this.bounce(params, `no such agent \`${address}\``);
 		}
+		recordQuestion();
 		writeEnvelope(mailboxDir, envelope);
 		if (state === "dormant") {
 			this.hooks.wake(address);
@@ -146,6 +151,10 @@ export class Deliverer {
 			if (mailboxDir) {
 				writeEnvelope(mailboxDir, errorEnvelope);
 				if (this.hooks.agentState(formatAddress(bounceTo)) === "dormant") this.hooks.wake(formatAddress(bounceTo));
+			} else {
+				// The original sender retired between send and bounce — nothing was
+				// written anywhere, so report `dropped`, not a misleading `bounced`.
+				return { delivered: false, disposition: "dropped", envelopeId: `(undelivered to ${params.to})`, bounceReason: reason };
 			}
 		}
 		return { delivered: false, disposition: "bounced", envelopeId: errorEnvelope.id, bounceReason: reason };

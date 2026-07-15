@@ -42,15 +42,22 @@ const KNOWN_FIELDS = new Set(["name", "description", "model", "thinking", "proje
 /** Split leading `---\n…\n---\n` frontmatter from the body. */
 function splitFrontmatter(content: string): { frontmatter: string; body: string } | { error: string } {
 	const normalized = content.replace(/\r\n/g, "\n");
-	if (!normalized.startsWith("---\n")) {
+	const lines = normalized.split("\n");
+	if (lines[0] !== "---") {
 		return { error: "type file must begin with a YAML frontmatter block (`---`)" };
 	}
-	const end = normalized.indexOf("\n---", 3);
-	if (end === -1) return { error: "unterminated frontmatter block (missing closing `---`)" };
-	const frontmatter = normalized.slice(4, end + 1);
-	// body starts after the closing `---` line
-	const afterClose = normalized.indexOf("\n", end + 1);
-	const body = afterClose === -1 ? "" : normalized.slice(afterClose + 1);
+	// The closing fence must be a FULL line `---` (not merely a line starting with
+	// `---`, so a body/value line like `----` or `---foo` can't be mistaken for it).
+	let closeLine = -1;
+	for (let i = 1; i < lines.length; i++) {
+		if (lines[i] === "---") {
+			closeLine = i;
+			break;
+		}
+	}
+	if (closeLine === -1) return { error: "unterminated frontmatter block (missing closing `---`)" };
+	const frontmatter = lines.slice(1, closeLine).join("\n");
+	const body = lines.slice(closeLine + 1).join("\n");
 	return { frontmatter, body };
 }
 

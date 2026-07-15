@@ -14,7 +14,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, openSync, readFileSync, writeFileSync, closeSync, unlinkSync, statSync } from "node:fs";
+import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { atomicWriteJson } from "./registry.ts";
 import type { Layout } from "./layout.ts";
@@ -58,15 +58,20 @@ function pidAlive(pid: number): boolean {
 /** Is a foreign owner marker still live (so we must NOT steal the scope)? */
 function markerIsLive(marker: HostOwnerMarker, now: number): boolean {
 	if (!pidAlive(marker.pid)) return false;
-	// Guard PID reuse: if we can read the current start time, it must match.
+	// Can we POSITIVELY confirm this is the original process (not a reused pid)?
+	// Only a readable, matching start-time counts as positive confirmation.
+	let startConfirmed = false;
 	if (marker.startTime !== null) {
 		const current = processStartTime(marker.pid);
-		if (current !== null && current !== marker.startTime) return false;
+		if (current !== null) {
+			if (current !== marker.startTime) return false; // pid reused → original owner is dead
+			startConfirmed = true;
+		}
 	}
-	// A live pid with a stalled heartbeat is still treated as live (paused process);
-	// only a dead pid frees the lease. The staleness window guards the case where
-	// the pid is alive but start-time is unavailable and the heartbeat is ancient.
-	if (marker.startTime === null && now - marker.updatedAt > STALE_AFTER_MS) return false;
+	// Without positive confirmation (start-time absent or unreadable), a live pid may
+	// be an unrelated reused pid — trust it only within the heartbeat staleness
+	// window, so a dead owner whose pid got recycled can't block reclaim forever.
+	if (!startConfirmed && now - marker.updatedAt > STALE_AFTER_MS) return false;
 	return true;
 }
 
@@ -92,6 +97,38 @@ function readMarker(path: string): HostOwnerMarker | null {
 export interface HostScopeLease {
 	readonly runtimeId: string;
 	release(): void;
+}
+
+/**
+ * Publish a marker so it appears at `path` ATOMICALLY and fully-formed: write the
+ * content to a tmp file (fsync'd), then hard-link it into place. `linkSync` fails
+ * with EEXIST if the target already exists, giving us exclusive-create with a
+ * complete payload — a foreign reader can never observe an empty/partial marker
+ * (which would look "unreadable → stale" and wrongly get swept). Returns true if we
+ * created the marker, false if one already existed.
+ */
+function publishMarkerExclusive(path: string, marker: HostOwnerMarker): boolean {
+	const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+	const fd = openSync(tmp, "w");
+	try {
+		writeFileSync(fd, JSON.stringify(marker), "utf8");
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+	try {
+		linkSync(tmp, path);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+		throw error;
+	} finally {
+		try {
+			unlinkSync(tmp);
+		} catch {
+			/* the link (or a failed link) leaves tmp; best-effort cleanup */
+		}
+	}
 }
 
 /** Ensure the scope manifest records this cwd + owner (idempotent). */
@@ -120,36 +157,38 @@ export function claimHostScope(layout: Layout, options: { now?: () => number } =
 	const pid = process.pid;
 	const startTime = processStartTime(pid);
 
-	// Heartbeat: refresh the marker we already own. Only writes if the marker is
-	// still ours (a swept-then-reclaimed scope must not be clobbered).
+	// Heartbeat: refresh the marker we already own. Atomic (tmp+rename via
+	// atomicWriteJson) so a concurrent reader never sees a torn write. Only writes
+	// if the marker is still ours (a swept-then-reclaimed scope must not be clobbered).
 	const heartbeat = (): void => {
 		const current = readMarker(path);
 		if (current && current.runtimeId !== runtimeId) return;
-		const marker: HostOwnerMarker = { runtimeId, pid, startTime, updatedAt: now() };
-		writeFileSync(path, JSON.stringify(marker), "utf8");
+		atomicWriteJson(path, { runtimeId, pid, startTime, updatedAt: now() } satisfies HostOwnerMarker);
 	};
 
-	// Claim loop: try exclusive create; on EEXIST, sweep if dead, else fail.
-	for (let attempt = 0; attempt < 3; attempt++) {
-		try {
-			const fd = openSync(path, "wx");
-			const marker: HostOwnerMarker = { runtimeId, pid, startTime, updatedAt: now() };
-			writeFileSync(fd, JSON.stringify(marker), "utf8");
-			closeSync(fd);
+	// Claim loop: try exclusive create; on EEXIST, sweep if dead, else fail. We must
+	// end the loop provably OWNING the lease — otherwise a repeatedly-raced stale
+	// marker could let us fall through and behave as owner without a marker.
+	let owned = false;
+	for (let attempt = 0; attempt < 5 && !owned; attempt++) {
+		if (publishMarkerExclusive(path, { runtimeId, pid, startTime, updatedAt: now() })) {
+			owned = true;
 			break;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			const foreign = readMarker(path);
-			if (foreign && foreign.runtimeId !== runtimeId && markerIsLive(foreign, now())) {
-				throw new HostScopeLockedError(foreign.pid);
-			}
-			// stale or unreadable → sweep and retry
-			try {
-				unlinkSync(path);
-			} catch {
-				/* raced away */
-			}
 		}
+		const foreign = readMarker(path);
+		if (foreign && foreign.runtimeId !== runtimeId && markerIsLive(foreign, now())) {
+			throw new HostScopeLockedError(foreign.pid);
+		}
+		// stale or unreadable → sweep and retry
+		try {
+			unlinkSync(path);
+		} catch {
+			/* raced away */
+		}
+	}
+	if (!owned) {
+		// The scope was contended every attempt without a live owner we could name.
+		throw new HostScopeLockedError(readMarker(path)?.pid ?? -1);
 	}
 
 	ensureScopeManifest(layout);

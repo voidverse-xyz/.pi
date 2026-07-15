@@ -37,9 +37,18 @@ export type ConfirmFn = (request: ConfirmRequest) => Promise<ConfirmResult>;
 
 type ClaimFn = (request: ConfirmRequest) => Promise<ConfirmResult> | ConfirmResult;
 
+/** A claimant that never resolves must not wedge the subagent forever — deny after this. */
+const CONFIRM_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * Build a confirm function backed by pi-safety over pi.events. Fails CLOSED: if
- * no provider claims (pi-safety absent, or no UI), the call is denied.
+ * no provider claims (pi-safety absent, or no UI), the call is denied. A claimant
+ * that never resolves is also failed closed after CONFIRM_TIMEOUT_MS so a hung
+ * provider can't strand the agent (SEC-8).
+ *
+ * Trust boundary: pi.events is an in-process bus any co-loaded extension can claim.
+ * The "human-only approval" guarantee therefore assumes only trusted extensions are
+ * loaded — a hostile co-resident extension could claim this channel and self-approve.
  */
 export function makeSafetyConfirm(pi: ExtensionAPI): ConfirmFn {
 	return (request: ConfirmRequest): Promise<ConfirmResult> => {
@@ -54,12 +63,20 @@ export function makeSafetyConfirm(pi: ExtensionAPI): ConfirmFn {
 		if (!claimed) {
 			return Promise.resolve({ approved: false, note: "no confirmation provider available (pi-safety not installed or no UI) — failing closed" });
 		}
-		return Promise.resolve()
+		const answered = Promise.resolve()
 			.then(() => (claimed as ClaimFn)(request))
 			.then(
 				(result) => result,
-				(error) => ({ approved: false, note: error instanceof Error ? error.message : String(error) }),
+				(error): ConfirmResult => ({ approved: false, note: error instanceof Error ? error.message : String(error) }),
 			);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<ConfirmResult>((resolveTimeout) => {
+			timer = setTimeout(() => resolveTimeout({ approved: false, note: "confirmation timed out — failing closed" }), CONFIRM_TIMEOUT_MS);
+			(timer as { unref?: () => void }).unref?.();
+		});
+		return Promise.race([answered, timeout]).finally(() => {
+			if (timer) clearTimeout(timer);
+		});
 	};
 }
 

@@ -66,11 +66,14 @@ export interface SubagentsCore {
 	/** Unprocessed envelopes in the main agent's mailbox (widget 📬). */
 	mainUnreadCount(): number;
 	/**
-	 * Drain the main mailbox into a wake digest and mark it done (D24 auto-wake).
-	 * Collect results are validated against their request schema on arrival
-	 * (findings #9/#10). Returns null when there is no pending main mail.
+	 * Compose a wake digest from the main mailbox WITHOUT consuming it, plus a
+	 * `commit()` that marks the drained envelopes done and clears fulfilled collect
+	 * requests. The caller commits only AFTER the wake has been durably handed off
+	 * (D24 auto-wake) so a dropped/throwing injection can't silently lose main mail.
+	 * Collect results are validated against their request schema (findings #9/#10).
+	 * Returns null when there is no pending main mail.
 	 */
-	takeMainMailDigest(): string | null;
+	takeMainMailDigest(): { digest: string; commit: () => void } | null;
 	/** Unprocessed envelopes in a subagent's mailbox (picker badge). */
 	agentUnreadCount(address: string): number;
 	/** Retired agents still on disk in .archive (D13). Empty until Phase 7. */
@@ -125,24 +128,29 @@ export function createCore(options: CoreOptions): SubagentsCore {
 		retire: (to) => runtime.retire(to),
 		onEvent: (listener) => runtime.onEvent(listener),
 		mainUnreadCount: () => pendingCount(options.layout.mainMailboxDir),
-		takeMainMailDigest(): string | null {
+		takeMainMailDigest(): { digest: string; commit: () => void } | null {
 			const box = options.layout.mainMailboxDir;
 			const pending = readPending(box);
 			if (pending.length === 0) return null;
+			const collectToClear: string[] = [];
 			const items: DigestItem[] = pending.map((p) => {
 				const item: DigestItem = { envelope: p.envelope, redelivered: p.redelivered };
 				if (p.envelope.type === "report" && p.envelope.correlationId) {
+					// Peek (non-destructive) — the request is cleared only on commit.
 					const schema = peekCollectRequest(box, p.envelope.correlationId, p.envelope.from);
 					if (schema !== undefined) {
 						item.note = collectResultNote(validateAgainstSchema(p.envelope.payload.data, schema));
-						takeCollectRequest(box, p.envelope.correlationId);
+						collectToClear.push(p.envelope.correlationId);
 					}
 				}
 				return item;
 			});
 			const digest = composeWakeDigest({ items, questionLookup: () => undefined });
-			for (const p of pending) markDone(box, p.envelope.id);
-			return digest;
+			const commit = (): void => {
+				for (const correlationId of collectToClear) takeCollectRequest(box, correlationId);
+				for (const p of pending) markDone(box, p.envelope.id);
+			};
+			return { digest, commit };
 		},
 		agentUnreadCount: (address) => {
 			const parts = address.split("/");

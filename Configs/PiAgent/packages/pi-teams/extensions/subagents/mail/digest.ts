@@ -78,10 +78,15 @@ function formatItem(item: DigestItem, index: number): string {
 	const data = envelope.payload.data;
 	const isCollectRequest =
 		envelope.type === "message" && envelope.from === MAIN_ADDRESS && typeof data === "object" && data !== null && "collectSchema" in data;
-	if (isCollectRequest) {
-		lines.push(`   To fulfill this collect request, call the \`report\` tool with \`data\` conforming to the schema above and correlationId "${envelope.id}".`);
-	} else if (data !== undefined) {
+	// Always render the structured payload (for a collect request this is the
+	// `{ collectSchema: … }` the agent must conform to — previously the schema was
+	// silently omitted, so the "conform to the schema above" instruction referenced
+	// nothing on screen and reports routinely failed validation).
+	if (data !== undefined) {
 		lines.push(formatDataBlock(data, envelope.id));
+	}
+	if (isCollectRequest) {
+		lines.push(`   To fulfill this collect request, call the \`report\` tool with \`data\` conforming to the \`collectSchema\` shown above and correlationId "${envelope.id}".`);
 	}
 	if (item.note !== undefined) lines.push(`   ${item.note}`);
 	if (item.redelivered) lines.push(`   ${REDELIVERY_LABEL}`);

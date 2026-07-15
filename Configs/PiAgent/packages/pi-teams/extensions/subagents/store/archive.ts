@@ -13,17 +13,48 @@ import type { Layout } from "./layout.ts";
 
 export const RETIREMENT_MARKER = ".retired-at";
 
+/** The retirement marker's content: the true address + retirement time (JSON). */
+interface RetirementMarker {
+	address: string;
+	retiredAt: string;
+}
+
+/** Read the retirement marker. Handles both the JSON form and the legacy plain-ISO form. */
+function readRetirementMarker(dir: string): { address?: string; retiredAt?: string } {
+	let raw: string;
+	try {
+		raw = readFileSync(join(dir, RETIREMENT_MARKER), "utf8").trim();
+	} catch {
+		return {};
+	}
+	if (!raw) return {};
+	try {
+		const parsed = JSON.parse(raw) as Partial<RetirementMarker>;
+		if (parsed && typeof parsed === "object") {
+			return {
+				...(typeof parsed.address === "string" ? { address: parsed.address } : {}),
+				...(typeof parsed.retiredAt === "string" ? { retiredAt: parsed.retiredAt } : {}),
+			};
+		}
+	} catch {
+		/* legacy plain-ISO content */
+	}
+	return { retiredAt: raw };
+}
+
 /** Move an agent instance dir to .archive/. Returns the archive path, or null if nothing to move. */
 export function archiveAgentDir(layout: Layout, type: string, id: string, nowIso: string): string | null {
 	const src = layout.agentInstanceDir(type, id);
 	if (!existsSync(src)) return null;
 	let dest = layout.archiveDir(type, id);
-	// Collision (a prior same-address retire): suffix.
+	// Collision (a prior same-address retire): suffix. The TRUE address is stored in
+	// the marker, so an id that legitimately ends in `-<digits>` is never mis-reported.
 	let n = 2;
 	while (existsSync(dest)) dest = `${layout.archiveDir(type, id)}-${n++}`;
 	mkdirSync(join(dest, ".."), { recursive: true });
 	renameSync(src, dest);
-	writeFileSync(join(dest, RETIREMENT_MARKER), nowIso, "utf8");
+	const marker: RetirementMarker = { address: `${type}/${id}`, retiredAt: nowIso };
+	writeFileSync(join(dest, RETIREMENT_MARKER), JSON.stringify(marker), "utf8");
 	return dest;
 }
 
@@ -43,13 +74,11 @@ export function readArchived(layout: Layout): ArchivedInfo[] {
 		for (const id of safeReaddir(typeDir)) {
 			const dir = join(typeDir, id);
 			if (!isDir(dir)) continue;
-			let retiredAt: string | undefined;
-			try {
-				retiredAt = readFileSync(join(dir, RETIREMENT_MARKER), "utf8").trim() || undefined;
-			} catch {
-				retiredAt = undefined;
-			}
-			out.push({ address: `${type}/${id.replace(/-\d+$/, "")}`, ...(retiredAt ? { retiredAt } : {}) });
+			const marker = readRetirementMarker(dir);
+			// Prefer the marker's true address; fall back to the dir name with the
+			// collision suffix stripped only when no marker recorded the address.
+			const address = marker.address ?? `${type}/${id.replace(/-\d+$/, "")}`;
+			out.push({ address, ...(marker.retiredAt ? { retiredAt: marker.retiredAt } : {}) });
 		}
 	}
 	return out.sort((a, b) => a.address.localeCompare(b.address));
@@ -63,14 +92,13 @@ export function gcArchive(layout: Layout, days: number, nowMs: number): number {
 	let removed = 0;
 	for (const type of safeReaddir(root)) {
 		const typeDir = join(root, type);
+		if (!isDir(typeDir)) continue;
 		for (const id of safeReaddir(typeDir)) {
 			const dir = join(typeDir, id);
-			let retiredMs = 0;
-			try {
-				retiredMs = Date.parse(readFileSync(join(dir, RETIREMENT_MARKER), "utf8").trim());
-			} catch {
-				retiredMs = 0;
-			}
+			if (!isDir(dir)) continue;
+			const retiredAt = readRetirementMarker(dir).retiredAt;
+			let retiredMs = retiredAt ? Date.parse(retiredAt) : 0;
+			if (Number.isNaN(retiredMs)) retiredMs = 0;
 			// No/invalid marker → fall back to the dir mtime.
 			if (!retiredMs) {
 				try {
@@ -82,6 +110,14 @@ export function gcArchive(layout: Layout, days: number, nowMs: number): number {
 			if (retiredMs < cutoff) {
 				rmSync(dir, { recursive: true, force: true });
 				removed++;
+			}
+		}
+		// Drop an emptied type dir so archives don't accumulate stale <type>/ shells.
+		if (safeReaddir(typeDir).length === 0) {
+			try {
+				rmSync(typeDir, { recursive: true, force: true });
+			} catch {
+				/* ignore */
 			}
 		}
 	}

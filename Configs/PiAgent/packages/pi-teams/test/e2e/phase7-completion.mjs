@@ -136,9 +136,11 @@ await test("takeMainMailDigest drains reports into a digest and marks them done"
 	await core.spawn({ type: "worker", id: "r1", task: "go" });
 	await core.whenIdle();
 	assert.ok(core.mainUnreadCount() > 0, "report queued for main");
-	const digest = core.takeMainMailDigest();
-	assert.ok(digest && digest.includes("progress note"));
-	assert.equal(core.mainUnreadCount(), 0, "main mail marked done after drain");
+	const drained = core.takeMainMailDigest();
+	assert.ok(drained && drained.digest.includes("progress note"));
+	assert.ok(core.mainUnreadCount() > 0, "mail is NOT consumed until commit() (at-least-once)");
+	drained.commit();
+	assert.equal(core.mainUnreadCount(), 0, "main mail marked done after commit");
 	assert.equal(core.takeMainMailDigest(), null, "nothing left to drain");
 });
 

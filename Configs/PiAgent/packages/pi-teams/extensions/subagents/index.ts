@@ -129,6 +129,7 @@ export default function (pi: ExtensionAPI): void {
 			throw error;
 		}
 
+		try {
 		const { settings, warnings } = new SettingsLoader(layout.globalSettingsFile, layout.projectSettingsFile).load();
 		if (ctx.hasUI) for (const warning of warnings) ctx.ui.notify(`pi-agents: ${warning}`, "warning");
 
@@ -172,6 +173,14 @@ export default function (pi: ExtensionAPI): void {
 				theme: ctx.ui.theme,
 			});
 		}
+		} catch (error) {
+			// Setup failed AFTER the lease was claimed — tear everything down so the
+			// lease is released (otherwise it blocks resume in another process), and
+			// report why subagents are unavailable this session (M3).
+			await teardown();
+			unavailableReason = `Subagents failed to initialize: ${error instanceof Error ? error.message : String(error)}`;
+			if (ctx.hasUI) ctx.ui.notify(unavailableReason, "warning");
+		}
 	});
 
 	// --- Main-mail auto-wake (D24): all mail wakes an idle host. ---
@@ -180,10 +189,17 @@ export default function (pi: ExtensionAPI): void {
 
 	const deliverMainMail = (): void => {
 		if (!hostIdle || !core || !uiCtx) return;
-		const digest = core.takeMainMailDigest();
-		if (!digest) return;
+		const drained = core.takeMainMailDigest();
+		if (!drained) return;
 		hostIdle = false; // the injected turn is no longer idle
-		pi.sendMessage({ content: digest, customType: "teams-mail", display: true, details: undefined }, { deliverAs: "followUp" });
+		try {
+			pi.sendMessage({ content: drained.digest, customType: "teams-mail", display: true, details: undefined }, { deliverAs: "followUp" });
+			// Consume the mail ONLY after the injection was accepted — a throw leaves it
+			// pending so the next agent_settled retries, upholding at-least-once (M1).
+			drained.commit();
+		} catch {
+			hostIdle = true; // injection failed; allow another attempt next settle
+		}
 	};
 
 	pi.on("input", (_event, ctx) => {

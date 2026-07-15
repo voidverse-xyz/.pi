@@ -9,6 +9,7 @@
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { SubagentsCore } from "../core.ts";
+import { parseAddress } from "../mail/envelope.ts";
 import type { Lifetime } from "../store/registry.ts";
 
 type GetCore = (ctx: ExtensionContext) => SubagentsCore;
@@ -20,6 +21,12 @@ function jsonResult(value: unknown): { content: [{ type: "text"; text: string }]
 function errorResult(error: unknown): { content: [{ type: "text"; text: string }]; details: undefined; isError: true } {
 	const message = error instanceof Error ? error.message : String(error);
 	return { content: [{ type: "text", text: message }], details: undefined, isError: true };
+}
+
+/** These tools target a subagent instance — `main`/`user`/garbage are rejected up front. */
+function agentTargetError(address: string): ReturnType<typeof errorResult> | null {
+	if (parseAddress(address)?.kind === "agent") return null;
+	return errorResult(new Error(`\`${address}\` is not a subagent address — expected \`<type>/<id>\` (not "main" or "user").`));
 }
 
 const SpawnParams = Type.Object({
@@ -87,6 +94,8 @@ export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendPara
 			"delivered at the recipient's turn boundary, or it wakes a dormant agent.",
 		parameters: SendParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const badTarget = agentTargetError(params.to);
+			if (badTarget) return badTarget;
 			const core = getCore(ctx);
 			try {
 				const result = await core.send({
@@ -95,6 +104,11 @@ export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendPara
 					...(params.correlationId !== undefined ? { correlationId: params.correlationId } : {}),
 					...(params.background !== undefined ? { background: params.background } : {}),
 				});
+				// A bounce is a failure to deliver — surface it as an error so the LLM
+				// doesn't mistake it for successful delivery (SEND-5).
+				if (result.disposition === "bounced" || result.disposition === "dropped") {
+					return errorResult(new Error(`Message not delivered (${result.disposition}): ${result.bounceReason ?? "unknown reason"}`));
+				}
 				return jsonResult(result);
 			} catch (error) {
 				return errorResult(error);
@@ -115,6 +129,8 @@ export function createSteerTool(getCore: GetCore): ToolDefinition<typeof SteerPa
 		description: "Inject guidance into a subagent's CURRENT turn (main-agent-only). No-op if it isn't running; use team_send otherwise.",
 		parameters: SteerParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const badTarget = agentTargetError(params.to);
+			if (badTarget) return badTarget;
 			try {
 				return jsonResult(await getCore(ctx).steer(params.to, params.text));
 			} catch (error) {
@@ -138,6 +154,8 @@ export function createCollectTool(getCore: GetCore): ToolDefinition<typeof Colle
 			"whose data is validated against the schema. Only a restricted JSON-schema subset is honored.",
 		parameters: CollectParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const badTarget = agentTargetError(params.to);
+			if (badTarget) return badTarget;
 			try {
 				return jsonResult(await getCore(ctx).collect(params.to, params.schema));
 			} catch (error) {
@@ -164,6 +182,8 @@ export function createAwaitTool(getCore: GetCore): ToolDefinition<typeof AwaitPa
 			"if the agent is gone, or 'timeout'. Subagents are background by default — use this to join their work in-turn.",
 		parameters: AwaitParams,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const badTarget = agentTargetError(params.to);
+			if (badTarget) return badTarget;
 			try {
 				const result = await getCore(ctx).awaitResult({
 					to: params.to,
@@ -189,6 +209,8 @@ export function createInterruptTool(getCore: GetCore): ToolDefinition<typeof Int
 		description: "Abort a subagent's current turn. It stays alive with memory intact and goes dormant; its triggering mail stays pending.",
 		parameters: InterruptParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const badTarget = agentTargetError(params.to);
+			if (badTarget) return badTarget;
 			try {
 				return jsonResult(await getCore(ctx).interrupt(params.to));
 			} catch (error) {
@@ -209,6 +231,8 @@ export function createRetireTool(getCore: GetCore): ToolDefinition<typeof Retire
 			"bounces afterward. Use for finished persistent agents; oneshots retire themselves.",
 		parameters: RetireParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const badTarget = agentTargetError(params.to);
+			if (badTarget) return badTarget;
 			try {
 				return jsonResult(await getCore(ctx).retire(params.to));
 			} catch (error) {

@@ -16,6 +16,7 @@
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
 	type AgentSession,
@@ -42,6 +43,7 @@ import {
 	MAIN_ADDRESS,
 	makeEnvelope,
 	parseAddress,
+	seedUlidClock,
 	USER_ADDRESS,
 } from "../mail/envelope.ts";
 import {
@@ -49,6 +51,7 @@ import {
 	deleteSentQuestion,
 	lookupSentQuestion,
 	markDone,
+	maxEnvelopeId,
 	peekCollectRequest,
 	pendingCount,
 	readPending,
@@ -76,7 +79,7 @@ import { resolveTypeDef } from "../typedefs/discover.ts";
 import type { TypeDefinition } from "../typedefs/parse.ts";
 import { createSubagentTools, type SubagentMailPort } from "../tools/sub-agent.ts";
 import { buildSandboxedTools } from "../sandbox/tools-filter.ts";
-import { makeSystemDenyCheck } from "../sandbox/system-deny.ts";
+import { makeCommandDenyCheck, makeSystemDenyCheck } from "../sandbox/system-deny.ts";
 import { type ConfirmFn, denyAllConfirm } from "../sandbox/safety-bridge.ts";
 import type {
 	AgentDetail,
@@ -147,6 +150,10 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	private buildLocks = new Map<string, Promise<Handle>>();
 	private chains = new Map<string, Promise<void>>();
 	private retiring = new Set<string>();
+	/** Addresses with a mail turn currently in flight (per-address await liveness, M4). */
+	private runningAddresses = new Set<string>();
+	/** Addresses with an interrupt requested before their turn began streaming. */
+	private pendingInterrupt = new Set<string>();
 	/** Live per-agent activity for the tree widget: current tool call + count. */
 	private activity = new Map<string, AgentActivity>();
 	private listeners = new Set<RuntimeEventListener>();
@@ -155,16 +162,19 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	private readonly deliverer: Deliverer;
 	private readonly confirm: ConfirmFn;
 	private readonly systemDeny: (target: string) => { denied: boolean; reason?: string };
+	private readonly systemDenyCommand: (command: string) => { denied: boolean; reason?: string };
 
 	constructor(private readonly options: RuntimeOptions) {
 		this.layout = options.layout;
 		this.scheduler = new Scheduler(options.maxConcurrent);
 		this.registry = readRegistry(this.layout.registryFile);
 		this.confirm = options.confirm ?? denyAllConfirm;
-		this.systemDeny = makeSystemDenyCheck(
-			[this.layout.projectSubagentsRoot, this.layout.globalTypeDefsDir, this.layout.projectTypeDefsDir],
-			realpathSync,
-		);
+		const protectedDirs = [this.layout.projectSubagentsRoot, this.layout.globalTypeDefsDir, this.layout.projectTypeDefsDir];
+		this.systemDeny = makeSystemDenyCheck(protectedDirs, realpathSync);
+		this.systemDenyCommand = makeCommandDenyCheck(protectedDirs, realpathSync, homedir());
+		// Seed the ULID clock from the newest id already on disk so ids minted this
+		// process sort after persisted mail even after a snapshot/clock-step (M15).
+		this.seedClockFromDisk();
 		const hooks: DelivererHooks = {
 			mainMailboxDir: this.layout.mainMailboxDir,
 			agentMailboxDir: (type, id) =>
@@ -321,10 +331,20 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 	async interrupt(to: string): Promise<InterruptResult> {
 		const handle = this.handles.get(to);
-		if (!handle || !handle.session.isStreaming) return { interrupted: false };
-		handle.abortedBy = "interrupt";
-		await handle.session.abort();
-		return { interrupted: true };
+		if (handle?.session.isStreaming) {
+			handle.abortedBy = "interrupt";
+			await handle.session.abort();
+			return { interrupted: true };
+		}
+		// The agent is queued/waking (a turn scheduled, but its session isn't streaming
+		// yet): record the intent so mailTurn stands the turn down once the handle is
+		// built, instead of silently no-op'ing the interrupt.
+		const record = getAgent(this.registry, to);
+		if (record && (record.vitals.state === "queued" || record.vitals.state === "running")) {
+			this.pendingInterrupt.add(to);
+			return { interrupted: true };
+		}
+		return { interrupted: false };
 	}
 
 	async retire(to: string): Promise<RetireResult> {
@@ -338,6 +358,15 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				await handle.session.abort();
 			}
 			this.handles.delete(to);
+			// Drop any in-flight build lock + stale per-address caches so a build that
+			// resolves after this point cannot re-install a session for the gone agent
+			// (the ensureHandle guard also refuses to install once the agent is removed),
+			// and a respawn on the same address doesn't inherit the prior incarnation's
+			// cached defaults/activity (H3 / address-reuse staleness).
+			this.buildLocks.delete(to);
+			this.inheritCache.delete(to);
+			this.activity.delete(to);
+			this.pendingInterrupt.delete(to);
 			// NB: we deliberately do NOT await this.chains.get(to) — a oneshot
 			// auto-retire calls retire() from inside that very turn's tail, so
 			// awaiting it would deadlock. The `retiring` flag + abort() above make
@@ -416,7 +445,10 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			);
 			if (attention) return { status: "attention", to, anchorId, attention: envView(attention.envelope) };
 
-			if (!getAgent(this.registry, to) && this.activeTurns.size === 0) return { status: "retired", to, anchorId };
+			// Retired detection keys on the TARGET's own liveness, not the fleet-wide
+			// turn count — otherwise any other busy agent would mask retirement and
+			// force this await to spin to timeout (M4).
+			if (!getAgent(this.registry, to) && !this.runningAddresses.has(to)) return { status: "retired", to, anchorId };
 			if (Date.now() >= deadline) return { status: "timeout", to, anchorId };
 			await new Promise((resolve) => setTimeout(resolve, 40));
 		}
@@ -439,6 +471,8 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		await Promise.allSettled(aborts);
 		await this.whenIdle();
 		this.handles.clear();
+		this.listeners.clear();
+		this.pendingInterrupt.clear();
 	}
 
 	// ----------------------------------------------------------------- internals
@@ -457,6 +491,17 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 	private persist(): void {
 		writeRegistry(this.layout.registryFile, this.registry);
+	}
+
+	/** Seed the monotonic ULID clock from the newest envelope id across all mailboxes. */
+	private seedClockFromDisk(): void {
+		const boxes = [this.layout.mainMailboxDir, ...listAgents(this.registry).map((r) => this.layout.mailboxDir(r.type, r.id))];
+		let max: string | null = null;
+		for (const box of boxes) {
+			const id = maxEnvelopeId(box);
+			if (id !== null && (max === null || id > max)) max = id;
+		}
+		if (max !== null) seedUlidClock(max);
 	}
 
 	private emit(event: RuntimeEvent): void {
@@ -509,9 +554,13 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	}
 
 	private trackedMailTurn(address: string): Promise<void> {
+		this.runningAddresses.add(address);
 		const turn = this.mailTurn(address).catch((error) => {
 			this.emit({ type: "turn-error", address, error: error instanceof Error ? error.message : String(error) });
-		}).finally(() => this.activeTurns.delete(turn));
+		}).finally(() => {
+			this.activeTurns.delete(turn);
+			this.runningAddresses.delete(address);
+		});
 		this.activeTurns.add(turn);
 		return turn;
 	}
@@ -536,18 +585,52 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		if (record.typeFileHash !== resolved.resolved.hash) {
 			patchAgent(this.registry, address, { typeFileHash: resolved.resolved.hash });
 			this.persist();
-			this.handles.delete(address); // rebuild with the retuned constitution
+			// Rebuild with the retuned constitution — stand the old session down first
+			// so we don't drop a live AgentSession (and its open JSONL fd) on the floor.
+			const stale = this.handles.get(address);
+			if (stale) void stale.session.abort().catch(() => {});
+			this.handles.delete(address);
 		}
 
 		this.setState(address, "queued");
 		const release = await this.scheduler.acquire();
 		let leavePending = false;
+		let turnHandle: Handle | undefined;
 		try {
-			if (this.disposed) {
+			// A retire/dispose that arrived while we waited for a scheduler slot must be
+			// observed here — otherwise we'd build + prompt a to-be-retired agent.
+			if (this.disposed || this.retiring.has(address) || !getAgent(this.registry, address)) {
 				leavePending = true;
 				return;
 			}
-			const handle = await this.ensureHandle(address, record, def, this.inheritCache.get(address));
+			let handle: Handle;
+			try {
+				handle = await this.ensureHandle(address, record, def, this.inheritCache.get(address));
+			} catch (error) {
+				// Handle build failed (e.g. unknown model): surface it, reset the state
+				// off "queued" so the agent isn't wedged, and leave the mail pending so a
+				// fixed type file + next wake retries.
+				this.setState(address, "dormant");
+				this.emit({ type: "turn-error", address, error: error instanceof Error ? error.message : String(error) });
+				leavePending = true;
+				return;
+			}
+			// The agent may have been retired/disposed during the async build; if so the
+			// handle was NOT installed (ensureHandle guard) — stand it down and bail.
+			if (this.disposed || this.retiring.has(address) || this.handles.get(address) !== handle) {
+				if (this.handles.get(address) !== handle) void handle.session.abort().catch(() => {});
+				leavePending = true;
+				return;
+			}
+			// An interrupt requested before streaming began: stand the turn down now,
+			// leave its mail pending, and go dormant (don't linger in "queued").
+			if (this.pendingInterrupt.delete(address)) {
+				leavePending = true;
+				this.setState(address, "dormant");
+				this.emit({ type: "turn-finished", address, vitals: getAgent(this.registry, address)?.vitals ?? vitalsFrom(handle.session, "dormant") });
+				return;
+			}
+			turnHandle = handle;
 			handle.trigger = pending.map((p) => p.envelope);
 			handle.abortedBy = null;
 			handle.retireAfterTurn = false;
@@ -621,8 +704,10 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			release();
 		}
 
-		// A oneshot that sent its final report this turn auto-retires (D13).
-		if (!leavePending && this.handles.get(address)?.retireAfterTurn) {
+		// A oneshot that sent its final report this turn auto-retires (D13). Read the
+		// flag off the LOCAL handle we ran — not this.handles, which may have been
+		// replaced/cleared during the turn (M5).
+		if (!leavePending && turnHandle?.retireAfterTurn) {
 			await this.retire(address);
 			return;
 		}
@@ -637,6 +722,14 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		if (pending) return pending;
 		const build = this.buildHandle(address, record, def, inherit)
 			.then((handle) => {
+				// If the agent was retired (or the runtime disposed) while this session
+				// was being built, do NOT install it — stand it down instead, so we don't
+				// leak a live session for a gone agent. The caller (mailTurn) re-checks
+				// liveness after ensureHandle and will leave the mail pending.
+				if (this.disposed || this.retiring.has(address) || !getAgent(this.registry, address)) {
+					void handle.session.abort().catch(() => {});
+					return handle;
+				}
 				this.handles.set(address, handle);
 				return handle;
 			})
@@ -680,6 +773,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				...createSubagentTools(address, this),
 				...buildSandboxedTools(def.config, layout.cwd, {
 					systemDeny: (path) => this.systemDeny(path),
+					systemDenyCommand: (command) => this.systemDenyCommand(command),
 					// Surface the human-confirmation pause as `waiting` for the widget,
 					// then restore `running` for the rest of the turn.
 					confirm: async (request) => {

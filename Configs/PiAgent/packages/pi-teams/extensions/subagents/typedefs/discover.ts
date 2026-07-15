@@ -23,7 +23,12 @@ export function sha256(text: string): string {
 }
 
 export interface DiscoverOptions {
-	/** Whether the project's `.pi/subagents` defs are trusted (Pi project-trust). Default true. */
+	/**
+	 * Whether the project's `.pi/subagents` defs are trusted (Pi project-trust).
+	 * Defaults to FALSE (fail-closed): an untrusted project's defs are neither
+	 * listed, read, nor allowed to shadow a global def. Callers with a real trust
+	 * signal must pass it explicitly.
+	 */
 	projectTrusted?: boolean;
 }
 
@@ -82,7 +87,7 @@ function typeNamesIn(dir: string): string[] {
 
 /** List all discoverable type names with their winning source (project shadows global). */
 export function listTypeDefs(layout: Layout, options: DiscoverOptions = {}): TypeDefSource[] {
-	const projectTrusted = options.projectTrusted ?? true;
+	const projectTrusted = options.projectTrusted ?? false;
 	const sources = new Map<string, TypeDefSource>();
 	for (const name of typeNamesIn(layout.globalTypeDefsDir)) {
 		sources.set(name, { name, path: layout.typeDefFile(layout.globalTypeDefsDir, name), origin: "global" });

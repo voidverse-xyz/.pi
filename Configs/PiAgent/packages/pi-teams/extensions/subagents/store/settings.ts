@@ -110,7 +110,11 @@ export class SettingsLoader {
 			const result = readSettingsFile(path);
 			warnings.push(...result.warnings);
 			if (result.degraded) {
-				layers.push(this.lastGood.get(path) ?? {});
+				const lastGood = this.lastGood.get(path);
+				if (lastGood === undefined) {
+					warnings.push(`${path}: no last-known-good yet — using built-in defaults for this layer until it parses`);
+				}
+				layers.push(lastGood ?? {});
 			} else {
 				this.lastGood.set(path, result.patch);
 				layers.push(result.patch);

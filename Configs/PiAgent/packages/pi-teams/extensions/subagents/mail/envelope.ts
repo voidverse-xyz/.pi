@@ -76,6 +76,33 @@ const B32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 let lastTime = -1;
 let lastRandom: number[] = [];
 
+/**
+ * Seed the monotonic clock from an existing id (e.g. the max id found on disk at
+ * startup) so freshly minted ids sort AFTER already-persisted mail even when the
+ * wall clock reads earlier than when that mail was written (snapshot resume / NTP
+ * step). No-op if the id is malformed or older than the current high-water mark.
+ */
+export function seedUlidClock(id: string): void {
+	const s = id.startsWith("msg_") ? id.slice(4) : id;
+	if (s.length < 26) return;
+	let t = 0;
+	for (let i = 0; i < 10; i++) {
+		const v = B32.indexOf(s[i]!);
+		if (v < 0) return;
+		t = t * 32 + v;
+	}
+	const digits: number[] = [];
+	for (let i = 10; i < 26; i++) {
+		const v = B32.indexOf(s[i]!);
+		if (v < 0) return;
+		digits.push(v);
+	}
+	if (t > lastTime) {
+		lastTime = t;
+		lastRandom = digits;
+	}
+}
+
 function randomDigits(): number[] {
 	const digits: number[] = [];
 	for (let i = 0; i < 16; i++) digits.push(Math.floor(Math.random() * 32));
