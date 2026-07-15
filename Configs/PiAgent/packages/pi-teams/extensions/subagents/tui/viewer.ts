@@ -134,7 +134,7 @@ export function createViewer(options: ViewerOptions): ViewerComponent {
 			clearInterval(timer);
 		},
 		render(width: number): string[] {
-			const lines: string[] = [theme.fg("accent", `󰚩 ${header}`), theme.fg("dim", "─".repeat(Math.min(width, 80)))];
+			const lines: string[] = [theme.fg("accent", `󰡉 ${header}`), theme.fg("dim", "─".repeat(Math.min(width, 80)))];
 			for (const component of components) lines.push(...component.render(width));
 			lines.push(theme.fg("dim", "─".repeat(Math.min(width, 80))));
 			lines.push(`${theme.fg("accent", "› ")}${input}${theme.fg("dim", "▏")}`);

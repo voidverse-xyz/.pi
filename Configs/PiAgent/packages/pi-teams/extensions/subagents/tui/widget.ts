@@ -2,7 +2,7 @@
  * tui/widget.ts — ambient main-session status (D22). Segments appear only when
  * non-zero; the widget is silent at zero agents.
  *
- *   󰚩 2 running · 1 waiting · 󰇮 3
+ *   󰡉 2 running · 1 waiting · 󰇮 3
  *
  * running (running+queued) · waiting (blocked on a pi-safety confirmation) ·
  * unread main mail. No budget segment (D21/D22 — autonomy budget dropped).
@@ -11,7 +11,7 @@
 
 import type { SubagentsCore } from "../core.ts";
 
-export const AGENTS_ICON = "󰚩"; // nf-md-robot
+export const AGENTS_ICON = "󰡉"; // nf-md-account_group
 export const MAIL_ICON = "󰇮"; // nf-md-email
 
 export interface WidgetSnapshot {

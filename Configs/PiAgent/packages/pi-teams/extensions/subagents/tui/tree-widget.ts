@@ -3,7 +3,7 @@
  * (Phase 8; ref IMG_5778). One row per currently-working agent with its
  * tool-use count and current tool call:
  *
- *   󰚩 Running 2 team agents…
+ *   󰡉 Running 2 team agents…
  *   ├─ refactorer/auth · 10 tool uses
  *   │  └ Bash: find CLI or main entry files
  *   └─ docs/main · 3 tool uses
@@ -17,7 +17,7 @@
 import type { SubagentsCore } from "../core.ts";
 import type { AgentActivityRow } from "../runtime/in-process.ts";
 
-export const AGENTS_ICON = "󰚩";
+export const AGENTS_ICON = "󰡉";
 
 export interface TreeTheme {
 	fg(color: string, text: string): string;
