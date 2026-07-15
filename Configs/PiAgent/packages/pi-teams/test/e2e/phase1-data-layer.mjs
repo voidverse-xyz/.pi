@@ -5,11 +5,11 @@
  * Run: node phase1-data-layer.mjs
  */
 import { strict as assert } from "node:assert";
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EXT, WORLDS, jiti } from "./env.mjs";
 
-const { createLayout, cwdSlug, sessionFileName } = await jiti.import(join(EXT, "store/layout.ts"));
+const { createLayout, cwdSlug } = await jiti.import(join(EXT, "store/layout.ts"));
 const envelope = await jiti.import(join(EXT, "mail/envelope.ts"));
 const settings = await jiti.import(join(EXT, "store/settings.ts"));
 const registry = await jiti.import(join(EXT, "store/registry.ts"));
@@ -34,12 +34,6 @@ console.log("layout:");
 ok("cwd slug matches Pi's encodeCwd", () => {
 	assert.equal(cwdSlug("/home/user"), "--home-user--");
 	assert.equal(cwdSlug("/home/user/fake-project"), "--home-user-fake-project--");
-});
-ok("session filename matches Pi's convention", () => {
-	assert.equal(
-		sessionFileName("2026-07-06T22:32:38.193Z", "019f398f-e031-71c5-99dd-a9c81af42b22"),
-		"2026-07-06T22-32-38-193Z_019f398f-e031-71c5-99dd-a9c81af42b22.jsonl",
-	);
 });
 const layout = createLayout(project, { home, sessionId: "sess-A" });
 ok("flat layout: subagents/<sessionId>, no digest/owners nesting", () => {
@@ -167,11 +161,11 @@ console.log("host-lease:");
 const leaseLayout = createLayout(project, { home: join(scratch, "lease-home"), sessionId: "sess-lease" });
 ok("claim writes marker + scope manifest, release removes marker", () => {
 	const lease = hostLease.claimHostScope(leaseLayout);
-	assert.ok(hostLease.hostScopeIsLive(leaseLayout));
-	const manifest = hostLease.readScopeManifest(leaseLayout);
+	assert.ok(existsSync(leaseLayout.hostOwnerFile), "claim publishes the owner marker");
+	const manifest = JSON.parse(readFileSync(leaseLayout.scopeManifestFile, "utf8"));
 	assert.equal(manifest.ownerSessionId, "sess-lease");
 	lease.release();
-	assert.ok(!hostLease.hostScopeIsLive(leaseLayout));
+	assert.ok(!existsSync(leaseLayout.hostOwnerFile), "release removes the owner marker");
 });
 ok("a live foreign owner blocks the claim", () => {
 	// forge a live marker owned by "someone else" (this very pid is alive)
@@ -185,8 +179,15 @@ ok("a live foreign owner blocks the claim", () => {
 ok("a dead owner's stale marker is swept", () => {
 	writeFileSync(leaseLayout.hostOwnerFile, JSON.stringify({ runtimeId: "dead", pid: 2_000_000_000, startTime: null, updatedAt: 0 }));
 	const lease = hostLease.claimHostScope(leaseLayout);
-	assert.ok(hostLease.hostScopeIsLive(leaseLayout));
+	assert.notEqual(JSON.parse(readFileSync(leaseLayout.hostOwnerFile, "utf8")).runtimeId, "dead", "stale marker replaced by ours");
 	lease.release();
+});
+ok("a live fence-less owner is NOT swept on heartbeat staleness alone", () => {
+	// Non-Linux shape: startTime null. The pid is alive (ours) but the heartbeat is
+	// ancient — sweeping here would steal the scope from a busy-but-alive owner.
+	writeFileSync(leaseLayout.hostOwnerFile, JSON.stringify({ runtimeId: "foreign", pid: process.pid, startTime: null, updatedAt: 0 }));
+	assert.throws(() => hostLease.claimHostScope(leaseLayout), (e) => e.name === "HostScopeLockedError");
+	rmSync(leaseLayout.hostOwnerFile, { force: true });
 });
 
 // ---------------------------------------------------------------- typedefs

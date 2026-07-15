@@ -40,8 +40,6 @@ export interface SpawnOptions {
 	lifetime?: Lifetime;
 	/** Optional first message — spawn + assign in one call. */
 	task?: string;
-	/** Explicitly detach the task from the current completion barrier (D27' — default is already background). */
-	background?: boolean;
 	/** Session defaults for fields the frontmatter leaves unset. */
 	inherit?: InheritedDefaults;
 }
@@ -62,8 +60,6 @@ export interface SendOptions {
 	text: string;
 	/** Set when this send answers a question envelope. */
 	correlationId?: string;
-	/** Reserved for the completion barrier (Phase 7); v2 is background by default. */
-	background?: boolean;
 }
 
 export interface SendResult {

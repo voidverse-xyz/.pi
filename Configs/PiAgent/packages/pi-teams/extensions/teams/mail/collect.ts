@@ -23,28 +23,17 @@ function typeName(value: unknown): string {
 	return typeof value;
 }
 
-const KNOWN_TYPES = new Set(["object", "array", "string", "number", "integer", "boolean", "null"]);
+const TYPE_MATCHERS: Record<string, (value: unknown) => boolean> = {
+	object: (v) => typeof v === "object" && v !== null && !Array.isArray(v),
+	array: (v) => Array.isArray(v),
+	string: (v) => typeof v === "string",
+	number: (v) => typeof v === "number",
+	integer: (v) => typeof v === "number" && Number.isInteger(v),
+	boolean: (v) => typeof v === "boolean",
+	null: (v) => v === null,
+};
 
-function matchesType(value: unknown, type: string): boolean {
-	switch (type) {
-		case "object":
-			return typeof value === "object" && value !== null && !Array.isArray(value);
-		case "array":
-			return Array.isArray(value);
-		case "string":
-			return typeof value === "string";
-		case "number":
-			return typeof value === "number";
-		case "integer":
-			return typeof value === "number" && Number.isInteger(value);
-		case "boolean":
-			return typeof value === "boolean";
-		case "null":
-			return value === null;
-		default:
-			return false; // unreachable — unknown types caught as schema error first
-	}
-}
+const KNOWN_TYPES = new Set(Object.keys(TYPE_MATCHERS));
 
 /** JSON-semantic deep equality for const/enum (order-independent for objects). */
 function deepEqual(a: unknown, b: unknown): boolean {
@@ -108,13 +97,14 @@ function checkSchemaShape(schema: unknown, path: string, errors: string[]): void
 	}
 }
 
+/**
+ * Validate `value` against an already-shape-checked schema. Precondition:
+ * checkSchemaShape reported no errors (validateAgainstSchema enforces this),
+ * so type names here are known and enum/required/properties are well-formed.
+ */
 function check(value: unknown, schema: unknown, path: string, errors: string[]): void {
 	if (typeof schema === "boolean") {
 		if (!schema) errors.push(`${path}: schema forbids any value`);
-		return;
-	}
-	if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
-		errors.push(`${path}: malformed schema (expected an object)`);
 		return;
 	}
 	const s = schema as Record<string, unknown>;
@@ -127,14 +117,8 @@ function check(value: unknown, schema: unknown, path: string, errors: string[]):
 	}
 
 	if (s.type !== undefined) {
-		const rawTypes = Array.isArray(s.type) ? s.type : [s.type];
-		const malformed = rawTypes.filter((t) => typeof t !== "string" || !KNOWN_TYPES.has(t));
-		if (malformed.length > 0) {
-			errors.push(`${path}: malformed schema — unknown type ${JSON.stringify(s.type)}`);
-			return;
-		}
-		const types = rawTypes as string[];
-		if (types.length > 0 && !types.some((t) => matchesType(value, t))) {
+		const types = (Array.isArray(s.type) ? s.type : [s.type]) as string[];
+		if (types.length > 0 && !types.some((t) => TYPE_MATCHERS[t]?.(value))) {
 			errors.push(`${path}: expected type ${types.join("|")}, got ${typeName(value)}`);
 			return;
 		}

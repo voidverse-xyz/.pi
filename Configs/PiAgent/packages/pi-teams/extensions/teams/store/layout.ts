@@ -17,15 +17,14 @@
  *       .archive/<type>/<id>/
  *       <type>/<id>/
  *         <timestamp>_<uuid>.jsonl                  # REAL Pi session format
- *         mailbox/  (.done/ + .corrupt/)  files/
+ *         mailbox/  (.done/ + .corrupt/)
  *
  * `<sessionId>` is globally unique, so no cwd-digest is needed — distinct
  * projects/sessions can never collide (v1 finding #6 gone by construction).
  * Type-definition discovery dirs (D6) also live here — they are paths.
  *
- * `<cwd-slug>` and the session filename are computed EXACTLY the way Pi does, so
- * our subtree sits beside Pi's own sessions and subagent JSONL files are
- * openable by Pi itself.
+ * `<cwd-slug>` is computed EXACTLY the way Pi does, so our subtree sits beside
+ * Pi's own sessions dir for the project.
  *
  * Pure module: no fs access, no side effects — path math only.
  */
@@ -44,15 +43,6 @@ import { join } from "node:path";
  */
 export function cwdSlug(cwd: string): string {
 	return `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
-}
-
-/**
- * Pi's session filename: ISO timestamp with `:` and `.` replaced by `-`,
- * underscore, session uuid, `.jsonl`.
- */
-export function sessionFileName(timestamp: Date | string, sessionId: string): string {
-	const iso = typeof timestamp === "string" ? timestamp : timestamp.toISOString();
-	return `${iso.replace(/[:.]/g, "-")}_${sessionId}.jsonl`;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,11 +91,6 @@ export function sentQuestionsFileOf(mailboxDir: string): string {
 /** <mailboxDir>/.collect-requests.json — outstanding collect requests (id → schema). */
 export function collectRequestsFileOf(mailboxDir: string): string {
 	return join(mailboxDir, ".collect-requests.json");
-}
-
-/** <mainMailboxDir>/.await-anchors.json — durable anchor→recipient-generation index (D26'). */
-export function awaitAnchorsFileOf(mailboxDir: string): string {
-	return join(mailboxDir, ".await-anchors.json");
 }
 
 /** <typeDefsDir>.json — the settings-file sibling of a type-def dir. */
@@ -157,16 +142,6 @@ export interface Layout {
 	agentInstanceDir(type: string, id: string): string;
 	/** <agent>/mailbox */
 	mailboxDir(type: string, id: string): string;
-	/** <agent>/files */
-	filesDir(type: string, id: string): string;
-	/** Durable current main-assignment anchor for final-report correlation. */
-	assignmentAnchorFile(type: string, id: string): string;
-	/** Durable retirement intent (manual or oneshot final), recovered at startup. */
-	retireRequestedFile(type: string, id: string): string;
-	/** <agent>/<timestamp>_<uuid>.jsonl — Pi-native session file. */
-	sessionFilePath(type: string, id: string, timestamp: Date | string, sessionId: string): string;
-	/** An envelope's file inside a mailbox dir: <mailboxDir>/<msg-id>.json */
-	envelopeFile(mailboxDir: string, envelopeId: string): string;
 	/** <archiveRoot>/<type>/<id> — where retire moves an agent dir (D13). */
 	archiveDir(type: string, id: string): string;
 
@@ -221,12 +196,6 @@ export function createLayout(cwd: string, options: LayoutOptions): Layout {
 
 		agentInstanceDir,
 		mailboxDir,
-		filesDir: (type, id) => join(agentInstanceDir(type, id), "files"),
-		assignmentAnchorFile: (type, id) => join(agentInstanceDir(type, id), ".assignment-anchor"),
-		retireRequestedFile: (type, id) => join(agentInstanceDir(type, id), ".retire-requested"),
-		sessionFilePath: (type, id, timestamp, sessionId) =>
-			join(agentInstanceDir(type, id), sessionFileName(timestamp, sessionId)),
-		envelopeFile: (dir, envelopeId) => join(dir, `${envelopeId}.json`),
 		archiveDir: (type, id) => join(archiveRoot, type, id),
 
 		globalTypeDefsDir,

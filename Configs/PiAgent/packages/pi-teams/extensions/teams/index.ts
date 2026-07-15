@@ -13,6 +13,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createCore, type SubagentsCore } from "./core.ts";
+import { gcArchive, gcDoneMail } from "./store/archive.ts";
 import { createLayout } from "./store/layout.ts";
 import { createWakePump } from "./mail/wake-pump.ts";
 import { claimHostScope, HostScopeLockedError, type HostScopeLease } from "./store/host-lease.ts";
@@ -238,6 +239,21 @@ export default function (pi: ExtensionAPI): void {
 		core.onEvent((event) => {
 			if (event.type === "turn-finished" || event.type === "agent-retired") pump.onMailArrived();
 		});
+
+		// One best-effort retention sweep per session (D13): retired agent dirs and
+		// processed .done mail older than archiveGcDays. Hygiene only — fire and
+		// forget, never blocks startup.
+		const gcCore = core;
+		void (async () => {
+			try {
+				const roster = await gcCore.status();
+				const boxes = [layout.mainMailboxDir, ...roster.map((entry) => layout.mailboxDir(entry.type, entry.id))];
+				gcArchive(layout, settings.archiveGcDays, Date.now());
+				gcDoneMail(boxes, settings.archiveGcDays, Date.now());
+			} catch {
+				/* best effort */
+			}
+		})();
 
 		// Ambient widget: publish plain status text; pi-status-line styles it.
 		if (ctx.mode === "tui") {

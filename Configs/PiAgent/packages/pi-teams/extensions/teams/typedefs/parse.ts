@@ -77,6 +77,8 @@ function parseScalar(token: string): { value: string | number | boolean } | { er
 	}
 	if (t === "true") return { value: true };
 	if (t === "false") return { value: false };
+	// No config field is numeric today — numbers are parsed so string-typed fields
+	// can REJECT them ("must be a string") instead of silently coercing `123` → "123".
 	if (/^-?\d+$/.test(t)) return { value: Number.parseInt(t, 10) };
 	if (/[:{}[\]&*#|>]/.test(t)) return { error: `unsupported YAML syntax in value ${JSON.stringify(t)}` };
 	return { value: t };

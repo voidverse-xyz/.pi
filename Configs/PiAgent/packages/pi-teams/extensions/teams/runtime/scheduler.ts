@@ -47,8 +47,4 @@ export class Scheduler {
 	get queuedCount(): number {
 		return this.waiters.length;
 	}
-
-	get hasFreeSlot(): boolean {
-		return this.running < this.max;
-	}
 }

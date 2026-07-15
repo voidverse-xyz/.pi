@@ -5,8 +5,7 @@
  * Shape: answers first, each with its ORIGINAL question quoted (correlationId
  * lookup — the agent never digs for what it asked), then all other mail ordered
  * by envelope id and labeled by type/sender. Re-delivered mail (at-least-once,
- * a crash between delivery and the durable append) is labeled. New-agent lines
- * append at the end when provided.
+ * a crash between delivery and the durable append) is labeled.
  */
 
 import { type Envelope, MAIN_ADDRESS } from "./envelope.ts";
@@ -22,8 +21,6 @@ export interface DigestOptions {
 	items: DigestItem[];
 	/** The recipient's own sent-question index: original text by correlationId. */
 	questionLookup: (correlationId: string, from: string) => string | undefined;
-	/** Pre-formatted announcement lines (new peers, etc.). */
-	rosterChanges?: string[];
 }
 
 function quote(text: string): string {
@@ -115,7 +112,6 @@ export function composeWakeDigest(options: DigestOptions): string {
 	const sorted = [...options.items].sort(byId);
 	const answers = sorted.filter((item) => item.envelope.type === "answer");
 	const rest = sorted.filter((item) => item.envelope.type !== "answer");
-	const rosterChanges = options.rosterChanges ?? [];
 
 	const total = sorted.length;
 	const sections: string[] = [];
@@ -126,9 +122,6 @@ export function composeWakeDigest(options: DigestOptions): string {
 	}
 	if (rest.length > 0) {
 		sections.push(["## Mail", "", rest.map((item, i) => formatItem(item, i + 1)).join("\n\n")].join("\n"));
-	}
-	if (rosterChanges.length > 0) {
-		sections.push(["## New agents", "", ...rosterChanges.map((line) => `- ${line}`)].join("\n"));
 	}
 
 	return sections.join("\n\n");

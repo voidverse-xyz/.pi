@@ -53,7 +53,6 @@ export function widgetStatusText(snap: WidgetSnapshot): string | undefined {
 
 export interface WidgetController {
 	snapshot(): WidgetSnapshot;
-	refresh(): void;
 	dispose(): void;
 }
 
@@ -104,7 +103,6 @@ export function createWidgetController(options: CreateWidgetControllerOptions): 
 
 	return {
 		snapshot: () => current,
-		refresh,
 		dispose: () => {
 			disposed = true;
 			clearInterval(timer);

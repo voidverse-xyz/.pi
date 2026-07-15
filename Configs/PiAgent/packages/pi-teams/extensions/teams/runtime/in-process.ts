@@ -122,9 +122,8 @@ export interface RuntimeOptions {
 
 interface Handle {
 	session: AgentSession;
-	generationId: string;
-	typeFileHash: string;
-	abortedBy: "interrupt" | null;
+	/** Set when the current turn was aborted by an interrupt (mail stays pending). */
+	aborted: boolean;
 	/** Envelopes driving the current turn (for hops causedBy + collect handling). */
 	trigger: Envelope[] | null;
 	/** The current task anchor (an uncorrelated message id) for final-report correlation (D26'). */
@@ -269,7 +268,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			text: "The main agent requests a structured result (a collect request). Fulfil it with the `report` tool, `data` conforming to the schema, and this request's correlationId.",
 			data: { collectSchema: schema },
 		});
-		if (outcome.delivered || outcome.disposition === "main") {
+		if (outcome.delivered) {
 			recordCollectRequest(this.layout.mainMailboxDir, outcome.envelopeId, schema, to);
 		}
 		return { requested: true, requestId: outcome.envelopeId, ...(outcome.recipientState ? { recipientState: outcome.recipientState } : {}) };
@@ -356,7 +355,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	async interrupt(to: string): Promise<InterruptResult> {
 		const handle = this.handles.get(to);
 		if (handle?.session.isStreaming) {
-			handle.abortedBy = "interrupt";
+			handle.aborted = true;
 			await handle.session.abort();
 			return { interrupted: true };
 		}
@@ -378,7 +377,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		try {
 			const handle = this.handles.get(to);
 			if (handle?.session.isStreaming) {
-				handle.abortedBy = "interrupt";
+				handle.aborted = true;
 				await handle.session.abort();
 			}
 			this.handles.delete(to);
@@ -696,7 +695,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			}
 			turnHandle = handle;
 			handle.trigger = pending.map((p) => p.envelope);
-			handle.abortedBy = null;
+			handle.aborted = false;
 			handle.retireAfterTurn = false;
 			// The current assignment (for final-report correlation, D26'): the first
 			// uncorrelated task message (from main or a peer) driving this turn.
@@ -739,7 +738,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				unsubscribe();
 			}
 
-			if (this.disposed || handle.abortedBy === "interrupt" || (failure && (failure as { stopReason: string }).stopReason === "aborted")) {
+			if (this.disposed || handle.aborted || (failure && (failure as { stopReason: string }).stopReason === "aborted")) {
 				// interrupt/shutdown: leave the triggering mail pending, don't auto-retry (v1 finding #1)
 				leavePending = true;
 			} else {
@@ -864,7 +863,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		if (thinkingLevel !== undefined) sessionOptions.thinkingLevel = thinkingLevel;
 
 		const { session } = await createAgentSession(sessionOptions);
-		return { session, generationId: record.generationId, typeFileHash: record.typeFileHash, abortedBy: null, trigger: null, assignment: null, retireAfterTurn: false, peersDefault };
+		return { session, aborted: false, trigger: null, assignment: null, retireAfterTurn: false, peersDefault };
 	}
 
 	private resolveModel(def: TypeDefinition, inherit?: InheritedDefaults): CreateAgentSessionOptions["model"] | undefined {

@@ -40,7 +40,6 @@ const SpawnParams = Type.Object({
 		}),
 	),
 	task: Type.Optional(Type.String({ description: "Optional first task — spawn and assign in one call. Runs asynchronously." })),
-	background: Type.Optional(Type.Boolean({ description: "Reserved for the completion barrier (Phase 7); currently all tasks are background." })),
 });
 
 export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnParams> {
@@ -60,7 +59,6 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 					...(params.id !== undefined ? { id: params.id } : {}),
 					...(params.lifetime !== undefined ? { lifetime: params.lifetime as Lifetime } : {}),
 					...(params.task !== undefined ? { task: params.task } : {}),
-					...(params.background !== undefined ? { background: params.background } : {}),
 					inherit: { ...(ctx.model ? { modelRef: `${ctx.model.provider}/${ctx.model.id}` } : {}) },
 				});
 				return jsonResult(result);
@@ -82,7 +80,6 @@ const SendParams = Type.Object({
 	to: Type.String({ description: "Recipient subagent address <type>/<id>." }),
 	text: Type.String(),
 	correlationId: Type.Optional(Type.String({ description: "Set to answer a subagent's question (the question envelope's id)." })),
-	background: Type.Optional(Type.Boolean({ description: "Reserved for the completion barrier (Phase 7)." })),
 });
 
 export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendParams> {
@@ -102,7 +99,6 @@ export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendPara
 					to: params.to,
 					text: params.text,
 					...(params.correlationId !== undefined ? { correlationId: params.correlationId } : {}),
-					...(params.background !== undefined ? { background: params.background } : {}),
 				});
 				// A bounce is a failure to deliver — surface it as an error so the LLM
 				// doesn't mistake it for successful delivery (SEND-5).

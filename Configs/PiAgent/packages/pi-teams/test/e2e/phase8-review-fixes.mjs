@@ -8,7 +8,7 @@
  * Run: node phase8-review-fixes.mjs
  */
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EXT, WORLDS, jiti } from "./env.mjs";
 
@@ -151,6 +151,35 @@ ok("an id ending in -digits is reported with its true address", () => {
 		list.some((a) => a.address === "worker/shard-2"),
 		`expected worker/shard-2, got ${JSON.stringify(list.map((a) => a.address))}`,
 	);
+});
+
+// ------------------------------------------------------- retention GC (D13)
+console.log("retention GC (archiveGcDays):");
+ok("gcArchive removes old retired dirs, keeps fresh ones; days<=0 disables", () => {
+	const layout = createLayout("/proj/gc", { sessionId: "sess-gc", home: join(scratch, "gc-home") });
+	const now = Date.parse("2026-07-15T00:00:00Z");
+	for (const [id, retiredAt] of [["old", "2026-07-01T00:00:00Z"], ["fresh", "2026-07-14T00:00:00Z"]]) {
+		mkdirSync(layout.agentInstanceDir("w", id), { recursive: true });
+		archive.archiveAgentDir(layout, "w", id, retiredAt);
+	}
+	assert.equal(archive.gcArchive(layout, 0, now), 0, "days<=0 disables");
+	assert.equal(archive.gcArchive(layout, 7, now), 1, "one dir past the 7-day cutoff");
+	const left = archive.readArchived(layout).map((a) => a.address);
+	assert.deepEqual(left, ["w/fresh"], "fresh archive survives");
+});
+ok("gcDoneMail removes old processed envelopes, keeps fresh and pending ones", () => {
+	const box = join(scratch, "gc-mbox");
+	const done = join(box, ".done");
+	mkdirSync(done, { recursive: true });
+	const now = Date.now();
+	writeFileSync(join(done, "msg_old.json"), "{}");
+	utimesSync(join(done, "msg_old.json"), new Date(now - 10 * 86_400_000), new Date(now - 10 * 86_400_000));
+	writeFileSync(join(done, "msg_fresh.json"), "{}");
+	writeFileSync(join(box, "msg_pending.json"), "{}"); // live mail is never touched
+	assert.equal(archive.gcDoneMail([box], 0, now), 0, "days<=0 disables");
+	assert.equal(archive.gcDoneMail([box], 7, now), 1);
+	assert.deepEqual(readdirSync(done).sort(), ["msg_fresh.json"]);
+	assert.ok(existsSync(join(box, "msg_pending.json")));
 });
 
 // ------------------------------------------------------- MAIL-5/6/M17: mailbox

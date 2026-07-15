@@ -14,7 +14,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { atomicWriteJson } from "./registry.ts";
 import type { Layout } from "./layout.ts";
@@ -232,31 +232,3 @@ export function claimHostScope(layout: Layout, options: { now?: () => number } =
 	};
 }
 
-/** Whether a scope dir currently has a live host owner (without claiming). */
-export function hostScopeIsLive(layout: Layout, now: number = Date.now()): boolean {
-	const marker = readMarker(layout.hostOwnerFile);
-	return marker !== null && markerIsLive(marker, now);
-}
-
-/** Read the scope manifest, if present (for fork non-inheritance disclosure). */
-export function readScopeManifest(layout: Layout): { cwd: string; ownerSessionId: string } | null {
-	try {
-		const parsed = JSON.parse(readFileSync(layout.scopeManifestFile, "utf8")) as { cwd?: string; ownerSessionId?: string };
-		if (typeof parsed.cwd === "string" && typeof parsed.ownerSessionId === "string") {
-			return { cwd: parsed.cwd, ownerSessionId: parsed.ownerSessionId };
-		}
-		return null;
-	} catch {
-		return null;
-	}
-}
-
-/** statSync helper kept for callers checking dir presence without throwing. */
-export function pathExists(path: string): boolean {
-	try {
-		statSync(path);
-		return true;
-	} catch {
-		return false;
-	}
-}

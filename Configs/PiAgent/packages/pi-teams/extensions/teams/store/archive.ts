@@ -9,7 +9,7 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Layout } from "./layout.ts";
+import { mailboxDoneDirOf, type Layout } from "./layout.ts";
 
 export const RETIREMENT_MARKER = ".retired-at";
 
@@ -19,17 +19,10 @@ interface RetirementMarker {
 	retiredAt: string;
 }
 
-/** Read the retirement marker. Handles both the JSON form and the legacy plain-ISO form. */
+/** Read the retirement marker (JSON — archiveAgentDir is the only writer). */
 function readRetirementMarker(dir: string): { address?: string; retiredAt?: string } {
-	let raw: string;
 	try {
-		raw = readFileSync(join(dir, RETIREMENT_MARKER), "utf8").trim();
-	} catch {
-		return {};
-	}
-	if (!raw) return {};
-	try {
-		const parsed = JSON.parse(raw) as Partial<RetirementMarker>;
+		const parsed = JSON.parse(readFileSync(join(dir, RETIREMENT_MARKER), "utf8")) as Partial<RetirementMarker>;
 		if (parsed && typeof parsed === "object") {
 			return {
 				...(typeof parsed.address === "string" ? { address: parsed.address } : {}),
@@ -37,9 +30,9 @@ function readRetirementMarker(dir: string): { address?: string; retiredAt?: stri
 			};
 		}
 	} catch {
-		/* legacy plain-ISO content */
+		/* missing or corrupt → callers fall back (dir name / mtime) */
 	}
-	return { retiredAt: raw };
+	return {};
 }
 
 /** Move an agent instance dir to .archive/. Returns the archive path, or null if nothing to move. */
@@ -118,6 +111,39 @@ export function gcArchive(layout: Layout, days: number, nowMs: number): number {
 				rmSync(typeDir, { recursive: true, force: true });
 			} catch {
 				/* ignore */
+			}
+		}
+	}
+	return removed;
+}
+
+/**
+ * Delete processed envelopes (`<mailboxDir>/.done/*.json`) older than `days`,
+ * by file mtime. Same retention knob as gcArchive (settings.archiveGcDays);
+ * `days <= 0` disables. Returns count removed.
+ */
+export function gcDoneMail(mailboxDirs: string[], days: number, nowMs: number): number {
+	if (days <= 0) return 0;
+	const cutoff = nowMs - days * 24 * 60 * 60 * 1000;
+	let removed = 0;
+	for (const mailboxDir of mailboxDirs) {
+		const doneDir = mailboxDoneDirOf(mailboxDir);
+		let names: string[];
+		try {
+			names = readdirSync(doneDir);
+		} catch {
+			continue;
+		}
+		for (const name of names) {
+			if (!name.endsWith(".json")) continue;
+			const file = join(doneDir, name);
+			try {
+				if (statSync(file).mtimeMs < cutoff) {
+					rmSync(file, { force: true });
+					removed++;
+				}
+			} catch {
+				/* raced away */
 			}
 		}
 	}

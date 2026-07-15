@@ -73,8 +73,6 @@ export function composeIdentityBlock(options: IdentityOptions): string {
 		for (const peer of options.peers) {
 			lines.push(`- \`${peer.address}\` — ${peer.purview}`);
 		}
-		lines.push("");
-		lines.push("New agents will be announced to you when you wake.");
 	} else {
 		lines.push("These agents work under the same main agent, but you cannot message them directly:");
 		for (const peer of options.peers) {
