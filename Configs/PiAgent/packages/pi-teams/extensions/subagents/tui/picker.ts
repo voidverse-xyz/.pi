@@ -151,7 +151,7 @@ export function createPicker(options: PickerOptions): PickerComponent {
 			offEvents();
 		},
 		render(width: number): string[] {
-			const lines: string[] = [theme.fg("accent", "󰡉 Teams"), ""];
+			const lines: string[] = [theme.fg("accent", "󱘎 Teams"), ""];
 			if (rows.length === 0) {
 				lines.push(theme.fg("dim", "  (no agents — spawn one with team_spawn)"));
 			} else {
