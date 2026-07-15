@@ -19,6 +19,14 @@ import type { AgentActivityRow } from "../runtime/in-process.ts";
 
 export const AGENTS_ICON = "󱘎";
 
+/**
+ * The human brake: stop every working agent (D22). Bound in index.ts and shown in
+ * this widget's header — ONE constant so the hint can never advertise a key that
+ * isn't bound. `alt+s` is free across the installed extensions (pi-queue owns
+ * alt+q/alt+x, pi-plan owns shift+tab); Esc stays Pi's own turn-abort.
+ */
+export const STOP_KEY = "alt+s";
+
 export interface TreeTheme {
 	fg(color: string, text: string): string;
 }
@@ -26,7 +34,12 @@ export interface TreeTheme {
 /** Pure: the tree's lines for one render pass. [] when nothing is working. */
 export function renderTreeLines(rows: AgentActivityRow[], theme: TreeTheme): string[] {
 	if (rows.length === 0) return [];
-	const lines: string[] = [theme.fg("accent", `${AGENTS_ICON} Running ${rows.length} team agent${rows.length === 1 ? "" : "s"}…`)];
+	// The stop hint rides the header: the brake is only discoverable while agents are
+	// actually running, which is exactly when you need it.
+	const lines: string[] = [
+		theme.fg("accent", `${AGENTS_ICON} Running ${rows.length} team agent${rows.length === 1 ? "" : "s"}…`) +
+			theme.fg("dim", `  ${STOP_KEY} stop`),
+	];
 	rows.forEach((row, i) => {
 		const last = i === rows.length - 1;
 		const branch = last ? "└─" : "├─";

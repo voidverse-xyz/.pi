@@ -161,7 +161,7 @@ export function createPicker(options: PickerOptions): PickerComponent {
 			}
 			lines.push("");
 			if (confirmRetire) lines.push(theme.fg("error", `  Retire ${confirmRetire}? [y/N]`));
-			else lines.push(theme.fg("dim", "  ↑↓ move · enter view · x interrupt · X retire · a archive · esc"));
+			else lines.push(theme.fg("dim", "  ↑↓ move · enter view · x interrupt · S stop all · X retire · a archive · esc"));
 			return lines;
 		},
 		handleInput(data: string) {
@@ -179,6 +179,14 @@ export function createPicker(options: PickerOptions): PickerComponent {
 				archiveExpanded = !archiveExpanded;
 				rebuild();
 				return tui.requestRender();
+			}
+			// Stop-all: interrupt every working agent (non-destructive; mail stays
+			// pending). Uppercase, like retire — a fleet-wide action shouldn't be a
+			// stray lowercase keypress away.
+			if (data === "S") {
+				const working = roster.filter((e) => e.state === "running" || e.state === "queued" || e.state === "waiting");
+				if (working.length === 0) return;
+				return void Promise.allSettled(working.map((e) => core.interrupt(e.address))).then(reload, reload);
 			}
 			const row = rows[selected];
 			if (!row) return;

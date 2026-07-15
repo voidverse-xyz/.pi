@@ -28,7 +28,7 @@ import {
 	createSteerTool,
 } from "./tools/main-agent.ts";
 import { createWidgetController, widgetStatusText, type WidgetController } from "./tui/widget.ts";
-import { createTreeWidget, type TreeWidgetController } from "./tui/tree-widget.ts";
+import { createTreeWidget, STOP_KEY, type TreeWidgetController } from "./tui/tree-widget.ts";
 import { createPicker, type PickerResult } from "./tui/picker.ts";
 import { createViewer, type ViewerResult } from "./tui/viewer.ts";
 
@@ -107,17 +107,54 @@ export default function (pi: ExtensionAPI): void {
 		if (result.action === "view") await openViewer(ctx, result.address);
 	};
 
+	/**
+	 * The human brake (D22): interrupt every working agent. Non-destructive by
+	 * design — an interrupted agent stays alive with memory intact, goes dormant, and
+	 * its triggering mail stays PENDING (never auto-retried), so stopping is
+	 * recoverable: send it anything and it resumes from that mail.
+	 *
+	 * Deliberately human-only (a command + a keybind, no `team_stop_all` tool): the
+	 * LLM already has per-agent team_interrupt, and a fleet-wide brake exists for the
+	 * human to reclaim control — including from a fleet the LLM is driving.
+	 */
+	const stopAllAgents = async (ctx: ExtensionContext): Promise<void> => {
+		if (!core) {
+			ctx.ui.notify(unavailableReason ?? "Teams are not available in this session.", "warning");
+			return;
+		}
+		const roster = await core.status();
+		const working = roster.filter((entry) => entry.state === "running" || entry.state === "queued" || entry.state === "waiting");
+		if (working.length === 0) {
+			ctx.ui.notify("No team agents are working.", "info");
+			return;
+		}
+		const results = await Promise.allSettled(working.map((entry) => core!.interrupt(entry.address)));
+		const stopped = working.filter((_, i) => results[i]?.status === "fulfilled").map((entry) => entry.address);
+		const failed = working.length - stopped.length;
+		ctx.ui.notify(
+			`Stopped ${stopped.length} team agent${stopped.length === 1 ? "" : "s"}${failed > 0 ? ` (${failed} failed)` : ""}: ${stopped.join(", ")}. Their mail stays pending — message an agent to resume it.`,
+			failed > 0 ? "warning" : "info",
+		);
+	};
+
 	pi.registerCommand("teams", {
-		description: "Open the teams roster (or /teams <type>/<id> to jump to a subagent).",
+		description: "Open the teams roster (/teams <type>/<id> to jump to a subagent, /teams stop to stop all).",
 		handler: async (args, ctx) => {
 			if (!core) {
 				ctx.ui.notify(unavailableReason ?? "Teams are not available in this session.", "warning");
 				return;
 			}
 			const target = args.trim();
+			if (target === "stop") return stopAllAgents(ctx);
 			if (target) await openViewer(ctx, target);
 			else await openPicker(ctx);
 		},
+	});
+
+	// Same brake on a key, advertised in the tree widget's header while agents run.
+	pi.registerShortcut(STOP_KEY, {
+		description: "Stop all working team agents",
+		handler: (ctx) => stopAllAgents(ctx),
 	});
 
 	pi.on("session_start", async (_event, ctx) => {

@@ -20,6 +20,11 @@ function test(name, fn) {
 	passed++;
 	console.log(`  ok  ${name}`);
 }
+async function testAsync(name, fn) {
+	await fn();
+	passed++;
+	console.log(`  ok  ${name}`);
+}
 
 console.log("widget:");
 test("segments appear only when non-zero; hidden at zero agents", () => {
@@ -84,6 +89,30 @@ test("renders a tree row + current tool per running agent", () => {
 	assert.ok(lines.some((l) => l.includes("Bash: find CLI files")));
 	assert.ok(lines.some((l) => l.includes("docs/main") && l.includes("1 tool use") && !l.includes("1 tool uses")));
 	assert.ok(lines.some((l) => l.includes("└─"))); // last-branch glyph
+});
+test("the stop hint is shown while agents run, and never when idle", () => {
+	const lines = tree.renderTreeLines([{ address: "a/1", tool: "bash", summary: "Bash: x", toolUses: 1 }], plainTheme);
+	// The brake must be discoverable exactly when it is usable.
+	assert.ok(lines[0].includes(`${tree.STOP_KEY} stop`), `header should advertise the stop key, got: ${lines[0]}`);
+	assert.deepEqual(tree.renderTreeLines([], plainTheme), [], "no hint (and no widget) when nothing is working");
+});
+await testAsync("the advertised stop key is the one index.ts actually binds", async () => {
+	// Guards the hint from drifting from the binding: both must come from STOP_KEY.
+	const shortcuts = [];
+	const stubPi = {
+		registerTool: () => {},
+		registerCommand: () => {},
+		registerShortcut: (key, opts) => shortcuts.push({ key, opts }),
+		on: () => {},
+		events: { emit: () => {}, on: () => {} },
+		sendMessage: () => {},
+	};
+	const ext = await jiti.import(join(EXT, "index.ts"));
+	(ext.default ?? ext)(stubPi);
+	assert.ok(
+		shortcuts.some((s) => s.key === tree.STOP_KEY),
+		`index.ts must bind STOP_KEY (${tree.STOP_KEY}); bound: ${JSON.stringify(shortcuts.map((s) => s.key))}`,
+	);
 });
 
 console.log(`\nPhase 6: ${passed} checks passed.`);
