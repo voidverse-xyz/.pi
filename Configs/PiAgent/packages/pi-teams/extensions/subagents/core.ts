@@ -9,6 +9,7 @@
  */
 
 import type { AuthStorage, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { pendingCount } from "./mail/mailbox.ts";
 import { makeHopsGuard } from "./rails/hops.ts";
 import type { ConfirmFn } from "./sandbox/safety-bridge.ts";
 import { InProcessRuntime } from "./runtime/in-process.ts";
@@ -16,6 +17,7 @@ import type {
 	AgentDetail,
 	CollectResult,
 	InterruptResult,
+	RetireResult,
 	RosterEntry,
 	RuntimeEventListener,
 	SendOptions,
@@ -36,6 +38,13 @@ export interface AvailableType {
 	invalid?: string;
 }
 
+/** A retired agent visible in the picker's .archive section (D13). */
+export interface ArchivedAgentInfo {
+	address: string;
+	/** ISO retirement time, if recorded. */
+	retiredAt?: string;
+}
+
 export interface SubagentsCore {
 	spawn(options: SpawnOptions): Promise<SpawnResult>;
 	send(options: SendOptions): Promise<SendResult>;
@@ -45,8 +54,15 @@ export interface SubagentsCore {
 	peek(address: string, tail?: number): Promise<AgentDetail | null>;
 	steer(to: string, text: string): Promise<SteerResult>;
 	interrupt(to: string): Promise<InterruptResult>;
+	retire(to: string): Promise<RetireResult>;
 	/** The type catalog, for the spawn tool's not-found hint and the picker. */
 	availableTypes(): AvailableType[];
+	/** Unprocessed envelopes in the main agent's mailbox (widget 📬). */
+	mainUnreadCount(): number;
+	/** Unprocessed envelopes in a subagent's mailbox (picker badge). */
+	agentUnreadCount(address: string): number;
+	/** Retired agents still on disk in .archive (D13). Empty until Phase 7. */
+	archived(): ArchivedAgentInfo[];
 	onEvent(listener: RuntimeEventListener): () => void;
 	/** Await all in-flight subagent turns (host shutdown / tests). */
 	whenIdle(): Promise<void>;
@@ -91,7 +107,14 @@ export function createCore(options: CoreOptions): SubagentsCore {
 		peek: (address, tail) => runtime.peek(address, tail),
 		steer: (to, text) => runtime.steer(to, text),
 		interrupt: (to) => runtime.interrupt(to),
+		retire: (to) => runtime.retire(to),
 		onEvent: (listener) => runtime.onEvent(listener),
+		mainUnreadCount: () => pendingCount(options.layout.mainMailboxDir),
+		agentUnreadCount: (address) => {
+			const parts = address.split("/");
+			return parts.length === 2 ? pendingCount(options.layout.mailboxDir(parts[0]!, parts[1]!)) : 0;
+		},
+		archived: () => (runtime as InProcessRuntime).archived(),
 		whenIdle: () => (runtime as InProcessRuntime).whenIdle(),
 		dispose: () => runtime.dispose(),
 		availableTypes(): AvailableType[] {

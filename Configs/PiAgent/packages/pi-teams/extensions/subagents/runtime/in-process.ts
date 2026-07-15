@@ -40,6 +40,7 @@ import {
 	formatAgentAddress,
 	isValidIdSegment,
 	MAIN_ADDRESS,
+	makeEnvelope,
 	parseAddress,
 } from "../mail/envelope.ts";
 import {
@@ -50,7 +51,9 @@ import {
 	pendingCount,
 	readPending,
 	recordCollectRequest,
+	writeEnvelope,
 } from "../mail/mailbox.ts";
+import { archiveAgentDir, type ArchivedInfo, readArchived } from "../store/archive.ts";
 import {
 	type AgentRecord,
 	type AgentState,
@@ -60,6 +63,7 @@ import {
 	patchAgent,
 	type Registry,
 	readRegistry,
+	removeAgent,
 	upsertAgent,
 	writeRegistry,
 } from "../store/registry.ts";
@@ -75,6 +79,7 @@ import type {
 	CollectResult,
 	InheritedDefaults,
 	InterruptResult,
+	RetireResult,
 	RosterEntry,
 	RuntimeEvent,
 	RuntimeEventListener,
@@ -130,6 +135,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	private handles = new Map<string, Handle>();
 	private buildLocks = new Map<string, Promise<Handle>>();
 	private chains = new Map<string, Promise<void>>();
+	private retiring = new Set<string>();
 	private listeners = new Set<RuntimeEventListener>();
 	private activeTurns = new Set<Promise<void>>();
 	private disposed = false;
@@ -297,6 +303,45 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		return { interrupted: true };
 	}
 
+	async retire(to: string): Promise<RetireResult> {
+		const record = getAgent(this.registry, to);
+		if (!record) return { retired: true, archiveDir: null };
+		this.retiring.add(to);
+		try {
+			const handle = this.handles.get(to);
+			if (handle?.session.isStreaming) {
+				handle.abortedBy = "interrupt";
+				await handle.session.abort();
+			}
+			this.handles.delete(to);
+			await this.chains.get(to)?.catch(() => {}); // let an in-flight turn unwind
+			// Bounce pending PEER mail so peers don't strand (D26); owner/user mail is dropped quietly.
+			const mailboxDir = this.layout.mailboxDir(record.type, record.id);
+			for (const p of readPending(mailboxDir)) {
+				const from = parseAddress(p.envelope.from);
+				if (from?.kind === "agent") {
+					const peerBox = this.layout.mailboxDir(from.type, from.id);
+					if (getAgent(this.registry, p.envelope.from)) {
+						writeEnvelope(peerBox, makeEnvelope({ from: MAIN_ADDRESS, to: from, type: "error", text: `\`${to}\` retired before processing your message.`, hops: p.envelope.hops }));
+						if (getAgent(this.registry, p.envelope.from)?.vitals.state === "dormant") this.scheduleMailTurn(p.envelope.from);
+					}
+				}
+			}
+			removeAgent(this.registry, to);
+			this.persist();
+			const archiveDir = archiveAgentDir(this.layout, record.type, record.id, new Date().toISOString());
+			this.emit({ type: "agent-retired", address: to, archiveDir });
+			return { retired: true, archiveDir };
+		} finally {
+			this.retiring.delete(to);
+		}
+	}
+
+	/** Retired agents on disk in .archive/ (D13). */
+	archived(): ArchivedInfo[] {
+		return readArchived(this.layout);
+	}
+
 	// ----------------------------------------------------------------- events / dispose
 	onEvent(listener: RuntimeEventListener): () => void {
 		this.listeners.add(listener);
@@ -392,7 +437,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	}
 
 	private async mailTurn(address: string): Promise<void> {
-		if (this.disposed) return;
+		if (this.disposed || this.retiring.has(address)) return;
 		const record = getAgent(this.registry, address);
 		if (!record) return;
 		const mailboxDir = this.layout.mailboxDir(record.type, record.id);
@@ -531,7 +576,16 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				...createSubagentTools(address, this),
 				...buildSandboxedTools(def.config, layout.cwd, {
 					systemDeny: (path) => this.systemDeny(path),
-					confirm: (request) => this.confirm({ agent: address, ...request }),
+					// Surface the human-confirmation pause as `waiting` for the widget,
+					// then restore `running` for the rest of the turn.
+					confirm: async (request) => {
+						this.setState(address, "waiting");
+						try {
+							return await this.confirm({ agent: address, ...request });
+						} finally {
+							if (this.handles.get(address)?.session.isStreaming) this.setState(address, "running");
+						}
+					},
 				}),
 			],
 		};

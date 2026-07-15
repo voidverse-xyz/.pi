@@ -50,6 +50,7 @@ TESTS=(
 	phase3-mail.mjs
 	phase4-rails.mjs
 	phase5-sandbox.mjs
+	phase6-tui.mjs
 	loadcheck.mjs
 )
 for t in "${TESTS[@]}"; do

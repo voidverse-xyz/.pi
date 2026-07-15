@@ -92,6 +92,12 @@ export interface InterruptResult {
 	interrupted: boolean;
 }
 
+export interface RetireResult {
+	retired: true;
+	/** Where the agent dir was moved (`.archive/...`), or null if none existed. */
+	archiveDir: string | null;
+}
+
 /** One roster row: registry record + live vitals (D15). Flat — no teams (D12). */
 export interface RosterEntry {
 	address: string;
@@ -126,7 +132,8 @@ export type RuntimeEvent =
 	| { type: "state-changed"; address: string; state: AgentState }
 	| { type: "turn-started"; address: string }
 	| { type: "turn-finished"; address: string; vitals: AgentVitals }
-	| { type: "turn-error"; address: string; error: string };
+	| { type: "turn-error"; address: string; error: string }
+	| { type: "agent-retired"; address: string; archiveDir: string | null };
 
 export type RuntimeEventListener = (event: RuntimeEvent) => void;
 
@@ -159,6 +166,9 @@ export interface SubagentRuntime {
 
 	/** Abort the current turn; agent stays alive, memory intact, goes dormant. */
 	interrupt(to: string): Promise<InterruptResult>;
+
+	/** The ONLY destructive power: deregister + archive the dir (D13). Address bounces after. */
+	retire(to: string): Promise<RetireResult>;
 
 	/** Subscribe to runtime events. Returns the unsubscribe function. */
 	onEvent(listener: RuntimeEventListener): () => void;

@@ -18,10 +18,17 @@ import { claimHostScope, HostScopeLockedError, type HostScopeLease } from "./sto
 import { SettingsLoader } from "./store/settings.ts";
 import { makeSafetyConfirm } from "./sandbox/safety-bridge.ts";
 import { createCollectTool, createSendTool, createSpawnTool, createStatusTool, createSteerTool } from "./tools/main-agent.ts";
+import { createWidgetController, widgetStatusText, type WidgetController } from "./tui/widget.ts";
+import { createPicker, type PickerResult } from "./tui/picker.ts";
+import { createViewer, type ViewerResult } from "./tui/viewer.ts";
+
+const STATUS_KEY = "teams";
 
 export default function (pi: ExtensionAPI): void {
 	let core: SubagentsCore | null = null;
 	let lease: HostScopeLease | null = null;
+	let widget: WidgetController | null = null;
+	let overlayOpen = false;
 	/** Set when subagents are unavailable this session (non-persisted, or lease held elsewhere). */
 	let unavailableReason: string | null = null;
 
@@ -35,6 +42,55 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerTool(createSteerTool(getCore));
 	pi.registerTool(createCollectTool(getCore));
 	pi.registerTool(createStatusTool(getCore));
+
+	// --- TUI (D22): /teams picker → full-screen viewer; ambient widget. ---
+	const openViewer = async (ctx: ExtensionContext, startAddress: string): Promise<void> => {
+		if (ctx.mode !== "tui" || overlayOpen || !core) return;
+		let address: string | undefined = startAddress;
+		while (address) {
+			overlayOpen = true;
+			let result: ViewerResult;
+			try {
+				const addr = address;
+				result = await ctx.ui.custom<ViewerResult>(
+					(tui, theme, _kb, done) => createViewer({ core: core!, tui, theme, address: addr, cwd: ctx.cwd, onDone: done }),
+					{ overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 } },
+				);
+			} finally {
+				overlayOpen = false;
+			}
+			if (result.action === "back") break;
+			// alt+j: next agent in address order; past the last → done.
+			const roster = (await core.status()).sort((a, b) => a.address.localeCompare(b.address));
+			const at = roster.findIndex((r) => r.address === address);
+			address = roster[at + 1]?.address;
+		}
+	};
+
+	const openPicker = async (ctx: ExtensionContext): Promise<void> => {
+		if (ctx.mode !== "tui" || overlayOpen || !core) return;
+		overlayOpen = true;
+		let result: PickerResult;
+		try {
+			result = await ctx.ui.custom<PickerResult>((tui, theme, _kb, done) => createPicker({ core: core!, tui, theme, onDone: done }));
+		} finally {
+			overlayOpen = false;
+		}
+		if (result.action === "view") await openViewer(ctx, result.address);
+	};
+
+	pi.registerCommand("teams", {
+		description: "Open the teams roster (or /teams <type>/<id> to jump to a subagent).",
+		handler: async (args, ctx) => {
+			if (!core) {
+				ctx.ui.notify(unavailableReason ?? "Teams are not available in this session.", "warning");
+				return;
+			}
+			const target = args.trim();
+			if (target) await openViewer(ctx, target);
+			else await openPicker(ctx);
+		},
+	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		// Fresh scope per session_start (reload/resume rebuilds it).
@@ -81,6 +137,16 @@ export default function (pi: ExtensionAPI): void {
 				}
 			},
 		});
+
+		// Ambient widget: publish plain status text; pi-status-line styles it.
+		if (ctx.mode === "tui") {
+			const publish = (): void => {
+				if (!widget) return;
+				ctx.ui.setStatus(STATUS_KEY, widgetStatusText(widget.snapshot()));
+			};
+			widget = createWidgetController({ core, onChange: publish });
+			publish();
+		}
 	});
 
 	pi.on("session_shutdown", async () => {
@@ -88,6 +154,10 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	async function teardown(): Promise<void> {
+		if (widget) {
+			widget.dispose();
+			widget = null;
+		}
 		if (core) {
 			try {
 				await core.dispose();

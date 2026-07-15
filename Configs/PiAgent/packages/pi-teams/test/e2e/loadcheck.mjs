@@ -28,5 +28,6 @@ assert.deepEqual(
 	["team_collect", "team_send", "team_spawn", "team_status", "team_steer"],
 	"Phase 3 tool surface",
 );
+assert.deepEqual(keysOf(ext.commands), ["teams"], "/teams command");
 
-console.log("loadcheck ok — tools:", keysOf(ext.tools).sort().join(", "));
+console.log("loadcheck ok — tools:", keysOf(ext.tools).sort().join(", "), "· commands:", keysOf(ext.commands).join(", "));
