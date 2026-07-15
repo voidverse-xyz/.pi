@@ -1,7 +1,8 @@
 ---
 name: test-fixture
-description: Deterministic, tool-free fixture for testing subagent lifecycle, mail, questions, reports, and structured collection.
-readOnly: true
+description: Deterministic tool-free fixture for testing subagent lifecycle, mail, questions, reports, and structured collection.
+model: openai-codex/gpt-5.3-codex-spark
+projectContext: false
 tools: []
 ---
 

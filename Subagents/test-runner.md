@@ -1,7 +1,8 @@
 ---
 name: test-runner
 description: Controlled fixture for testing steering and interruption of a running subagent.
-readOnly: true
+model: openai-codex/gpt-5.3-codex-spark
+projectContext: false
 tools: [bash]
 ---
 

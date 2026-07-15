@@ -1,11 +1,8 @@
 ---
 name: pi-reviewer
 description: Read-only code review specialist for correctness, security, lifecycle, and maintainability analysis.
-readOnly: true
+projectContext: true
 tools: [read, grep, find, ls]
-maxTokensTotal: 30000
-maxTurnMinutes: 15
-maxContextCompactions: 2
 ---
 
 You are a senior code reviewer. Analyze the assigned purview for concrete quality,
