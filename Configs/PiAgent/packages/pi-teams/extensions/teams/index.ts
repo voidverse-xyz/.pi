@@ -34,6 +34,20 @@ import { createViewer, type ViewerResult } from "./tui/viewer.ts";
 
 const STATUS_KEY = "teams";
 
+/**
+ * sendMessage options for a main-mail wake injection (D24). BOTH matter and they
+ * compose — the SDK picks exactly one branch by state:
+ *   streaming → `followUp` queues the digest into the running turn (D11: mail never
+ *               interrupts a turn; `triggerTurn` is ignored on this path).
+ *   idle      → `triggerTurn` starts a new turn — the actual auto-wake.
+ * Without `triggerTurn` the idle case silently fell through to SDK
+ * `sendCustomMessage`'s last branch (append to state, no turn), so the digest sat in
+ * the conversation until the user's next message dragged it in. That was the
+ * auto-wake bug. Exported so test/e2e/phase9-auto-wake.mjs asserts the REAL shape
+ * rather than a copy that could drift.
+ */
+export const WAKE_DELIVERY = { deliverAs: "followUp", triggerTurn: true } as const;
+
 export default function (pi: ExtensionAPI): void {
 	let core: SubagentsCore | null = null;
 	let lease: HostScopeLease | null = null;
@@ -192,14 +206,12 @@ export default function (pi: ExtensionAPI): void {
 		const drained = core.takeMainMailDigest();
 		if (!drained) return;
 		hostIdle = false; // the injected turn is no longer idle
-		try {
-			pi.sendMessage({ content: drained.digest, customType: "teams-mail", display: true, details: undefined }, { deliverAs: "followUp" });
-			// Consume the mail ONLY after the injection was accepted — a throw leaves it
-			// pending so the next agent_settled retries, upholding at-least-once (M1).
-			drained.commit();
-		} catch {
-			hostIdle = true; // injection failed; allow another attempt next settle
-		}
+		pi.sendMessage({ content: drained.digest, customType: "teams-mail", display: true, details: undefined }, WAKE_DELIVERY);
+		// sendMessage is fire-and-forget (the SDK floats the promise and routes any
+		// rejection to its own error channel), so there is nothing here to catch. The
+		// durability handoff is the injection itself: the digest is appended to the
+		// session transcript, which makes the mailbox copy redundant — so commit now.
+		drained.commit();
 	};
 
 	pi.on("input", (_event, ctx) => {
