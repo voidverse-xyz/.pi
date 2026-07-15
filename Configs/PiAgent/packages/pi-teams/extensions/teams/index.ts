@@ -14,6 +14,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createCore, type SubagentsCore } from "./core.ts";
 import { createLayout } from "./store/layout.ts";
+import { createWakePump } from "./mail/wake-pump.ts";
 import { claimHostScope, HostScopeLockedError, type HostScopeLease } from "./store/host-lease.ts";
 import { SettingsLoader } from "./store/settings.ts";
 import { makeSafetyConfirm } from "./sandbox/safety-bridge.ts";
@@ -207,7 +208,7 @@ export default function (pi: ExtensionAPI): void {
 		uiCtx = ctx;
 		// A subagent that finishes/reports while the host is idle should wake it.
 		core.onEvent((event) => {
-			if (event.type === "turn-finished" || event.type === "agent-retired") deliverMainMail();
+			if (event.type === "turn-finished" || event.type === "agent-retired") pump.onMailArrived();
 		});
 
 		// Ambient widget: publish plain status text; pi-status-line styles it.
@@ -235,36 +236,33 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	// --- Main-mail auto-wake (D24): all mail wakes an idle host. ---
-	let hostIdle = false;
+	// The POLICY lives in mail/wake-pump.ts (pure, unit-tested). Everything below is
+	// literal plumbing: map Pi's lifecycle events onto the pump, and bind its port to
+	// core + pi.sendMessage. Keep it that way — logic added here is logic the suite
+	// cannot reach.
 	let uiCtx: ExtensionContext | null = null;
 
-	const deliverMainMail = (): void => {
-		if (!hostIdle || !core || !uiCtx) return;
-		const drained = core.takeMainMailDigest();
-		if (!drained) return;
-		hostIdle = false; // the injected turn is no longer idle
-		pi.sendMessage({ content: drained.digest, customType: "teams-mail", display: true, details: undefined }, WAKE_DELIVERY);
-		// sendMessage is fire-and-forget (the SDK floats the promise and routes any
-		// rejection to its own error channel), so there is nothing here to catch. The
-		// durability handoff is the injection itself: the digest is appended to the
-		// session transcript, which makes the mailbox copy redundant — so commit now.
-		drained.commit();
-	};
+	const pump = createWakePump({
+		takeDigest: () => (core && uiCtx ? core.takeMainMailDigest() : null),
+		inject: (digest) => {
+			// sendMessage is fire-and-forget (the SDK floats the promise and routes any
+			// rejection to its own error channel), so there is nothing to catch here.
+			pi.sendMessage({ content: digest, customType: "teams-mail", display: true, details: undefined }, WAKE_DELIVERY);
+		},
+	});
 
 	pi.on("input", (_event, ctx) => {
-		hostIdle = false;
 		uiCtx = ctx;
+		pump.onInput();
 	});
-	pi.on("before_agent_start", () => {
-		hostIdle = false;
-	});
+	pi.on("before_agent_start", () => pump.onBeforeAgentStart());
 	pi.on("agent_settled", (_event, ctx) => {
 		uiCtx = ctx ?? uiCtx;
-		hostIdle = true;
-		deliverMainMail(); // background work that finished during the turn
+		pump.onSettled(); // drains background work that finished during the turn
 	});
 
 	pi.on("session_shutdown", async () => {
+		pump.shutdown(); // no stale turn after teardown
 		await teardown();
 	});
 
