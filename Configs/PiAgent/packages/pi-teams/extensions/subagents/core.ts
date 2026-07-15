@@ -14,7 +14,7 @@ import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
 import { markDone, peekCollectRequest, pendingCount, readPending, takeCollectRequest } from "./mail/mailbox.ts";
 import { makeHopsGuard } from "./rails/hops.ts";
 import type { ConfirmFn } from "./sandbox/safety-bridge.ts";
-import { InProcessRuntime } from "./runtime/in-process.ts";
+import { type AgentActivityRow, InProcessRuntime } from "./runtime/in-process.ts";
 import type {
 	AgentDetail,
 	AwaitOptions,
@@ -75,6 +75,8 @@ export interface SubagentsCore {
 	agentUnreadCount(address: string): number;
 	/** Retired agents still on disk in .archive (D13). Empty until Phase 7. */
 	archived(): ArchivedAgentInfo[];
+	/** Live per-agent activity for the tree widget (current tool call + count). */
+	activitySnapshot(): AgentActivityRow[];
 	onEvent(listener: RuntimeEventListener): () => void;
 	/** Await all in-flight subagent turns (host shutdown / tests). */
 	whenIdle(): Promise<void>;
@@ -147,6 +149,7 @@ export function createCore(options: CoreOptions): SubagentsCore {
 			return parts.length === 2 ? pendingCount(options.layout.mailboxDir(parts[0]!, parts[1]!)) : 0;
 		},
 		archived: () => (runtime as InProcessRuntime).archived(),
+		activitySnapshot: () => (runtime as InProcessRuntime).activitySnapshot(),
 		whenIdle: () => (runtime as InProcessRuntime).whenIdle(),
 		dispose: () => runtime.dispose(),
 		availableTypes(): AvailableType[] {

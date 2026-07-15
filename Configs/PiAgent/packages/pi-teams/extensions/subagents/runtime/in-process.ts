@@ -147,6 +147,8 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	private buildLocks = new Map<string, Promise<Handle>>();
 	private chains = new Map<string, Promise<void>>();
 	private retiring = new Set<string>();
+	/** Live per-agent activity for the tree widget: current tool call + count. */
+	private activity = new Map<string, AgentActivity>();
 	private listeners = new Set<RuntimeEventListener>();
 	private activeTurns = new Set<Promise<void>>();
 	private disposed = false;
@@ -367,6 +369,13 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		return readArchived(this.layout);
 	}
 
+	/** Live activity for currently-working agents (tree widget, Phase 8). */
+	activitySnapshot(): AgentActivityRow[] {
+		return [...this.activity.entries()]
+			.map(([address, a]) => ({ address, ...a }))
+			.sort((x, y) => x.address.localeCompare(y.address));
+	}
+
 	/**
 	 * Explicit in-run join (D24'/D26'/D27'): block until a matching final/collect
 	 * report from `to` correlated to `anchorId` lands in the main mailbox
@@ -555,8 +564,19 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				questionLookup: (correlationId, from) => lookupSentQuestion(mailboxDir, correlationId, from),
 			});
 
+			this.activity.set(address, { tool: "", summary: "thinking…", toolUses: 0 });
 			let failure: { stopReason: string; message: string } | null = null;
 			const unsubscribe = handle.session.subscribe((event) => {
+				// Track the current tool call for the tree widget (Phase 8).
+				if (event.type === "entry_appended") {
+					const activity = extractToolActivity((event as { entry?: unknown }).entry);
+					if (activity) {
+						const prev = this.activity.get(address);
+						this.activity.set(address, { ...activity, toolUses: (prev?.toolUses ?? 0) + 1 });
+						this.emit({ type: "state-changed", address, state: "running" });
+					}
+					return;
+				}
 				if (event.type !== "agent_end") return;
 				for (const message of event.messages) {
 					const m = message as { role?: string; stopReason?: string; errorMessage?: string };
@@ -592,10 +612,12 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				// surface a fatal error to main
 				this.deliverer.send({ from: { kind: "agent", type: record.type, id: record.id }, to: MAIN_ADDRESS, type: "error", text: `Turn failed: ${(failure as { message: string }).message}` });
 			}
+			this.activity.delete(address);
 			this.emit({ type: "state-changed", address, state: "dormant" });
 			this.emit({ type: "turn-finished", address, vitals });
 			if (!leavePending) handle.assignment = null;
 		} finally {
+			this.activity.delete(address);
 			release();
 		}
 
@@ -692,6 +714,42 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		}
 		return resolved.model;
 	}
+}
+
+export interface AgentActivity {
+	/** The current tool name (e.g. "bash", "read"), or "" while thinking. */
+	tool: string;
+	/** A short human summary (e.g. "Bash: find CLI files"). */
+	summary: string;
+	/** Tool calls made this turn. */
+	toolUses: number;
+}
+export interface AgentActivityRow extends AgentActivity {
+	address: string;
+}
+
+/** Extract the latest tool call from an appended session entry, or null. */
+function extractToolActivity(entry: unknown): AgentActivity | null {
+	const e = entry as { type?: string; message?: { role?: string; content?: unknown } };
+	if (e?.type !== "message" || e.message?.role !== "assistant" || !Array.isArray(e.message.content)) return null;
+	for (let i = e.message.content.length - 1; i >= 0; i--) {
+		const part = e.message.content[i] as { type?: string; name?: unknown; arguments?: unknown };
+		if (part?.type === "toolCall") {
+			const tool = String(part.name ?? "?");
+			return { tool, summary: toolSummary(tool, part.arguments), toolUses: 0 };
+		}
+	}
+	return null;
+}
+
+/** A short one-line summary of a tool call for the tree widget. */
+function toolSummary(tool: string, args: unknown): string {
+	const a = (args ?? {}) as Record<string, unknown>;
+	const label = tool.charAt(0).toUpperCase() + tool.slice(1);
+	const detail =
+		typeof a.command === "string" ? a.command : typeof a.path === "string" ? a.path : typeof a.pattern === "string" ? a.pattern : typeof a.to === "string" ? String(a.to) : "";
+	const flat = detail.replace(/\s+/g, " ").trim();
+	return flat ? `${label}: ${flat.length > 48 ? `${flat.slice(0, 47)}…` : flat}` : label;
 }
 
 function envView(envelope: Envelope): AwaitEnvelopeView {

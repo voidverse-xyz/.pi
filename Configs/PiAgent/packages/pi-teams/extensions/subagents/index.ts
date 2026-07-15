@@ -28,6 +28,7 @@ import {
 	createSteerTool,
 } from "./tools/main-agent.ts";
 import { createWidgetController, widgetStatusText, type WidgetController } from "./tui/widget.ts";
+import { createTreeWidget, type TreeWidgetController } from "./tui/tree-widget.ts";
 import { createPicker, type PickerResult } from "./tui/picker.ts";
 import { createViewer, type ViewerResult } from "./tui/viewer.ts";
 
@@ -37,6 +38,7 @@ export default function (pi: ExtensionAPI): void {
 	let core: SubagentsCore | null = null;
 	let lease: HostScopeLease | null = null;
 	let widget: WidgetController | null = null;
+	let tree: TreeWidgetController | null = null;
 	let overlayOpen = false;
 	/** Set when subagents are unavailable this session (non-persisted, or lease held elsewhere). */
 	let unavailableReason: string | null = null;
@@ -164,6 +166,11 @@ export default function (pi: ExtensionAPI): void {
 			};
 			widget = createWidgetController({ core, onChange: publish });
 			publish();
+			// The live "Running N team agents…" tree above the editor (Phase 8).
+			tree = createTreeWidget(core, {
+				setWidget: (key, content, opts) => ctx.ui.setWidget(key, content, opts),
+				theme: ctx.ui.theme,
+			});
 		}
 	});
 
@@ -197,6 +204,10 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	async function teardown(): Promise<void> {
+		if (tree) {
+			tree.dispose();
+			tree = null;
+		}
 		if (widget) {
 			widget.dispose();
 			widget = null;

@@ -30,22 +30,23 @@ function isMode(value: unknown): value is SafetyMode {
 	return typeof value === "string" && MODES.includes(value as SafetyMode);
 }
 
-function loadMode(): { mode: SafetyMode; warning?: string } {
+function loadMode(): { mode: SafetyMode; gateWrites: boolean; warning?: string } {
 	try {
-		const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as { mode?: unknown };
-		if (isMode(raw?.mode)) return { mode: raw.mode };
-		return { mode: DEFAULT_MODE, warning: `Invalid safety mode in ${CONFIG_PATH}; using ${DEFAULT_MODE}` };
+		const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as { mode?: unknown; gateWrites?: unknown };
+		const gateWrites = raw?.gateWrites === true;
+		if (isMode(raw?.mode)) return { mode: raw.mode, gateWrites };
+		return { mode: DEFAULT_MODE, gateWrites, warning: `Invalid safety mode in ${CONFIG_PATH}; using ${DEFAULT_MODE}` };
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { mode: DEFAULT_MODE };
-		return { mode: DEFAULT_MODE, warning: `Could not read ${CONFIG_PATH}; using ${DEFAULT_MODE}` };
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { mode: DEFAULT_MODE, gateWrites: false };
+		return { mode: DEFAULT_MODE, gateWrites: false, warning: `Could not read ${CONFIG_PATH}; using ${DEFAULT_MODE}` };
 	}
 }
 
-function saveMode(mode: SafetyMode): string | null {
+function saveMode(mode: SafetyMode, gateWrites: boolean): string | null {
 	const temp = `${CONFIG_PATH}.tmp-${process.pid}-${randomUUID()}`;
 	try {
 		mkdirSync(dirname(CONFIG_PATH), { recursive: true });
-		writeFileSync(temp, `${JSON.stringify({ mode }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+		writeFileSync(temp, `${JSON.stringify({ mode, gateWrites }, null, 2)}\n`, { mode: 0o600, flag: "wx" });
 		renameSync(temp, CONFIG_PATH);
 		return null;
 	} catch (error) {
@@ -67,7 +68,10 @@ function updateStatus(ctx: ExtensionContext, mode: SafetyMode): void {
 }
 
 export default function safetyExtension(pi: ExtensionAPI): void {
-	let currentMode = loadMode().mode;
+	const initialConfig = loadMode();
+	let currentMode = initialConfig.mode;
+	/** Opt-in (default off): also gate the MAIN agent's edit/write tool calls. */
+	let gateWrites = initialConfig.gateWrites;
 	let confirmationTail: Promise<void> = Promise.resolve();
 	// Captured at session_start so the pi.events confirmation provider can render
 	// on this process's TUI when a pi-teams subagent forwards a guarded tool call.
@@ -125,6 +129,31 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 		if (approved) return;
 		ctx.ui.notify(`Blocked ${CATEGORY_META[category].label.toLowerCase()} command`, "warning");
 		return { block: true, reason: `Blocked by pi-safety (${category}; declined by user)` };
+	});
+
+	// Opt-in: also gate the MAIN agent's edit/write (D20a-C). Off by default so it
+	// never surprises normal editing; enable with /safety-writes on.
+	pi.on("tool_call", async (event, ctx) => {
+		if (!gateWrites || currentMode === "off") return;
+		const writeTool = isToolCallEventType("edit", event) ? "edit" : isToolCallEventType("write", event) ? "write" : null;
+		if (!writeTool) return;
+		const rawPath = (event.input as { path?: unknown }).path;
+		const path = typeof rawPath === "string" ? rawPath : "";
+		const category = "other"; // file mutation: confirmed in max mode
+		if (!MODE_CATEGORIES[currentMode].has(category)) return;
+		if (!ctx.hasUI) {
+			auditLog({ rawCommand: `${writeTool} ${path}`, category, mode: currentMode, decision: "denied", source: "auto" });
+			return { block: true, reason: `pi-safety blocked a ${writeTool} because no confirmation UI is available` };
+		}
+		let approved: boolean;
+		try {
+			approved = await confirmSerial(ctx, category, `${writeTool} ${path}`);
+		} catch (error) {
+			return { block: true, reason: `pi-safety confirmation failed: ${error instanceof Error ? error.message : String(error)}` };
+		}
+		auditLog({ rawCommand: `${writeTool} ${path}`, category, mode: currentMode, decision: approved ? "approved" : "denied", source: "user" });
+		if (approved) return;
+		return { block: true, reason: `Blocked by pi-safety (${writeTool}; declined by user)` };
 	});
 
 	// pi-teams confirmation provider: a subagent's guarded bash/edit/write call is
@@ -203,10 +232,31 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			currentMode = arg;
-			const saveError = saveMode(arg);
+			const saveError = saveMode(arg, gateWrites);
 			updateStatus(ctx, currentMode);
 			ctx.ui.notify(
 				saveError ? `Bash safety is ${arg} for this process, but could not save it: ${saveError}` : `Main-agent Bash safety: ${arg}`,
+				saveError ? "warning" : "info",
+			);
+		},
+	});
+
+	pi.registerCommand("safety-writes", {
+		description: "Also gate the main agent's edit/write tool calls: on | off (default off)",
+		getArgumentCompletions: (prefix) => ["on", "off"].filter((v) => v.startsWith(prefix)).map((v) => ({ value: v, label: v })),
+		handler: async (args, ctx) => {
+			const arg = args.trim().toLowerCase();
+			if (arg !== "on" && arg !== "off") {
+				ctx.ui.notify(
+					[`Main-agent edit/write gating: ${gateWrites ? "on" : "off"}`, "When on, the main agent's file edits/writes are confirmed (in on/max mode), like subagents.", "Usage: /safety-writes <on|off>"].join("\n"),
+					"info",
+				);
+				return;
+			}
+			gateWrites = arg === "on";
+			const saveError = saveMode(currentMode, gateWrites);
+			ctx.ui.notify(
+				saveError ? `Edit/write gating is ${arg} for this process, but could not save it: ${saveError}` : `Main-agent edit/write gating: ${arg}`,
 				saveError ? "warning" : "info",
 			);
 		},
@@ -237,6 +287,7 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 		currentCtx = ctx;
 		const loaded = loadMode();
 		currentMode = loaded.mode;
+		gateWrites = loaded.gateWrites;
 		updateStatus(ctx, currentMode);
 		if (loaded.warning && ctx.hasUI) ctx.ui.notify(loaded.warning, "warning");
 	});

@@ -12,6 +12,7 @@ import { EXT, jiti } from "./env.mjs";
 
 const widget = await jiti.import(join(EXT, "tui/widget.ts"));
 const picker = await jiti.import(join(EXT, "tui/picker.ts"));
+const tree = await jiti.import(join(EXT, "tui/tree-widget.ts"));
 
 let passed = 0;
 function test(name, fn) {
@@ -63,6 +64,26 @@ test("row text shows state glyph, address, ctx%, unread badge", () => {
 	assert.ok(text.includes("running"));
 	assert.ok(text.includes("60%"));
 	assert.ok(text.includes("2"));
+});
+
+console.log("tree widget (Phase 8):");
+const plainTheme = { fg: (_c, t) => t };
+test("empty when nothing is working", () => {
+	assert.deepEqual(tree.renderTreeLines([], plainTheme), []);
+});
+test("renders a tree row + current tool per running agent", () => {
+	const lines = tree.renderTreeLines(
+		[
+			{ address: "refactorer/auth", tool: "bash", summary: "Bash: find CLI files", toolUses: 10 },
+			{ address: "docs/main", tool: "read", summary: "Read: src/index.ts", toolUses: 1 },
+		],
+		plainTheme,
+	);
+	assert.ok(lines[0].includes("Running 2 team agents"));
+	assert.ok(lines.some((l) => l.includes("refactorer/auth") && l.includes("10 tool uses")));
+	assert.ok(lines.some((l) => l.includes("Bash: find CLI files")));
+	assert.ok(lines.some((l) => l.includes("docs/main") && l.includes("1 tool use") && !l.includes("1 tool uses")));
+	assert.ok(lines.some((l) => l.includes("└─"))); // last-branch glyph
 });
 
 console.log(`\nPhase 6: ${passed} checks passed.`);
