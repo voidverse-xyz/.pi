@@ -116,6 +116,8 @@ export interface RuntimeOptions {
 	hopsGuard?: HopsGuard;
 	/** Human confirmation for guarded tool calls (D10a); default fail-closed deny. */
 	confirm?: ConfirmFn;
+	/** Initial user-level peer-messaging control (D12). Default "llm" (main decides). */
+	peersMode?: PeerMode;
 }
 
 interface Handle {
@@ -129,7 +131,12 @@ interface Handle {
 	assignment: string | null;
 	/** Set when the agent sent a final report this turn; a oneshot auto-retires after (D13). */
 	retireAfterTurn: boolean;
+	/** This type's frontmatter peer default (D12); the effective setting layers user/main over it. */
+	peersDefault: boolean;
 }
+
+/** Peer-messaging control (D12). "llm" = the main agent decides via team_peers. */
+export type PeerMode = "on" | "off" | "llm";
 
 function vitalsFrom(session: AgentSession, state: AgentState): AgentVitals {
 	const stats = session.getSessionStats();
@@ -154,6 +161,10 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	private runningAddresses = new Set<string>();
 	/** Addresses with an interrupt requested before their turn began streaming. */
 	private pendingInterrupt = new Set<string>();
+	/** User-level peer control (D12): "on"/"off" force it; "llm" delegates to the main agent. */
+	private userPeerMode: PeerMode;
+	/** Main-agent peer override, honored only when userPeerMode === "llm". null = per-type default. */
+	private mainPeerOverride: boolean | null = null;
 	/** Live per-agent activity for the tree widget: current tool call + count. */
 	private activity = new Map<string, AgentActivity>();
 	private listeners = new Set<RuntimeEventListener>();
@@ -169,6 +180,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		this.scheduler = new Scheduler(options.maxConcurrent);
 		this.registry = readRegistry(this.layout.registryFile);
 		this.confirm = options.confirm ?? denyAllConfirm;
+		this.userPeerMode = options.peersMode ?? "llm";
 		const protectedDirs = [this.layout.projectSubagentsRoot, this.layout.globalTypeDefsDir, this.layout.projectTypeDefsDir];
 		this.systemDeny = makeSystemDenyCheck(protectedDirs, realpathSync);
 		this.systemDenyCommand = makeCommandDenyCheck(protectedDirs, realpathSync, homedir());
@@ -279,6 +291,18 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		const fromAddress = parseAddress(from);
 		if (!fromAddress || fromAddress.kind !== "agent") throw new Error(`invalid agent sender ${JSON.stringify(from)}`);
 		const handle = this.handles.get(from);
+		// Peer-messaging gate (D12): block any agent→agent send when this sender's
+		// effective peer setting is off. Enforced live here (not just by hiding the
+		// tool), so a toggle takes effect immediately even for a session built while
+		// peers were on. Upward channels (to main) are always allowed.
+		if (parseAddress(opts.to)?.kind === "agent" && !this.effectivePeers(handle?.peersDefault ?? true)) {
+			return {
+				delivered: false,
+				disposition: "bounced",
+				envelopeId: "(peer messaging disabled)",
+				bounceReason: "peer messaging is disabled — report to the main agent, which coordinates the team",
+			};
+		}
 		const causedBy = handle?.trigger && handle.trigger.length > 0 ? handle.trigger.reduce((a, b) => (b.hops > a.hops ? b : a)) : null;
 		// A final report with no explicit correlation is correlated to the current
 		// assignment so an await on the task anchor can match it (D26'). A oneshot
@@ -396,6 +420,46 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	/** Retired agents on disk in .archive/ (D13). */
 	archived(): ArchivedInfo[] {
 		return readArchived(this.layout);
+	}
+
+	// ----------------------------------------------------------------- peer control (D12)
+	/**
+	 * The EFFECTIVE peer setting for an instance whose type default is `peersDefault`.
+	 * Precedence: user override (on/off) wins; otherwise the main agent's override; if
+	 * the main leaves it auto (null), the type's frontmatter default.
+	 */
+	private effectivePeers(peersDefault: boolean): boolean {
+		if (this.userPeerMode === "on") return true;
+		if (this.userPeerMode === "off") return false;
+		return this.mainPeerOverride ?? peersDefault;
+	}
+
+	/** Refresh tools + prose for DORMANT agents so a peer-setting change lands on their next wake. */
+	private refreshDormantHandles(): void {
+		for (const address of [...this.handles.keys()]) {
+			if (this.runningAddresses.has(address)) continue; // running agents rebuild after their turn
+			this.handles.delete(address);
+			this.buildLocks.delete(address);
+		}
+	}
+
+	/** User-level control: "on"/"off" force peer messaging, "llm" delegates to the main agent. */
+	setUserPeerMode(mode: PeerMode): void {
+		if (this.userPeerMode === mode) return;
+		this.userPeerMode = mode;
+		this.refreshDormantHandles();
+	}
+
+	/** Main-agent override, honored only while userPeerMode === "llm". null = per-type default. */
+	setMainPeerOverride(value: boolean | null): void {
+		if (this.mainPeerOverride === value) return;
+		this.mainPeerOverride = value;
+		this.refreshDormantHandles();
+	}
+
+	/** Current peer-control state (for the tool result, command feedback, and status). */
+	peerState(): { userMode: PeerMode; mainOverride: boolean | null; userControls: boolean } {
+		return { userMode: this.userPeerMode, mainOverride: this.mainPeerOverride, userControls: this.userPeerMode !== "llm" };
 	}
 
 	/** Live activity for currently-working agents (tree widget, Phase 8). */
@@ -746,7 +810,9 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		const latest = this.latestSessionFile(record.type, record.id);
 		const sessionManager = latest ? SessionManager.open(latest, instanceDir, layout.cwd) : SessionManager.create(layout.cwd, instanceDir);
 
-		const composed = composeContext(def, this.identityFor(address, record));
+		const peersDefault = def.config.peers !== false;
+		const peersEnabled = this.effectivePeers(peersDefault);
+		const composed = composeContext(def, { ...this.identityFor(address, record), peersEnabled });
 		const loader = new DefaultResourceLoader({
 			cwd: layout.cwd,
 			agentDir: layout.agentDir,
@@ -770,7 +836,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			...(this.options.authStorage ? { authStorage: this.options.authStorage } : {}),
 			noTools: "builtin",
 			customTools: [
-				...createSubagentTools(address, this),
+				...createSubagentTools(address, this, { peers: peersEnabled }),
 				...buildSandboxedTools(def.config, layout.cwd, {
 					systemDeny: (path) => this.systemDeny(path),
 					systemDenyCommand: (command) => this.systemDenyCommand(command),
@@ -793,7 +859,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		if (thinkingLevel !== undefined) sessionOptions.thinkingLevel = thinkingLevel;
 
 		const { session } = await createAgentSession(sessionOptions);
-		return { session, generationId: record.generationId, typeFileHash: record.typeFileHash, abortedBy: null, trigger: null, assignment: null, retireAfterTurn: false };
+		return { session, generationId: record.generationId, typeFileHash: record.typeFileHash, abortedBy: null, trigger: null, assignment: null, retireAfterTurn: false, peersDefault };
 	}
 
 	private resolveModel(def: TypeDefinition, inherit?: InheritedDefaults): CreateAgentSessionOptions["model"] | undefined {

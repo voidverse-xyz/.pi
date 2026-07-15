@@ -17,16 +17,22 @@
 
 import { readFileSync } from "node:fs";
 
+export type PeerControl = "on" | "off" | "llm";
+const PEER_CONTROLS: PeerControl[] = ["on", "off", "llm"];
+
 export interface SubagentsSettings {
 	maxConcurrent: number;
 	maxHops: number;
 	archiveGcDays: number;
+	/** User-level peer-messaging control (D12): "on"/"off" force it, "llm" lets the main agent decide. */
+	peers: PeerControl;
 }
 
 export const DEFAULT_SETTINGS: SubagentsSettings = {
 	maxConcurrent: 5,
 	maxHops: 8,
 	archiveGcDays: 7,
+	peers: "llm",
 };
 
 type Patch = Partial<SubagentsSettings>;
@@ -84,6 +90,11 @@ export function readSettingsFile(path: string): LayerReadResult {
 	if (maxHops !== undefined) patch.maxHops = maxHops;
 	const archiveGcDays = readIntField(raw, "archiveGcDays", 0, 3650, warnings);
 	if (archiveGcDays !== undefined) patch.archiveGcDays = archiveGcDays;
+	if ("peers" in raw) {
+		const value = raw.peers;
+		if (typeof value === "string" && (PEER_CONTROLS as string[]).includes(value)) patch.peers = value as PeerControl;
+		else warnings.push(`peers: expected one of ${PEER_CONTROLS.join("|")}, got ${JSON.stringify(value)} — ignored`);
+	}
 	for (const key of Object.keys(raw)) {
 		if (!(key in DEFAULT_SETTINGS)) warnings.push(`${path}: unknown key ${JSON.stringify(key)} — ignored`);
 	}

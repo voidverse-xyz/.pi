@@ -48,7 +48,12 @@ const AskParams = Type.Object({
 	text: Type.String({ description: "A question for the main agent. You will go dormant and wake with the answer." }),
 });
 
-export function createSubagentTools(address: string, port: SubagentMailPort): ToolDefinition[] {
+export interface SubagentToolOptions {
+	/** false = omit `send_message` (peer messaging off; the main agent coordinates). Default true. */
+	peers?: boolean;
+}
+
+export function createSubagentTools(address: string, port: SubagentMailPort, options: SubagentToolOptions = {}): ToolDefinition[] {
 	const sendMessage: ToolDefinition<typeof SendParams> = {
 		name: "send_message",
 		label: "Message a peer",
@@ -101,5 +106,6 @@ export function createSubagentTools(address: string, port: SubagentMailPort): To
 		},
 	};
 
-	return [sendMessage, report, ask];
+	// Peer messaging off → the agent has no send_message; it coordinates via main.
+	return options.peers === false ? [report, ask] : [sendMessage, report, ask];
 }

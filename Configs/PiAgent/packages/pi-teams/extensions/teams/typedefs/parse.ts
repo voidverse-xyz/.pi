@@ -27,6 +27,12 @@ export interface TypeConfig {
 	projectContext: boolean;
 	/** Tool-name allowlist; undefined = all coding tools (resolved in sandbox/tools-filter). */
 	tools?: string[];
+	/**
+	 * Peer-to-peer messaging (D12). true (default) = this instance may message other
+	 * subagents directly. false = it has no `send_message` tool and is told the main
+	 * agent coordinates the team — everything cross-agent routes through main.
+	 */
+	peers?: boolean;
 }
 
 export interface TypeDefinition {
@@ -37,7 +43,7 @@ export interface TypeDefinition {
 
 export type ParseResult = { ok: true; definition: TypeDefinition } | { ok: false; errors: string[] };
 
-const KNOWN_FIELDS = new Set(["name", "description", "model", "thinking", "projectContext", "tools"]);
+const KNOWN_FIELDS = new Set(["name", "description", "model", "thinking", "projectContext", "tools", "peers"]);
 
 /** Split leading `---\n…\n---\n` frontmatter from the body. */
 function splitFrontmatter(content: string): { frontmatter: string; body: string } | { error: string } {
@@ -185,6 +191,9 @@ function validateConfig(map: Map<string, RawValue>, filenameStem: string): { con
 		if (!Array.isArray(tools) || !tools.every((t) => typeof t === "string")) errors.push("tools must be an array of strings");
 	}
 
+	const peers = map.get("peers");
+	if (peers !== undefined && typeof peers !== "boolean") errors.push("peers must be a boolean");
+
 	if (errors.length > 0) return { errors };
 	const config: TypeConfig = {
 		name: name as string,
@@ -194,6 +203,7 @@ function validateConfig(map: Map<string, RawValue>, filenameStem: string): { con
 	if (typeof model === "string") config.model = model;
 	if (typeof thinking === "string") config.thinking = thinking as ThinkingLevel;
 	if (Array.isArray(tools)) config.tools = tools as string[];
+	if (typeof peers === "boolean") config.peers = peers;
 	return { config };
 }
 

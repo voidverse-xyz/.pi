@@ -14,7 +14,7 @@ import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
 import { markDone, peekCollectRequest, pendingCount, readPending, takeCollectRequest } from "./mail/mailbox.ts";
 import { makeHopsGuard } from "./rails/hops.ts";
 import type { ConfirmFn } from "./sandbox/safety-bridge.ts";
-import { type AgentActivityRow, InProcessRuntime } from "./runtime/in-process.ts";
+import { type AgentActivityRow, InProcessRuntime, type PeerMode } from "./runtime/in-process.ts";
 import type {
 	AgentDetail,
 	AwaitOptions,
@@ -80,6 +80,12 @@ export interface SubagentsCore {
 	archived(): ArchivedAgentInfo[];
 	/** Live per-agent activity for the tree widget (current tool call + count). */
 	activitySnapshot(): AgentActivityRow[];
+	/** User-level peer-messaging control (D12): "on"/"off" force it, "llm" delegates to main. */
+	setUserPeerMode(mode: PeerMode): void;
+	/** Main-agent peer override (D12), honored only while the user delegates. null = per-type default. */
+	setMainPeerOverride(value: boolean | null): void;
+	/** Current peer-control state. */
+	peerState(): { userMode: PeerMode; mainOverride: boolean | null; userControls: boolean };
 	onEvent(listener: RuntimeEventListener): () => void;
 	/** Await all in-flight subagent turns (host shutdown / tests). */
 	whenIdle(): Promise<void>;
@@ -99,6 +105,8 @@ export interface CoreOptions {
 	projectTrusted?: () => boolean;
 	/** Human confirmation for guarded tool calls (D10a); default fail-closed deny. */
 	confirm?: ConfirmFn;
+	/** Initial user-level peer-messaging control (D12). Default "llm". */
+	peersMode?: PeerMode;
 }
 
 export function createCore(options: CoreOptions): SubagentsCore {
@@ -111,6 +119,7 @@ export function createCore(options: CoreOptions): SubagentsCore {
 		...(options.authStorage ? { authStorage: options.authStorage } : {}),
 		...(options.projectTrusted ? { projectTrusted: options.projectTrusted } : {}),
 		...(options.confirm ? { confirm: options.confirm } : {}),
+		...(options.peersMode ? { peersMode: options.peersMode } : {}),
 	});
 	const projectTrusted = (): boolean => (options.projectTrusted ? options.projectTrusted() : true);
 
@@ -158,6 +167,9 @@ export function createCore(options: CoreOptions): SubagentsCore {
 		},
 		archived: () => (runtime as InProcessRuntime).archived(),
 		activitySnapshot: () => (runtime as InProcessRuntime).activitySnapshot(),
+		setUserPeerMode: (mode) => (runtime as InProcessRuntime).setUserPeerMode(mode),
+		setMainPeerOverride: (value) => (runtime as InProcessRuntime).setMainPeerOverride(value),
+		peerState: () => (runtime as InProcessRuntime).peerState(),
 		whenIdle: () => (runtime as InProcessRuntime).whenIdle(),
 		dispose: () => runtime.dispose(),
 		availableTypes(): AvailableType[] {

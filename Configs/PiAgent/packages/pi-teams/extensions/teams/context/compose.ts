@@ -37,6 +37,12 @@ export interface IdentityOptions {
 	purview: string;
 	/** Every OTHER agent under the same main (flat comm — D12), with purviews. */
 	peers: PeerInfo[];
+	/**
+	 * Whether this instance may message peers directly (D12). Default true. When
+	 * false, the main agent coordinates the team and all cross-agent work routes
+	 * through it — the agent has no `send_message` tool.
+	 */
+	peersEnabled?: boolean;
 }
 
 /**
@@ -45,6 +51,7 @@ export interface IdentityOptions {
  * non-blocking-question + checkpoint conventions (D14).
  */
 export function composeIdentityBlock(options: IdentityOptions): string {
+	const peersEnabled = options.peersEnabled !== false;
 	const lines: string[] = [];
 	lines.push("## Your identity");
 	lines.push("");
@@ -56,14 +63,25 @@ export function composeIdentityBlock(options: IdentityOptions): string {
 	lines.push("## Other agents");
 	lines.push("");
 	if (options.peers.length === 0) {
-		lines.push("You are the only subagent right now. You can message the main agent.");
-	} else {
+		lines.push(
+			peersEnabled
+				? "You are the only subagent right now. You can message the main agent."
+				: "You are the only subagent right now. Report to the main agent, which coordinates the team.",
+		);
+	} else if (peersEnabled) {
 		lines.push("You may message any of these peers, or the main agent:");
 		for (const peer of options.peers) {
 			lines.push(`- \`${peer.address}\` — ${peer.purview}`);
 		}
 		lines.push("");
 		lines.push("New agents will be announced to you when you wake.");
+	} else {
+		lines.push("These agents work under the same main agent, but you cannot message them directly:");
+		for (const peer of options.peers) {
+			lines.push(`- \`${peer.address}\` — ${peer.purview}`);
+		}
+		lines.push("");
+		lines.push("The main agent coordinates the team. If another agent needs something from you, put it in a report to the main agent and it will relay.");
 	}
 	lines.push("");
 
@@ -74,10 +92,18 @@ export function composeIdentityBlock(options: IdentityOptions): string {
 			"questions (when you need an answer to proceed). Errors (crashes) are raised to the " +
 			"main agent automatically.",
 	);
-	lines.push(
-		"- Messages are mail, not interrupts: they are delivered to the recipient at its next " +
-			"turn boundary or when it wakes. You cannot steer, interrupt, observe, or spawn other agents.",
-	);
+	if (peersEnabled) {
+		lines.push(
+			"- Messages are mail, not interrupts: they are delivered to the recipient at its next " +
+				"turn boundary or when it wakes. You cannot steer, interrupt, observe, or spawn other agents.",
+		);
+	} else {
+		lines.push(
+			"- Peer messaging is OFF: you have no `send_message` tool and cannot contact other agents. " +
+				"Everything cross-agent goes through the main agent. You also cannot steer, interrupt, " +
+				"observe, or spawn other agents.",
+		);
+	}
 	lines.push("");
 	lines.push("## Conventions");
 	lines.push("");
@@ -107,7 +133,11 @@ export interface ComposedContext {
 	appendSystemPrompt: string[];
 }
 
-/** Compose layers 3+4 for one agent instance wake. Layer 2 is Pi's own (native ordering). */
+/**
+ * Compose layers 3+4 for one agent instance wake. Layer 2 is Pi's own (native
+ * ordering). `peersEnabled` is the EFFECTIVE peer setting (user/main/per-type
+ * resolved by the runtime), not the raw frontmatter default.
+ */
 export function composeContext(def: TypeDefinition, identity: IdentityOptions): ComposedContext {
 	const segments: string[] = [];
 	if (def.body.trim().length > 0) segments.push(def.body.trim());

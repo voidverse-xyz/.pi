@@ -54,6 +54,7 @@ TESTS=(
 	phase7-completion.mjs
 	phase8-review-fixes.mjs
 	phase9-auto-wake.mjs
+	phase10-peers.mjs
 	loadcheck.mjs
 )
 for t in "${TESTS[@]}"; do

@@ -22,6 +22,7 @@ import {
 	createAwaitTool,
 	createCollectTool,
 	createInterruptTool,
+	createPeersTool,
 	createRetireTool,
 	createSendTool,
 	createSpawnTool,
@@ -71,6 +72,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerTool(createInterruptTool(getCore));
 	pi.registerTool(createRetireTool(getCore));
 	pi.registerTool(createStatusTool(getCore));
+	pi.registerTool(createPeersTool(getCore));
 
 	// --- TUI (D22): /teams picker → full-screen viewer; ambient widget. ---
 	const openViewer = async (ctx: ExtensionContext, startAddress: string): Promise<void> => {
@@ -138,8 +140,31 @@ export default function (pi: ExtensionAPI): void {
 		);
 	};
 
+	/** User control (D12): pin peer messaging on/off, or hand it to the main agent ("llm"). */
+	const setPeers = (ctx: ExtensionContext, arg: string): void => {
+		if (!core) {
+			ctx.ui.notify(unavailableReason ?? "Teams are not available in this session.", "warning");
+			return;
+		}
+		const mode = arg.trim().toLowerCase();
+		if (mode !== "on" && mode !== "off" && mode !== "llm") {
+			const state = core.peerState();
+			ctx.ui.notify(`Peer messaging is "${state.userMode}"${state.userMode === "llm" ? " (the main agent decides)" : ""}. Use /teams peers on|off|llm.`, "info");
+			return;
+		}
+		core.setUserPeerMode(mode);
+		ctx.ui.notify(
+			mode === "on"
+				? "Peer messaging ON — subagents may message each other directly. (Applies on each agent's next turn.)"
+				: mode === "off"
+					? "Peer messaging OFF — all cross-agent work routes through the main agent. (Applies on each agent's next turn.)"
+					: "Peer messaging handed to the main agent — it decides via team_peers.",
+			"info",
+		);
+	};
+
 	pi.registerCommand("teams", {
-		description: "Open the teams roster (/teams <type>/<id> to jump to a subagent, /teams stop to stop all).",
+		description: "Teams roster. /teams <type>/<id> jump · /teams stop · /teams peers on|off|llm.",
 		handler: async (args, ctx) => {
 			if (!core) {
 				ctx.ui.notify(unavailableReason ?? "Teams are not available in this session.", "warning");
@@ -147,6 +172,7 @@ export default function (pi: ExtensionAPI): void {
 			}
 			const target = args.trim();
 			if (target === "stop") return stopAllAgents(ctx);
+			if (target === "peers" || target.startsWith("peers ")) return setPeers(ctx, target.slice("peers".length));
 			if (target) await openViewer(ctx, target);
 			else await openPicker(ctx);
 		},
@@ -190,6 +216,7 @@ export default function (pi: ExtensionAPI): void {
 			layout,
 			maxConcurrent: settings.maxConcurrent,
 			maxHops: settings.maxHops,
+			peersMode: settings.peers,
 			// Guarded subagent tool calls (bash/edit/write) confirm via pi-safety
 			// over pi.events (D10a); fail-closed if pi-safety is absent.
 			confirm: makeSafetyConfirm(pi),

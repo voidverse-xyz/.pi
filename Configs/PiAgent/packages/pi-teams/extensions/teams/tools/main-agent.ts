@@ -242,6 +242,39 @@ export function createRetireTool(getCore: GetCore): ToolDefinition<typeof Retire
 	};
 }
 
+const PeersParams = Type.Object({
+	mode: Type.Union([Type.Literal("on"), Type.Literal("off"), Type.Literal("auto")], {
+		description: "on = subagents may message each other directly; off = all cross-agent work routes through you; auto = each type's own default.",
+	}),
+});
+
+export function createPeersTool(getCore: GetCore): ToolDefinition<typeof PeersParams> {
+	return {
+		name: "team_peers",
+		label: "Set peer messaging",
+		description:
+			"Turn subagent-to-subagent messaging on or off for the fleet (D12). off makes YOU the sole coordinator — " +
+			"agents can only report to you, and you relay between them. Takes effect on each agent's next turn. " +
+			"Note: if the user pinned peer messaging on/off, your setting is recorded but the user's choice wins.",
+		parameters: PeersParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				const core = getCore(ctx);
+				core.setMainPeerOverride(params.mode === "on" ? true : params.mode === "off" ? false : null);
+				const state = core.peerState();
+				return jsonResult({
+					requested: params.mode,
+					applied: !state.userControls,
+					...(state.userControls ? { note: `The user has pinned peer messaging "${state.userMode}"; your setting is saved but not active until they release it.` } : {}),
+					state,
+				});
+			} catch (error) {
+				return errorResult(error);
+			}
+		},
+	};
+}
+
 const StatusParams = Type.Object({
 	address: Type.Optional(Type.String({ description: "A <type>/<id> to inspect in detail. Omit for the full roster." })),
 	tail: Type.Optional(Type.Integer({ minimum: 0, maximum: 200, description: "With address: number of trailing transcript entries (default 20)." })),

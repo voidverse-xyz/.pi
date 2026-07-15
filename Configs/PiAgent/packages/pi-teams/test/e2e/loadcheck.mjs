@@ -25,7 +25,7 @@ const keysOf = (v) => (v?.keys ? [...v.keys()] : v ? Object.keys(v) : []);
 
 assert.deepEqual(
 	keysOf(ext.tools).sort(),
-	["team_await", "team_collect", "team_interrupt", "team_retire", "team_send", "team_spawn", "team_status", "team_steer"],
+	["team_await", "team_collect", "team_interrupt", "team_peers", "team_retire", "team_send", "team_spawn", "team_status", "team_steer"],
 	"the eight team_* tools",
 );
 assert.deepEqual(keysOf(ext.commands), ["teams"], "/teams command");
