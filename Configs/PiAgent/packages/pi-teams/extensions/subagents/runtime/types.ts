@@ -82,6 +82,35 @@ export interface CollectResult {
 	recipientState?: AgentState;
 }
 
+export type AwaitStatus = "completed" | "attention" | "timeout" | "retired";
+
+export interface AwaitEnvelopeView {
+	id: string;
+	type: "question" | "escalation" | "error" | "report";
+	text: string;
+	correlationId: string | null;
+	data?: unknown;
+	final?: boolean;
+}
+
+export interface AwaitOptions {
+	to: string;
+	waitFor: "final" | "collect";
+	anchorId: string;
+	timeoutSeconds?: number;
+	signal?: AbortSignal;
+}
+
+export interface AwaitResult {
+	status: AwaitStatus;
+	to: string;
+	anchorId: string;
+	report?: AwaitEnvelopeView;
+	attention?: AwaitEnvelopeView;
+	/** Collect-mode schema verdict, when a collect request was on record. */
+	validation?: { valid: boolean; errors: string[] };
+}
+
 export interface SteerResult {
 	/** false = agent wasn't running; steering is mid-turn-only (D11). */
 	steered: boolean;

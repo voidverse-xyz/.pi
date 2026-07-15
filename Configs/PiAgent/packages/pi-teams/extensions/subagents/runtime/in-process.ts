@@ -42,17 +42,21 @@ import {
 	MAIN_ADDRESS,
 	makeEnvelope,
 	parseAddress,
+	USER_ADDRESS,
 } from "../mail/envelope.ts";
 import {
 	beginDelivery,
 	deleteSentQuestion,
 	lookupSentQuestion,
 	markDone,
+	peekCollectRequest,
 	pendingCount,
 	readPending,
 	recordCollectRequest,
+	takeCollectRequest,
 	writeEnvelope,
 } from "../mail/mailbox.ts";
+import { validateAgainstSchema } from "../mail/collect.ts";
 import { archiveAgentDir, type ArchivedInfo, readArchived } from "../store/archive.ts";
 import {
 	type AgentRecord,
@@ -76,6 +80,9 @@ import { makeSystemDenyCheck } from "../sandbox/system-deny.ts";
 import { type ConfirmFn, denyAllConfirm } from "../sandbox/safety-bridge.ts";
 import type {
 	AgentDetail,
+	AwaitEnvelopeView,
+	AwaitOptions,
+	AwaitResult,
 	CollectResult,
 	InheritedDefaults,
 	InterruptResult,
@@ -115,6 +122,10 @@ interface Handle {
 	abortedBy: "interrupt" | null;
 	/** Envelopes driving the current turn (for hops causedBy + collect handling). */
 	trigger: Envelope[] | null;
+	/** The current task anchor (an uncorrelated message id) for final-report correlation (D26'). */
+	assignment: string | null;
+	/** Set when the agent sent a final report this turn; a oneshot auto-retires after (D13). */
+	retireAfterTurn: boolean;
 }
 
 function vitalsFrom(session: AgentSession, state: AgentState): AgentVitals {
@@ -257,6 +268,17 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		if (!fromAddress || fromAddress.kind !== "agent") throw new Error(`invalid agent sender ${JSON.stringify(from)}`);
 		const handle = this.handles.get(from);
 		const causedBy = handle?.trigger && handle.trigger.length > 0 ? handle.trigger.reduce((a, b) => (b.hops > a.hops ? b : a)) : null;
+		// A final report with no explicit correlation is correlated to the current
+		// assignment so an await on the task anchor can match it (D26'). A oneshot
+		// auto-retires after its final report (D13).
+		let correlationId = opts.correlationId ?? null;
+		if (opts.type === "report" && opts.final && correlationId === null && handle?.assignment) {
+			correlationId = handle.assignment;
+		}
+		if (opts.type === "report" && opts.final && handle) {
+			const record = getAgent(this.registry, from);
+			if (record?.lifetime === "oneshot") handle.retireAfterTurn = true;
+		}
 		return this.deliverer.send({
 			from: fromAddress,
 			to: opts.to,
@@ -264,7 +286,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			text: opts.text,
 			...(opts.data !== undefined ? { data: opts.data } : {}),
 			...(opts.final !== undefined ? { final: opts.final } : {}),
-			correlationId: opts.correlationId ?? null,
+			correlationId,
 			causedBy,
 		});
 	}
@@ -314,7 +336,10 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				await handle.session.abort();
 			}
 			this.handles.delete(to);
-			await this.chains.get(to)?.catch(() => {}); // let an in-flight turn unwind
+			// NB: we deliberately do NOT await this.chains.get(to) — a oneshot
+			// auto-retire calls retire() from inside that very turn's tail, so
+			// awaiting it would deadlock. The `retiring` flag + abort() above make
+			// any in-flight/next turn stand down.
 			// Bounce pending PEER mail so peers don't strand (D26); owner/user mail is dropped quietly.
 			const mailboxDir = this.layout.mailboxDir(record.type, record.id);
 			for (const p of readPending(mailboxDir)) {
@@ -340,6 +365,52 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	/** Retired agents on disk in .archive/ (D13). */
 	archived(): ArchivedInfo[] {
 		return readArchived(this.layout);
+	}
+
+	/**
+	 * Explicit in-run join (D24'/D26'/D27'): block until a matching final/collect
+	 * report from `to` correlated to `anchorId` lands in the main mailbox
+	 * (consumed on match), or the agent needs attention (question/escalation/error
+	 * — returned without consuming so it can't deadlock), or it retired, or the
+	 * timeout elapses (consumes nothing).
+	 */
+	async awaitResult(options: AwaitOptions): Promise<AwaitResult> {
+		const { to, waitFor, anchorId } = options;
+		const mainbox = this.layout.mainMailboxDir;
+		const deadline = Date.now() + (options.timeoutSeconds ?? 300) * 1000;
+		for (;;) {
+			if (options.signal?.aborted) return { status: "timeout", to, anchorId };
+			const pending = readPending(mainbox);
+
+			const terminal = pending.find(
+				(p) =>
+					p.envelope.type === "report" &&
+					p.envelope.from === to &&
+					p.envelope.correlationId === anchorId &&
+					(waitFor === "final" ? p.envelope.payload.final === true : true),
+			);
+			if (terminal) {
+				markDone(mainbox, terminal.envelope.id);
+				const result: AwaitResult = { status: "completed", to, anchorId, report: envView(terminal.envelope) };
+				if (waitFor === "collect") {
+					const schema = peekCollectRequest(mainbox, anchorId, to);
+					if (schema !== undefined) {
+						result.validation = validateAgainstSchema(terminal.envelope.payload.data, schema);
+						takeCollectRequest(mainbox, anchorId);
+					}
+				}
+				return result;
+			}
+
+			const attention = pending.find(
+				(p) => p.envelope.from === to && (p.envelope.type === "question" || p.envelope.type === "escalation" || p.envelope.type === "error"),
+			);
+			if (attention) return { status: "attention", to, anchorId, attention: envView(attention.envelope) };
+
+			if (!getAgent(this.registry, to) && this.activeTurns.size === 0) return { status: "retired", to, anchorId };
+			if (Date.now() >= deadline) return { status: "timeout", to, anchorId };
+			await new Promise((resolve) => setTimeout(resolve, 40));
+		}
 	}
 
 	// ----------------------------------------------------------------- events / dispose
@@ -470,6 +541,11 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			const handle = await this.ensureHandle(address, record, def, this.inheritCache.get(address));
 			handle.trigger = pending.map((p) => p.envelope);
 			handle.abortedBy = null;
+			handle.retireAfterTurn = false;
+			// The current assignment (for final-report correlation, D26'): the first
+			// uncorrelated task message (from main or a peer) driving this turn.
+			const task = pending.find((p) => p.envelope.type === "message" && p.envelope.correlationId === null && p.envelope.from !== USER_ADDRESS);
+			if (task) handle.assignment = task.envelope.id;
 			this.setState(address, "running");
 			this.emit({ type: "turn-started", address });
 
@@ -518,10 +594,16 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			}
 			this.emit({ type: "state-changed", address, state: "dormant" });
 			this.emit({ type: "turn-finished", address, vitals });
+			if (!leavePending) handle.assignment = null;
 		} finally {
 			release();
 		}
 
+		// A oneshot that sent its final report this turn auto-retires (D13).
+		if (!leavePending && this.handles.get(address)?.retireAfterTurn) {
+			await this.retire(address);
+			return;
+		}
 		// More mail arrived during the turn (held, never interrupts) → drain again.
 		if (!leavePending && !this.disposed && pendingCount(mailboxDir) > 0) this.scheduleMailTurn(address);
 	}
@@ -595,7 +677,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		if (thinkingLevel !== undefined) sessionOptions.thinkingLevel = thinkingLevel;
 
 		const { session } = await createAgentSession(sessionOptions);
-		return { session, generationId: record.generationId, typeFileHash: record.typeFileHash, abortedBy: null, trigger: null };
+		return { session, generationId: record.generationId, typeFileHash: record.typeFileHash, abortedBy: null, trigger: null, assignment: null, retireAfterTurn: false };
 	}
 
 	private resolveModel(def: TypeDefinition, inherit?: InheritedDefaults): CreateAgentSessionOptions["model"] | undefined {
@@ -610,6 +692,17 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		}
 		return resolved.model;
 	}
+}
+
+function envView(envelope: Envelope): AwaitEnvelopeView {
+	return {
+		id: envelope.id,
+		type: envelope.type as AwaitEnvelopeView["type"],
+		text: envelope.payload.text,
+		correlationId: envelope.correlationId,
+		...(envelope.payload.data !== undefined ? { data: envelope.payload.data } : {}),
+		...(envelope.payload.final !== undefined ? { final: envelope.payload.final } : {}),
+	};
 }
 
 function toSendResult(outcome: DeliveryOutcome): SendResult {

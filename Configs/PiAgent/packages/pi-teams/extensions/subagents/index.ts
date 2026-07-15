@@ -17,7 +17,16 @@ import { createLayout } from "./store/layout.ts";
 import { claimHostScope, HostScopeLockedError, type HostScopeLease } from "./store/host-lease.ts";
 import { SettingsLoader } from "./store/settings.ts";
 import { makeSafetyConfirm } from "./sandbox/safety-bridge.ts";
-import { createCollectTool, createSendTool, createSpawnTool, createStatusTool, createSteerTool } from "./tools/main-agent.ts";
+import {
+	createAwaitTool,
+	createCollectTool,
+	createInterruptTool,
+	createRetireTool,
+	createSendTool,
+	createSpawnTool,
+	createStatusTool,
+	createSteerTool,
+} from "./tools/main-agent.ts";
 import { createWidgetController, widgetStatusText, type WidgetController } from "./tui/widget.ts";
 import { createPicker, type PickerResult } from "./tui/picker.ts";
 import { createViewer, type ViewerResult } from "./tui/viewer.ts";
@@ -41,6 +50,9 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerTool(createSendTool(getCore));
 	pi.registerTool(createSteerTool(getCore));
 	pi.registerTool(createCollectTool(getCore));
+	pi.registerTool(createAwaitTool(getCore));
+	pi.registerTool(createInterruptTool(getCore));
+	pi.registerTool(createRetireTool(getCore));
 	pi.registerTool(createStatusTool(getCore));
 
 	// --- TUI (D22): /teams picker → full-screen viewer; ambient widget. ---
@@ -138,6 +150,12 @@ export default function (pi: ExtensionAPI): void {
 			},
 		});
 
+		uiCtx = ctx;
+		// A subagent that finishes/reports while the host is idle should wake it.
+		core.onEvent((event) => {
+			if (event.type === "turn-finished" || event.type === "agent-retired") deliverMainMail();
+		});
+
 		// Ambient widget: publish plain status text; pi-status-line styles it.
 		if (ctx.mode === "tui") {
 			const publish = (): void => {
@@ -147,6 +165,31 @@ export default function (pi: ExtensionAPI): void {
 			widget = createWidgetController({ core, onChange: publish });
 			publish();
 		}
+	});
+
+	// --- Main-mail auto-wake (D24): all mail wakes an idle host. ---
+	let hostIdle = false;
+	let uiCtx: ExtensionContext | null = null;
+
+	const deliverMainMail = (): void => {
+		if (!hostIdle || !core || !uiCtx) return;
+		const digest = core.takeMainMailDigest();
+		if (!digest) return;
+		hostIdle = false; // the injected turn is no longer idle
+		pi.sendMessage({ content: digest, customType: "teams-mail", display: true, details: undefined }, { deliverAs: "followUp" });
+	};
+
+	pi.on("input", (_event, ctx) => {
+		hostIdle = false;
+		uiCtx = ctx;
+	});
+	pi.on("before_agent_start", () => {
+		hostIdle = false;
+	});
+	pi.on("agent_settled", (_event, ctx) => {
+		uiCtx = ctx ?? uiCtx;
+		hostIdle = true;
+		deliverMainMail(); // background work that finished during the turn
 	});
 
 	pi.on("session_shutdown", async () => {

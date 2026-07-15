@@ -51,6 +51,7 @@ TESTS=(
 	phase4-rails.mjs
 	phase5-sandbox.mjs
 	phase6-tui.mjs
+	phase7-completion.mjs
 	loadcheck.mjs
 )
 for t in "${TESTS[@]}"; do

@@ -147,6 +147,77 @@ export function createCollectTool(getCore: GetCore): ToolDefinition<typeof Colle
 	};
 }
 
+const AwaitParams = Type.Object({
+	to: Type.String({ description: "The subagent whose result to wait for." }),
+	waitFor: Type.Union([Type.Literal("final"), Type.Literal("collect")], { description: "final = its final report for the task; collect = a specific team_collect result." }),
+	anchorId: Type.String({ description: "The anchor id: taskEnvelopeId from team_spawn/team_send (final), or requestId from team_collect (collect)." }),
+	timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 900, description: "Max seconds to wait (default 300)." })),
+});
+
+export function createAwaitTool(getCore: GetCore): ToolDefinition<typeof AwaitParams> {
+	return {
+		name: "team_await",
+		label: "Await subagent result",
+		description:
+			"Block until a subagent delivers its final report (or a collect result) for a given anchor, then return it. " +
+			"Returns early with 'attention' if the agent needs an answer/escalation/errors (so it can't deadlock), 'retired' " +
+			"if the agent is gone, or 'timeout'. Subagents are background by default — use this to join their work in-turn.",
+		parameters: AwaitParams,
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			try {
+				const result = await getCore(ctx).awaitResult({
+					to: params.to,
+					waitFor: params.waitFor,
+					anchorId: params.anchorId,
+					...(params.timeoutSeconds !== undefined ? { timeoutSeconds: params.timeoutSeconds } : {}),
+					...(signal ? { signal } : {}),
+				});
+				return jsonResult(result);
+			} catch (error) {
+				return errorResult(error);
+			}
+		},
+	};
+}
+
+const InterruptParams = Type.Object({ to: Type.String({ description: "The running subagent to interrupt." }) });
+
+export function createInterruptTool(getCore: GetCore): ToolDefinition<typeof InterruptParams> {
+	return {
+		name: "team_interrupt",
+		label: "Interrupt subagent",
+		description: "Abort a subagent's current turn. It stays alive with memory intact and goes dormant; its triggering mail stays pending.",
+		parameters: InterruptParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				return jsonResult(await getCore(ctx).interrupt(params.to));
+			} catch (error) {
+				return errorResult(error);
+			}
+		},
+	};
+}
+
+const RetireParams = Type.Object({ to: Type.String({ description: "The subagent to retire (<type>/<id>)." }) });
+
+export function createRetireTool(getCore: GetCore): ToolDefinition<typeof RetireParams> {
+	return {
+		name: "team_retire",
+		label: "Retire subagent",
+		description:
+			"Permanently retire a subagent: deregister it and archive its memory. The ONLY destructive action — the address " +
+			"bounces afterward. Use for finished persistent agents; oneshots retire themselves.",
+		parameters: RetireParams,
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			try {
+				return jsonResult(await getCore(ctx).retire(params.to));
+			} catch (error) {
+				return errorResult(error);
+			}
+		},
+	};
+}
+
 const StatusParams = Type.Object({
 	address: Type.Optional(Type.String({ description: "A <type>/<id> to inspect in detail. Omit for the full roster." })),
 	tail: Type.Optional(Type.Integer({ minimum: 0, maximum: 200, description: "With address: number of trailing transcript entries (default 20)." })),

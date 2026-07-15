@@ -9,12 +9,16 @@
  */
 
 import type { AuthStorage, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { pendingCount } from "./mail/mailbox.ts";
+import { collectResultNote, validateAgainstSchema } from "./mail/collect.ts";
+import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
+import { markDone, peekCollectRequest, pendingCount, readPending, takeCollectRequest } from "./mail/mailbox.ts";
 import { makeHopsGuard } from "./rails/hops.ts";
 import type { ConfirmFn } from "./sandbox/safety-bridge.ts";
 import { InProcessRuntime } from "./runtime/in-process.ts";
 import type {
 	AgentDetail,
+	AwaitOptions,
+	AwaitResult,
 	CollectResult,
 	InterruptResult,
 	RetireResult,
@@ -50,6 +54,8 @@ export interface SubagentsCore {
 	send(options: SendOptions): Promise<SendResult>;
 	sendAsUser(options: SendOptions): Promise<SendResult>;
 	collect(to: string, schema: unknown): Promise<CollectResult>;
+	/** Explicit in-run join for a final/collect result (D27'). */
+	awaitResult(options: AwaitOptions): Promise<AwaitResult>;
 	status(): Promise<RosterEntry[]>;
 	peek(address: string, tail?: number): Promise<AgentDetail | null>;
 	steer(to: string, text: string): Promise<SteerResult>;
@@ -59,6 +65,12 @@ export interface SubagentsCore {
 	availableTypes(): AvailableType[];
 	/** Unprocessed envelopes in the main agent's mailbox (widget 📬). */
 	mainUnreadCount(): number;
+	/**
+	 * Drain the main mailbox into a wake digest and mark it done (D24 auto-wake).
+	 * Collect results are validated against their request schema on arrival
+	 * (findings #9/#10). Returns null when there is no pending main mail.
+	 */
+	takeMainMailDigest(): string | null;
 	/** Unprocessed envelopes in a subagent's mailbox (picker badge). */
 	agentUnreadCount(address: string): number;
 	/** Retired agents still on disk in .archive (D13). Empty until Phase 7. */
@@ -103,6 +115,7 @@ export function createCore(options: CoreOptions): SubagentsCore {
 		send: (sendOptions) => runtime.send(sendOptions),
 		sendAsUser: (sendOptions) => runtime.sendAsUser(sendOptions),
 		collect: (to, schema) => runtime.collect(to, schema),
+		awaitResult: (awaitOptions) => (runtime as InProcessRuntime).awaitResult(awaitOptions),
 		status: () => runtime.status(),
 		peek: (address, tail) => runtime.peek(address, tail),
 		steer: (to, text) => runtime.steer(to, text),
@@ -110,6 +123,25 @@ export function createCore(options: CoreOptions): SubagentsCore {
 		retire: (to) => runtime.retire(to),
 		onEvent: (listener) => runtime.onEvent(listener),
 		mainUnreadCount: () => pendingCount(options.layout.mainMailboxDir),
+		takeMainMailDigest(): string | null {
+			const box = options.layout.mainMailboxDir;
+			const pending = readPending(box);
+			if (pending.length === 0) return null;
+			const items: DigestItem[] = pending.map((p) => {
+				const item: DigestItem = { envelope: p.envelope, redelivered: p.redelivered };
+				if (p.envelope.type === "report" && p.envelope.correlationId) {
+					const schema = peekCollectRequest(box, p.envelope.correlationId, p.envelope.from);
+					if (schema !== undefined) {
+						item.note = collectResultNote(validateAgainstSchema(p.envelope.payload.data, schema));
+						takeCollectRequest(box, p.envelope.correlationId);
+					}
+				}
+				return item;
+			});
+			const digest = composeWakeDigest({ items, questionLookup: () => undefined });
+			for (const p of pending) markDone(box, p.envelope.id);
+			return digest;
+		},
 		agentUnreadCount: (address) => {
 			const parts = address.split("/");
 			return parts.length === 2 ? pendingCount(options.layout.mailboxDir(parts[0]!, parts[1]!)) : 0;
