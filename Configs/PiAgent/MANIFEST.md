@@ -6,7 +6,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 
 | Package | Main surface |
 |---|---|
-| `pi-agents2` | Persistent Pi subagents (v2 clean-slate rebuild, **in progress, not yet enabled**). v1 archived at `packages/_archive/pi-agents-v1/`; disabled in settings.json during the rebuild. See `Configs/Subagent-Docs/` (D1'–D27'). |
+| `pi-teams` | **Teams** — persistent Pi subagents (`/teams`), clean-slate rebuild of pi-agents (**in progress, not yet enabled**). v1 archived at `packages/_archive/pi-agents-v1/`; disabled in settings.json during the rebuild. LLM tools are `team_*`. See `Configs/Subagent-Docs/` (D1'–D27'). |
 | `pi-bookmark` | `/bookmark` and `/unbookmark` session-tree labels |
 | `pi-browse` | `/browse-files` native file browser |
 | `pi-changes` | `/changes` session edit review/undo and read-only `/git-changes` repository diff browser |

@@ -1,0 +1,19 @@
+{
+	"name": "pi-teams",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Teams — persistent Pi subagents (clean-slate rebuild of pi-agents): a team of durable, session-scoped agents with memory, disk-backed mailboxes, explicit anchored result awaiting, flat peer communication, markdown-defined types, and a session-viewer TUI (/teams). Human confirmation is delegated to pi-safety.",
+	"keywords": [
+		"pi-package"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	}
+}

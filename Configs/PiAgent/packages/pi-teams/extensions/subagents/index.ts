@@ -8,7 +8,7 @@
  * keyed by the owning main session id (D3/D25'). Non-persisted (temporary)
  * sessions cannot spawn subagents at all (D25'). Torn down on shutdown.
  *
- * Registration grows phase by phase. Phase 2: subagent_spawn / subagent_status.
+ * Registration grows phase by phase. Phase 2: team_spawn / team_status.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";

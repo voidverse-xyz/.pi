@@ -1,5 +1,5 @@
 /**
- * mail/collect.ts — collect-result schema validation (subagent_collect). PURE.
+ * mail/collect.ts — collect-result schema validation (team_collect). PURE.
  *
  * A RESTRICTED JSON-Schema subset, hand-rolled: type (object/array/string/
  * number/integer/boolean/null), properties + required + additionalProperties:

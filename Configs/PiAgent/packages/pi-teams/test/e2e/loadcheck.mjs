@@ -1,7 +1,7 @@
 /**
  * Registration check: load the extension entry with Pi's OWN loader and assert
  * the surface registered cleanly. Grows with each phase. Phase 2: the two tools
- * subagent_spawn / subagent_status.
+ * team_spawn / team_status.
  *
  * Run: node loadcheck.mjs
  */
@@ -25,7 +25,7 @@ const keysOf = (v) => (v?.keys ? [...v.keys()] : v ? Object.keys(v) : []);
 
 assert.deepEqual(
 	keysOf(ext.tools).sort(),
-	["subagent_collect", "subagent_send", "subagent_spawn", "subagent_status", "subagent_steer"],
+	["team_collect", "team_send", "team_spawn", "team_status", "team_steer"],
 	"Phase 3 tool surface",
 );
 

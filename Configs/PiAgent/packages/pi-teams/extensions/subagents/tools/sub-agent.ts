@@ -41,7 +41,7 @@ const ReportParams = Type.Object({
 	text: Type.String({ maxLength: MAX_REPORT_TEXT_CHARS }),
 	final: Type.Optional(Type.Boolean({ description: "true = this task is complete. (A oneshot auto-retires after its final report.)" })),
 	data: Type.Optional(Type.Any({ description: "Structured result (e.g. a collect result). Kept on disk; summarized in the main agent's digest." })),
-	correlationId: Type.Optional(Type.String({ description: "The collect-request id when fulfilling subagent_collect." })),
+	correlationId: Type.Optional(Type.String({ description: "The collect-request id when fulfilling team_collect." })),
 });
 
 const AskParams = Type.Object({

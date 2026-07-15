@@ -1,6 +1,6 @@
 /**
- * tools/main-agent.ts — the subagent_* tools the MAIN agent's LLM sees
- * (intent-grouped, D16). Phase 2: subagent_spawn, subagent_status. Others
+ * tools/main-agent.ts — the team_* tools the MAIN agent's LLM sees
+ * (intent-grouped, D16). Phase 2: team_spawn, team_status. Others
  * (send/steer/collect/interrupt/retire/await) are added in later phases.
  *
  * Tools talk ONLY to the core facade.
@@ -38,12 +38,12 @@ const SpawnParams = Type.Object({
 
 export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnParams> {
 	return {
-		name: "subagent_spawn",
+		name: "team_spawn",
 		label: "Spawn subagent",
 		description:
 			"Spawn or wake a persistent subagent at address <type>/<id>. Get-or-create: if the address " +
 			"already exists it wakes with memory intact (created:false). An optional task runs asynchronously; " +
-			"observe progress with subagent_status.",
+			"observe progress with team_status.",
 		parameters: SpawnParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const core = getCore(ctx);
@@ -80,7 +80,7 @@ const SendParams = Type.Object({
 
 export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendParams> {
 	return {
-		name: "subagent_send",
+		name: "team_send",
 		label: "Message a subagent",
 		description:
 			"Send mail to a subagent (or answer its question with correlationId). Never interrupts a running turn — " +
@@ -110,9 +110,9 @@ const SteerParams = Type.Object({
 
 export function createSteerTool(getCore: GetCore): ToolDefinition<typeof SteerParams> {
 	return {
-		name: "subagent_steer",
+		name: "team_steer",
 		label: "Steer subagent",
-		description: "Inject guidance into a subagent's CURRENT turn (main-agent-only). No-op if it isn't running; use subagent_send otherwise.",
+		description: "Inject guidance into a subagent's CURRENT turn (main-agent-only). No-op if it isn't running; use team_send otherwise.",
 		parameters: SteerParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
@@ -131,7 +131,7 @@ const CollectParams = Type.Object({
 
 export function createCollectTool(getCore: GetCore): ToolDefinition<typeof CollectParams> {
 	return {
-		name: "subagent_collect",
+		name: "team_collect",
 		label: "Collect result",
 		description:
 			"Ask a subagent for a schema-conforming structured result. Non-blocking: the agent delivers it later as a report " +
@@ -154,7 +154,7 @@ const StatusParams = Type.Object({
 
 export function createStatusTool(getCore: GetCore): ToolDefinition<typeof StatusParams> {
 	return {
-		name: "subagent_status",
+		name: "team_status",
 		label: "Subagent status",
 		description:
 			"Inspect subagents. With no address: the full roster (address, state, vitals). With an address: " +
