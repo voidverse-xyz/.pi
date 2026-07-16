@@ -44,7 +44,9 @@ export function renderTreeLines(rows: AgentActivityRow[], theme: TreeTheme): str
 		const last = i === rows.length - 1;
 		const branch = last ? "└─" : "├─";
 		const cont = last ? "   " : "│  ";
-		lines.push(theme.fg("text", `${branch} ${row.address} · ${row.toolUses} tool use${row.toolUses === 1 ? "" : "s"}`));
+		// The display label makes anonymous oneshots readable: worker/tmp-3f9a “lint sweep”.
+		const label = row.label ? ` “${row.label}”` : "";
+		lines.push(theme.fg("text", `${branch} ${row.address}${label} · ${row.toolUses} tool use${row.toolUses === 1 ? "" : "s"}`));
 		lines.push(theme.fg("dim", `${cont}└ ${row.summary || "thinking…"}`));
 	});
 	return lines;

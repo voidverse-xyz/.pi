@@ -49,9 +49,10 @@ export function pickerRowText(row: PickerRow): string {
 	switch (row.kind) {
 		case "agent": {
 			const { entry } = row;
+			const label = entry.label ? ` “${entry.label}”` : "";
 			const pct = entry.vitals.ctxPercent !== null ? ` · ${Math.round(entry.vitals.ctxPercent * 100)}%` : "";
 			const badge = row.unread > 0 ? ` · ${MAIL_ICON} ${row.unread}` : "";
-			return `${STATE_GLYPHS[entry.state]} ${entry.address} · ${entry.state}${pct}${badge}`;
+			return `${STATE_GLYPHS[entry.state]} ${entry.address}${label} · ${entry.state}${pct}${badge}`;
 		}
 		case "archive-header":
 			return `${row.expanded ? "" : ""} .archive (${row.count})`;

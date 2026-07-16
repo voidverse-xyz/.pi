@@ -91,6 +91,18 @@ test("renders a tree row + current tool per running agent", () => {
 	assert.ok(lines.some((l) => l.includes("docs/main") && l.includes("1 tool use") && !l.includes("1 tool uses")));
 	assert.ok(lines.some((l) => l.includes("└─"))); // last-branch glyph
 });
+test("a display label renders next to the address in tree and picker rows", () => {
+	const lines = tree.renderTreeLines(
+		[{ address: "worker/tmp-3f9a", label: "lint sweep", tool: "bash", summary: "Bash: eslint", toolUses: 2 }],
+		plainTheme,
+	);
+	assert.ok(lines.some((l) => l.includes("worker/tmp-3f9a “lint sweep”")), `tree row shows the label: ${lines[1]}`);
+	const entry = { address: "worker/tmp-3f9a", type: "worker", id: "tmp-3f9a", state: "running", lifetime: "oneshot", purview: "lint sweep", label: "lint sweep", vitals: { state: "running", ctxPercent: null, tokens: 0, cost: 0, turns: 1 }, unread: 0, updatedAt: "" };
+	const text = picker.pickerRowText({ kind: "agent", entry, unread: 0 });
+	assert.ok(text.includes("worker/tmp-3f9a “lint sweep”"), `picker row shows the label: ${text}`);
+	const noLabel = picker.pickerRowText({ kind: "agent", entry: { ...entry, label: undefined }, unread: 0 });
+	assert.ok(!noLabel.includes("“"), "no quotes when there is no label");
+});
 test("the stop hint is shown while agents run, and never when idle", () => {
 	const lines = tree.renderTreeLines([{ address: "a/1", tool: "bash", summary: "Bash: x", toolUses: 1 }], plainTheme);
 	// The brake must be discoverable exactly when it is usable.

@@ -216,7 +216,16 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 		const address = formatAgentAddress(type, id);
 		const now = new Date().toISOString();
-		const { record, created } = upsertAgent(this.registry, { type, id, lifetime, typeFileHash: resolved.resolved.hash, now });
+		// The label is display-only: trim, collapse whitespace, cap — never trusted as a path/key.
+		const label = options.label?.trim().replace(/\s+/g, " ").slice(0, 80);
+		const { record, created } = upsertAgent(this.registry, {
+			type,
+			id,
+			lifetime,
+			typeFileHash: resolved.resolved.hash,
+			now,
+			...(label ? { label } : {}),
+		});
 		mkdirSync(this.layout.agentInstanceDir(type, id), { recursive: true });
 		this.persist();
 
@@ -461,7 +470,10 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	/** Live activity for currently-working agents (tree widget). */
 	activitySnapshot(): AgentActivityRow[] {
 		return [...this.activity.entries()]
-			.map(([address, a]) => ({ address, ...a }))
+			.map(([address, a]) => {
+				const label = getAgent(this.registry, address)?.label;
+				return { address, ...(label !== undefined ? { label } : {}), ...a };
+			})
 			.sort((x, y) => x.address.localeCompare(y.address));
 	}
 
@@ -584,7 +596,8 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			id: record.id,
 			state: record.vitals.state,
 			lifetime: record.lifetime,
-			purview: record.id,
+			purview: record.label ?? record.id,
+			...(record.label !== undefined ? { label: record.label } : {}),
 			vitals: record.vitals,
 			unread: pendingCount(this.layout.mailboxDir(record.type, record.id)),
 			updatedAt: record.lastActiveAt,
@@ -594,8 +607,8 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	private identityFor(address: string, record: AgentRecord): IdentityOptions {
 		const peers: PeerInfo[] = listAgents(this.registry)
 			.filter((other) => formatAgentAddress(other.type, other.id) !== address)
-			.map((other) => ({ address: formatAgentAddress(other.type, other.id), purview: other.id }));
-		return { address, purview: record.id, peers, lifetime: record.lifetime };
+			.map((other) => ({ address: formatAgentAddress(other.type, other.id), purview: other.label ?? other.id }));
+		return { address, purview: record.label ?? record.id, peers, lifetime: record.lifetime };
 	}
 
 	private latestSessionFile(type: string, id: string): string | undefined {

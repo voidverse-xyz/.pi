@@ -37,6 +37,8 @@ export interface AgentRecord {
 	type: string;
 	id: string;
 	lifetime: Lifetime;
+	/** Optional display-only label ("what is this one doing") — never part of the address. */
+	label?: string;
 	/** Incarnation fence `gen_<32hex>` — bumped when the session handle is rebuilt. */
 	generationId: string;
 	/** sha256 of the resolved type `.md` at last wake (live-resolve fence, D6). */
@@ -74,6 +76,8 @@ export interface UpsertInput {
 	lifetime: Lifetime;
 	typeFileHash: string;
 	now: string;
+	/** Display-only label; on re-spawn a provided label replaces the old one. */
+	label?: string;
 }
 
 /** Get-or-create (D4): existing address is returned as-is (created:false). */
@@ -83,12 +87,14 @@ export function upsertAgent(registry: Registry, input: UpsertInput): { record: A
 	if (existing) {
 		existing.typeFileHash = input.typeFileHash;
 		existing.lastActiveAt = input.now;
+		if (input.label !== undefined) existing.label = input.label;
 		return { record: existing, created: false };
 	}
 	const record: AgentRecord = {
 		type: input.type,
 		id: input.id,
 		lifetime: input.lifetime,
+		...(input.label !== undefined ? { label: input.label } : {}),
 		generationId: newGenerationId(),
 		typeFileHash: input.typeFileHash,
 		createdAt: input.now,
@@ -187,6 +193,10 @@ export function readRegistry(path: string): Registry {
 				if (!hasValidIdentity(record) || formatAgentAddress(record.type, record.id) !== address) continue;
 				if (!vitalsAreValid((record as AgentRecord).vitals)) {
 					(record as AgentRecord).vitals = defaultVitals("dormant");
+				}
+				// label is display-only and optional — repair a corrupt one by dropping it.
+				if ("label" in record && typeof (record as AgentRecord).label !== "string") {
+					delete (record as AgentRecord).label;
 				}
 				registry.agents[address] = record as AgentRecord;
 			}

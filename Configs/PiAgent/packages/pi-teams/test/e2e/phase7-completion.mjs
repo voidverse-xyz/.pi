@@ -94,6 +94,16 @@ await test("await times out when nothing arrives (consumes nothing)", async () =
 	assert.equal(result.status, "timeout");
 });
 
+console.log("display label:");
+await test("a spawn label is sanitized, stored, and becomes the roster purview", async () => {
+	await core.spawn({ type: "worker", id: "labelled", label: "  auth   refactor  " });
+	const entry = (await core.status()).find((r) => r.address === "worker/labelled");
+	assert.ok(entry, "labelled agent on the roster");
+	assert.equal(entry.label, "auth refactor", "label trimmed + whitespace-collapsed");
+	assert.equal(entry.purview, "auth refactor", "label doubles as the purview");
+	await core.retire("worker/labelled");
+});
+
 console.log("oneshot auto-retire:");
 await test("a oneshot's identity block explains final-report = sign-off; a persistent one is not told that", () => {
 	const oneshot = composeIdentityBlock({ address: "w/tmp-ab", purview: "tmp-ab", peers: [], lifetime: "oneshot" });

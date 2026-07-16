@@ -32,6 +32,8 @@ export interface AgentActivity {
 /** One tree-widget row: an agent's live activity keyed by address. */
 export interface AgentActivityRow extends AgentActivity {
 	address: string;
+	/** Display-only label from spawn, if one was given. */
+	label?: string;
 }
 
 /**
@@ -54,6 +56,12 @@ export interface SpawnOptions {
 	lifetime?: Lifetime;
 	/** Optional first message — spawn + assign in one call. */
 	task?: string;
+	/**
+	 * Optional display-only label ("what is this one doing"), shown in the TUI and
+	 * roster. NOT part of the address — especially useful for oneshots, whose
+	 * tmp-<hex> ids say nothing.
+	 */
+	label?: string;
 	/** Session defaults for fields the frontmatter leaves unset. */
 	inherit?: InheritedDefaults;
 }
@@ -145,6 +153,8 @@ export interface RosterEntry {
 	state: AgentState;
 	lifetime: Lifetime;
 	purview: string;
+	/** Display-only label from spawn, if one was given. */
+	label?: string;
 	vitals: AgentVitals;
 	/** Unprocessed envelopes in this agent's mailbox. */
 	unread: number;

@@ -30,11 +30,19 @@ const SpawnParams = Type.Object({
 		Type.Union([Type.Literal("persistent"), Type.Literal("oneshot")], {
 			description:
 				"persistent (default): named, durable memory — lives until YOU team_retire it, so every persistent spawn is a cleanup obligation. " +
-				"oneshot: disposable, auto-named (tmp-<hex>, never pass an id), retires itself after it sends a final report. " +
+				"oneshot: disposable, auto-named (tmp-<hex>, never pass an id — give it a `label` instead), retires itself after it sends a final report. " +
 				"Rule of thumb: one-off task, probe, or experiment → oneshot; an agent you'll message again across tasks → persistent.",
 		}),
 	),
 	task: Type.Optional(Type.String({ description: "Optional first task — spawn and assign in one call. Runs asynchronously." })),
+	label: Type.Optional(
+		Type.String({
+			maxLength: 80,
+			description:
+				"Short display label ('what is this one doing'), shown in the roster and TUI next to the address. " +
+				"Strongly recommended for oneshots (their tmp-<hex> ids say nothing), e.g. 'lint sweep' or 'flaky-test probe'.",
+		}),
+	),
 });
 
 export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnParams> {
@@ -56,6 +64,7 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 					...(params.id !== undefined ? { id: params.id } : {}),
 					...(params.lifetime !== undefined ? { lifetime: params.lifetime as Lifetime } : {}),
 					...(params.task !== undefined ? { task: params.task } : {}),
+					...(params.label !== undefined ? { label: params.label } : {}),
 					inherit: { ...(ctx.model ? { modelRef: `${ctx.model.provider}/${ctx.model.id}` } : {}) },
 				});
 				return jsonResult(result);
