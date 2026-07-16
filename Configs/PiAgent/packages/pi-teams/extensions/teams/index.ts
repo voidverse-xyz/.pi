@@ -1,14 +1,16 @@
 /**
- * Subagents (v2) — extension entry.
+ * pi-teams — extension entry.
  *
  * Design: ~/Agents/Documents/Configs/Subagent-Docs/ (D1'–D27'). v1 is archived
  * at packages/_archive/pi-agents-v1/.
  *
  * At session_start the core is acquired under a single host-scope lease (D7),
  * keyed by the owning main session id (D3/D25'). Non-persisted (temporary)
- * sessions cannot spawn subagents at all (D25'). Torn down on shutdown.
+ * sessions cannot spawn team agents at all (D25'). Torn down on shutdown.
  *
- * Registration grows phase by phase. Phase 2: team_spawn / team_status.
+ * Registers the nine team_* tools, the /teams command (picker/viewer/stop/
+ * peers), the stop-all shortcut, the ambient + tree widgets, and the main-mail
+ * auto-wake pump.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -57,7 +59,7 @@ export default function (pi: ExtensionAPI): void {
 	let widget: WidgetController | null = null;
 	let tree: TreeWidgetController | null = null;
 	let overlayOpen = false;
-	/** Set when subagents are unavailable this session (non-persisted, or lease held elsewhere). */
+	/** Set when teams are unavailable this session (non-persisted, or lease held elsewhere). */
 	let unavailableReason: string | null = null;
 	/** The latest ExtensionContext, captured at session_start/input/settle for the wake pump. */
 	let uiCtx: ExtensionContext | null = null;
@@ -207,7 +209,7 @@ export default function (pi: ExtensionAPI): void {
 		const sessionId = ctx.sessionManager.getSessionId();
 		const persisted = ctx.sessionManager.getSessionFile() !== undefined;
 		if (!persisted) {
-			unavailableReason = "Subagents require a persisted session (start or resume a saved session).";
+			unavailableReason = "Teams require a persisted session (start or resume a saved session).";
 			return;
 		}
 
@@ -216,7 +218,7 @@ export default function (pi: ExtensionAPI): void {
 			lease = claimHostScope(layout);
 		} catch (error) {
 			if (error instanceof HostScopeLockedError) {
-				unavailableReason = `Another process (pid ${error.ownerPid}) owns this session's subagents.`;
+				unavailableReason = `Another process (pid ${error.ownerPid}) owns this session's team agents.`;
 				if (ctx.hasUI) ctx.ui.notify(unavailableReason, "warning");
 				return;
 			}
@@ -225,7 +227,7 @@ export default function (pi: ExtensionAPI): void {
 
 		try {
 			const { settings, warnings } = loadSettings(layout.globalSettingsFile, layout.projectSettingsFile);
-			if (ctx.hasUI) for (const warning of warnings) ctx.ui.notify(`pi-agents: ${warning}`, "warning");
+			if (ctx.hasUI) for (const warning of warnings) ctx.ui.notify(`pi-teams: ${warning}`, "warning");
 
 			unavailableReason = null;
 			core = createCore({
@@ -277,7 +279,7 @@ export default function (pi: ExtensionAPI): void {
 				};
 				widget = createWidgetController({ core, onChange: publish });
 				publish();
-				// The live "Running N team agents…" tree above the editor (Phase 8).
+				// The live "Running N team agents…" tree above the editor.
 				tree = createTreeWidget(core, {
 					setWidget: (key, content, opts) => ctx.ui.setWidget(key, content, opts),
 					theme: ctx.ui.theme,
@@ -286,9 +288,9 @@ export default function (pi: ExtensionAPI): void {
 		} catch (error) {
 			// Setup failed AFTER the lease was claimed — tear everything down so the
 			// lease is released (otherwise it blocks resume in another process), and
-			// report why subagents are unavailable this session (M3).
+			// report why teams are unavailable this session (M3).
 			await teardown();
-			unavailableReason = `Subagents failed to initialize: ${error instanceof Error ? error.message : String(error)}`;
+			unavailableReason = `Teams failed to initialize: ${error instanceof Error ? error.message : String(error)}`;
 			if (ctx.hasUI) ctx.ui.notify(unavailableReason, "warning");
 		}
 	});

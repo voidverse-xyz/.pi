@@ -3,9 +3,6 @@
  * this; they never import runtime/in-process.ts, so the runtime stays a
  * swap-point behind runtime/types.ts.
  *
- * Phase 2 surface: spawn/status/peek/steer/interrupt + type catalog + events.
- * Mail (send/collect/await), retire, and main-mailbox wiring grow the facade in
- * later phases.
  */
 
 import type { AuthStorage, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -83,7 +80,7 @@ export interface SubagentsCore {
 	takeMainMailDigest(): { digest: string; commit: () => void } | null;
 	/** Unprocessed envelopes in a subagent's mailbox (picker badge). */
 	agentUnreadCount(address: string): number;
-	/** Retired agents still on disk in .archive (D13). Empty until Phase 7. */
+	/** Retired agents still on disk in .archive (D13). */
 	archived(): ArchivedAgentInfo[];
 	/** Live per-agent activity for the tree widget (current tool call + count). */
 	activitySnapshot(): AgentActivityRow[];

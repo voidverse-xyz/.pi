@@ -10,10 +10,6 @@
  * the swap-point. NOTE: human approval/escalation is NOT here in v2 — it's
  * delegated to pi-safety over pi.events (D10a).
  *
- * The interface grows phase by phase. This file is the Phase 2 surface: spawn,
- * status, peek, steer, interrupt, dispose, onEvent. Mail (send/collect) and
- * lifecycle (retire) join in later phases.
- *
  * Contract-only module: types + one interface, no implementation.
  */
 
@@ -69,7 +65,7 @@ export interface SpawnResult {
 	created: boolean;
 	state: AgentState;
 	vitals: AgentVitals;
-	/** Envelope/anchor id of the optional initial task (await anchor, Phase 7). */
+	/** Envelope/anchor id of the optional initial task (team_await anchor, D26'). */
 	taskEnvelopeId?: string;
 }
 
@@ -150,7 +146,7 @@ export interface RosterEntry {
 	lifetime: Lifetime;
 	purview: string;
 	vitals: AgentVitals;
-	/** Unprocessed envelopes in this agent's mailbox (Phase 3+; 0 for now). */
+	/** Unprocessed envelopes in this agent's mailbox. */
 	unread: number;
 	updatedAt: string;
 }

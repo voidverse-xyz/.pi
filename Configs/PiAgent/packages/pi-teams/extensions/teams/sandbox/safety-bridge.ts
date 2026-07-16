@@ -9,7 +9,7 @@
  *   requester: awaits the claimed fn; if nobody claimed → FAIL CLOSED (deny).
  *
  * Confirmations stay human (no LLM ever approves — D10). The main agent can
- * still DENY a subagent's call via the deny-by-mail channel (Phase 7), but never
+ * still DENY a subagent's call via the deny-by-mail channel, but never
  * approve.
  */
 

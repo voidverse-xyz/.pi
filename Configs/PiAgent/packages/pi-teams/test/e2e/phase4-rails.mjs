@@ -1,5 +1,5 @@
 /**
- * Phase-4 rails e2e for pi-agents2: the chain-hops rail (D21). Pure-unit checks
+ * Phase-4 rails e2e for pi-teams: the chain-hops rail (D21). Pure-unit checks
  * of makeHopsGuard/isMainEscape, then a forced peer ping-pong that must die at
  * the hop cap instead of looping forever.
  *

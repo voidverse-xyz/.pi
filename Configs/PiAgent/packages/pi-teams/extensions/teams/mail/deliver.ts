@@ -6,7 +6,7 @@
  * an error envelope back to the sender.
  *
  * v2 has NO team guard (flat peer comm — D12). A pluggable hops guard (D21) is
- * injected in Phase 4; the default allows everything.
+ * injected by the core facade; the default allows everything.
  */
 
 import {
@@ -32,7 +32,7 @@ export interface DeliveryOutcome {
 	bounceReason?: string;
 }
 
-/** A hops guard (D21, wired in Phase 4). Returns a bounce reason, or null to allow. */
+/** A hops guard (D21, wired by the core facade). Returns a bounce reason, or null to allow. */
 export type HopsGuard = (envelope: Envelope) => string | null;
 
 export interface DelivererHooks {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test/e2e/run.sh — the ONE command that verifies pi-agents2.
+# test/e2e/run.sh — the ONE command that verifies pi-teams.
 #
 #   ./test/e2e/run.sh
 #

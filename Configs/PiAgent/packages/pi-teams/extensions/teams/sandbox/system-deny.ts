@@ -3,7 +3,7 @@
  *
  * v2 has no per-type territory sandbox; pi-safety gates risk. But two dirs must
  * NEVER be writable by any agent, regardless of type or human confirmation:
- *   - the subagents state tree (mailboxes, sessions, registry) — else an agent
+ *   - the teams state tree (mailboxes, sessions, registry) — else an agent
  *     could forge a teammate's mail or rewrite its own memory;
  *   - the type-definition dirs — else an agent could rewrite its own
  *     constitution (privilege escalation).

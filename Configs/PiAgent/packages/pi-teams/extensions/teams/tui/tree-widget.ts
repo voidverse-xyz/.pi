@@ -1,6 +1,6 @@
 /**
  * tui/tree-widget.ts — the live "Running N team agents…" tree above the editor
- * (Phase 8; ref IMG_5778). One row per currently-working agent with its
+ * (ref IMG_5778). One row per currently-working agent with its
  * tool-use count and current tool call:
  *
  *   󱘎 Running 2 team agents…

@@ -107,7 +107,7 @@ export interface LayoutOptions {
 	sessionId: string;
 	/** Override $HOME (tests). Defaults to os.homedir(). */
 	home?: string;
-	/** Override the subagents root directly (tests / ephemeral). */
+	/** Override the teams state root directly (tests / ephemeral). */
 	subagentsRoot?: string;
 }
 

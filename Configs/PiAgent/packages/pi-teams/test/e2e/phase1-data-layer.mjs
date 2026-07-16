@@ -1,5 +1,5 @@
 /**
- * Phase-1 data-layer e2e for pi-agents2: layout, envelope, settings, registry,
+ * Phase-1 data-layer e2e for pi-teams: layout, envelope, settings, registry,
  * host-lease, typedefs (parse + discover).
  *
  * Run: node phase1-data-layer.mjs

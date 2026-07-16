@@ -1,5 +1,5 @@
 /**
- * Phase-2 runtime e2e for pi-agents2: a REAL agent turn through
+ * Phase-2 runtime e2e for pi-teams: a REAL agent turn through
  * createAgentSession with a stubbed LLM (in-memory ModelRegistry, scripted
  * streamSimple — no network). Verifies spawn/get-or-create, JSONL persistence +
  * memory, vitals, status/peek, context composition (native project-context

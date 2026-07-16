@@ -10,9 +10,6 @@
  * deterministic wake digest (answers-with-quoted-questions first), prompts the
  * session with it, and marks the mail done only after the turn completes. A
  * spawn `task` is just the first envelope (from `main`) into the mailbox.
- *
- * Phase 3 surface: spawn, send, sendAsUser, collect, status, peek, steer,
- * interrupt, dispose. Retire/await and pi-safety land later.
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
@@ -115,7 +112,7 @@ export interface RuntimeOptions {
 	settingsManager?: SettingsManager;
 	authStorage?: AuthStorage;
 	projectTrusted?: () => boolean;
-	/** Chain-depth guard (D21), injected in Phase 4; default allows everything. */
+	/** Chain-depth guard (D21), injected by the core facade; default allows everything. */
 	hopsGuard?: HopsGuard;
 	/** Human confirmation for guarded tool calls (D10a); default fail-closed deny. */
 	confirm?: ConfirmFn;
@@ -461,7 +458,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		return { userMode: this.userPeerMode, mainOverride: this.mainPeerOverride, userControls: this.userPeerMode !== "llm" };
 	}
 
-	/** Live activity for currently-working agents (tree widget, Phase 8). */
+	/** Live activity for currently-working agents (tree widget). */
 	activitySnapshot(): AgentActivityRow[] {
 		return [...this.activity.entries()]
 			.map(([address, a]) => ({ address, ...a }))
@@ -713,7 +710,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			this.activity.set(address, { tool: "", summary: "thinking…", toolUses: 0 });
 			let failure: { stopReason: string; message: string } | null = null;
 			const unsubscribe = handle.session.subscribe((event) => {
-				// Track the current tool call for the tree widget (Phase 8).
+				// Track the current tool call for the tree widget.
 				if (event.type === "entry_appended") {
 					const activity = extractToolActivity((event as { entry?: unknown }).entry);
 					if (activity) {

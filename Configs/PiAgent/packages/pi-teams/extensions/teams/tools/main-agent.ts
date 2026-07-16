@@ -1,7 +1,7 @@
 /**
  * tools/main-agent.ts — the team_* tools the MAIN agent's LLM sees
- * (intent-grouped, D16). Phase 2: team_spawn, team_status. Others
- * (send/steer/collect/interrupt/retire/await) are added in later phases.
+ * (intent-grouped, D16): spawn, send, steer, collect, await, interrupt,
+ * retire, status, peers.
  *
  * Tools talk ONLY to the core facade.
  */

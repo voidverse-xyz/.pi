@@ -1,7 +1,7 @@
 /**
  * store/host-lease.ts — the ONE mutual-exclusion primitive (D7).
  *
- * Exactly one live process may own a `subagents/<sessionId>/` scope at a time.
+ * Exactly one live process may own a `teams/<sessionId>/` scope at a time.
  * Everything else in v2 relies on this: no per-agent run-owner locks, no
  * registry advisory locks. The lease is a `.host-owner.json` marker created with
  * an exclusive `wx` open; a heartbeat keeps it fresh; a foreign marker is
@@ -76,7 +76,7 @@ function markerIsLive(marker: HostOwnerMarker, now: number): boolean {
 
 export class HostScopeLockedError extends Error {
 	constructor(public readonly ownerPid: number) {
-		super(`Subagents scope is owned by a live process (pid ${ownerPid}).`);
+		super(`Teams scope is owned by a live process (pid ${ownerPid}).`);
 		this.name = "HostScopeLockedError";
 	}
 }

@@ -1,5 +1,5 @@
 /**
- * Phase-3 mail e2e for pi-agents2: mailbox IO, delivery/dispositions/bounce,
+ * Phase-3 mail e2e for pi-teams: mailbox IO, delivery/dispositions/bounce,
  * the deterministic wake digest, non-blocking questions (Q→dormant→A→wake with
  * the original question quoted), reports to main, peer messaging, collect
  * delivery, and poison-envelope quarantine. Real agent turns through a scripted

@@ -10,7 +10,7 @@
  * message, never a silently mis-parsed capability grant.
  *
  * Slim schema (D20): name, description, model, thinking, projectContext, tools.
- * v1's readOnly/writePaths/denyPaths and budget ceilings are gone (no pi-agents
+ * v1's readOnly/writePaths/denyPaths and budget ceilings are gone (no pi-teams
  * territory sandbox; pi-safety gates risk).
  *
  * Pure module: no fs.

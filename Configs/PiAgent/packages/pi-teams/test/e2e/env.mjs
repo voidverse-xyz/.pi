@@ -38,7 +38,7 @@ function findPiPkg() {
 
 export const PI_PKG = findPiPkg();
 
-export const WORLDS = join(tmpdir(), "pi-agents2-e2e");
+export const WORLDS = join(tmpdir(), "pi-teams-e2e");
 
 const { createJiti } = await import(join(PI_PKG, "node_modules", "jiti", "lib", "jiti.mjs"));
 
