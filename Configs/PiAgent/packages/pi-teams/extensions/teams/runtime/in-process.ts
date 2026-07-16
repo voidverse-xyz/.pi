@@ -595,7 +595,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		const peers: PeerInfo[] = listAgents(this.registry)
 			.filter((other) => formatAgentAddress(other.type, other.id) !== address)
 			.map((other) => ({ address: formatAgentAddress(other.type, other.id), purview: other.id }));
-		return { address, purview: record.id, peers };
+		return { address, purview: record.id, peers, lifetime: record.lifetime };
 	}
 
 	private latestSessionFile(type: string, id: string): string | undefined {

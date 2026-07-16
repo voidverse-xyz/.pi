@@ -14,6 +14,7 @@ const piSdk = await jiti.import(join(PI_PKG, "dist/index.js"));
 const piAi = await jiti.import(join(PI_PKG, "node_modules/@earendil-works/pi-ai/dist/index.js"));
 const { createLayout } = await jiti.import(join(EXT, "store/layout.ts"));
 const { createCore } = await jiti.import(join(EXT, "core.ts"));
+const { composeIdentityBlock } = await jiti.import(join(EXT, "context/compose.ts"));
 
 const scratch = join(WORLDS, "phase7-world");
 rmSync(scratch, { recursive: true, force: true });
@@ -94,6 +95,13 @@ await test("await times out when nothing arrives (consumes nothing)", async () =
 });
 
 console.log("oneshot auto-retire:");
+await test("a oneshot's identity block explains final-report = sign-off; a persistent one is not told that", () => {
+	const oneshot = composeIdentityBlock({ address: "w/tmp-ab", purview: "tmp-ab", peers: [], lifetime: "oneshot" });
+	assert.ok(oneshot.includes("ONESHOT"), "oneshot is told what it is");
+	assert.ok(oneshot.includes("automatically retired"), "…and that the final report retires it");
+	const persistent = composeIdentityBlock({ address: "w/main", purview: "main", peers: [], lifetime: "persistent" });
+	assert.ok(!persistent.includes("ONESHOT"), "persistent agents don't get the oneshot prose");
+});
 await test("a oneshot auto-retires after its final report", async () => {
 	scripts.push({ match: (c) => c.address.startsWith("worker/tmp-"), reply: () => ({ tools: [{ name: "report", args: { text: "quick done", final: true } }] }) });
 	const spawn = await core.spawn({ type: "worker", lifetime: "oneshot", task: "quick" });

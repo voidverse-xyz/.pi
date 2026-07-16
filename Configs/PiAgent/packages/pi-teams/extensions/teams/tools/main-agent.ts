@@ -28,7 +28,10 @@ const SpawnParams = Type.Object({
 	),
 	lifetime: Type.Optional(
 		Type.Union([Type.Literal("persistent"), Type.Literal("oneshot")], {
-			description: "persistent (default): named, durable memory. oneshot: disposable, auto-named, auto-retires after its final report.",
+			description:
+				"persistent (default): named, durable memory — lives until YOU team_retire it, so every persistent spawn is a cleanup obligation. " +
+				"oneshot: disposable, auto-named (tmp-<hex>, never pass an id), retires itself after it sends a final report. " +
+				"Rule of thumb: one-off task, probe, or experiment → oneshot; an agent you'll message again across tasks → persistent.",
 		}),
 	),
 	task: Type.Optional(Type.String({ description: "Optional first task — spawn and assign in one call. Runs asynchronously." })),
@@ -39,9 +42,11 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 		name: "team_spawn",
 		label: "Spawn subagent",
 		description:
-			"Spawn or wake a persistent subagent at address <type>/<id>. Get-or-create: if the address " +
-			"already exists it wakes with memory intact (created:false). An optional task runs asynchronously; " +
-			"observe progress with team_status.",
+			"Spawn or wake a subagent. Get-or-create on <type>/<id>: if the address already exists it wakes " +
+			"with memory intact (created:false). An optional task runs asynchronously; observe progress with team_status. " +
+			"IMPORTANT — pick the lifetime deliberately: use lifetime:'oneshot' (and no id) for single-task work like " +
+			"probes, checks, and experiments — it cleans up after itself. Persistent agents (the default) stay on the " +
+			"roster forever until you team_retire them, so don't leave one behind for a task you won't revisit.",
 		parameters: SpawnParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const core = getCore();

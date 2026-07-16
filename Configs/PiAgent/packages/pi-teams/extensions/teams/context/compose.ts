@@ -43,6 +43,8 @@ export interface IdentityOptions {
 	 * through it — the agent has no `send_message` tool.
 	 */
 	peersEnabled?: boolean;
+	/** "oneshot" instances are told their final report also retires them (D13). */
+	lifetime?: "persistent" | "oneshot";
 }
 
 /**
@@ -110,6 +112,13 @@ export function composeIdentityBlock(options: IdentityOptions): string {
 			"task is complete, send a FINAL report (the `report` tool with final:true); send progress " +
 			"reports at meaningful milestones along the way.",
 	);
+	if (options.lifetime === "oneshot") {
+		lines.push(
+			"- You are a ONESHOT agent: you exist for this single task. Your final report (final:true) " +
+				"is also your sign-off — after it you are automatically retired and your session archived. " +
+				"Put everything the main agent needs into that final report; there is no follow-up turn.",
+		);
+	}
 	lines.push(
 		"- Questions are non-blocking: when you ask one, END YOUR TURN. You will go dormant and be " +
 			"woken with the answer quoted next to your question. Never busy-wait or poll for a reply.",
