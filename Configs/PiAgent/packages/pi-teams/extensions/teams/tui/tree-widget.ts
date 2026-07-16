@@ -3,7 +3,7 @@
  * (ref IMG_5778). One row per currently-working agent with its
  * tool-use count and current tool call:
  *
- *   󱘎 Running 2 team agents…
+ *   Running 2 team agents · alt+s stop
  *   ├─ refactorer/auth · 10 tool uses
  *   │  └ Bash: find CLI or main entry files
  *   └─ docs/main · 3 tool uses
@@ -16,8 +16,6 @@
 
 import type { SubagentsCore } from "../core.ts";
 import type { AgentActivityRow } from "../runtime/types.ts";
-
-export const AGENTS_ICON = "󱘎";
 
 /**
  * The human brake: stop every working agent (D22). Bound in index.ts and shown in
@@ -36,9 +34,11 @@ export function renderTreeLines(rows: AgentActivityRow[], theme: TreeTheme): str
 	if (rows.length === 0) return [];
 	// The stop hint rides the header: the brake is only discoverable while agents are
 	// actually running, which is exactly when you need it.
+	// Muted codex treatment (like the "Working · 5s" message): the tree is ambient
+	// status, not an alert — muted label, dim separators/details.
 	const lines: string[] = [
-		theme.fg("accent", `${AGENTS_ICON} Running ${rows.length} team agent${rows.length === 1 ? "" : "s"}…`) +
-			theme.fg("dim", `  ${STOP_KEY} stop`),
+		theme.fg("muted", `Running ${rows.length} team agent${rows.length === 1 ? "" : "s"}`) +
+			theme.fg("dim", ` · ${STOP_KEY} stop`),
 	];
 	rows.forEach((row, i) => {
 		const last = i === rows.length - 1;

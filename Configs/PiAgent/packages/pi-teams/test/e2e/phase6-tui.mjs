@@ -1,8 +1,8 @@
 /**
- * Phase-6 TUI e2e for pi-teams: the pure render helpers (widget segments +
- * status text; picker rows, flat + archive). The interactive picker/viewer
- * overlays are wired in index.ts but need a live TUI, so only the pure builders
- * are exercised here.
+ * Phase-6 TUI e2e for pi-teams: the pure render helpers (picker rows, flat +
+ * archive; tree widget lines). The interactive picker/viewer overlays are wired
+ * in index.ts but need a live TUI, so only the pure builders are exercised here.
+ * The tree widget is the ONE ambient surface — there is no footer status segment.
  *
  * Run: node phase6-tui.mjs
  */
@@ -11,7 +11,6 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { EXT, WORLDS, jiti } from "./env.mjs";
 
-const widget = await jiti.import(join(EXT, "tui/widget.ts"));
 const picker = await jiti.import(join(EXT, "tui/picker.ts"));
 const tree = await jiti.import(join(EXT, "tui/tree-widget.ts"));
 
@@ -26,20 +25,6 @@ async function testAsync(name, fn) {
 	passed++;
 	console.log(`  ok  ${name}`);
 }
-
-console.log("widget:");
-test("segments appear only when non-zero; hidden at zero agents", () => {
-	assert.equal(widget.widgetStatusText({ agentCount: 0, running: 0, waiting: 0, unread: 0 }), undefined);
-	assert.deepEqual(widget.widgetSegments({ agentCount: 3, running: 2, waiting: 0, unread: 0 }), ["2 running"]);
-	const text = widget.widgetStatusText({ agentCount: 3, running: 2, waiting: 1, unread: 3 });
-	assert.ok(text.includes("2 running"));
-	assert.ok(text.includes("1 waiting"));
-	assert.ok(text.includes("3"));
-});
-test("no budget segment (D21/D22)", () => {
-	const text = widget.widgetStatusText({ agentCount: 1, running: 1, waiting: 0, unread: 0 });
-	assert.ok(!text.toLowerCase().includes("budget"));
-});
 
 console.log("picker rows:");
 const roster = [
@@ -72,7 +57,7 @@ test("row text shows state glyph, address, ctx%, unread badge", () => {
 	assert.ok(text.includes("2"));
 });
 
-console.log("tree widget (Phase 8):");
+console.log("tree widget:");
 const plainTheme = { fg: (_c, t) => t };
 test("empty when nothing is working", () => {
 	assert.deepEqual(tree.renderTreeLines([], plainTheme), []);
@@ -128,10 +113,10 @@ await testAsync("the advertised stop key is the one index.ts actually binds", as
 	);
 });
 
-await testAsync("session_shutdown clears the ambient teams status", async () => {
-	// Boot index.ts's real session_start in TUI mode under a temp HOME, then shut
-	// down and assert setStatus("teams", undefined) — a stale "󱘎 N running…" must
-	// not outlive the session (pi-safety idiom).
+await testAsync("no footer status is ever published — the tree widget is the only ambient surface", async () => {
+	// Boot index.ts's real session_start in TUI mode under a temp HOME. The old
+	// footer segment was removed (redundant with the tree; auto-wake consumes the
+	// unread/waiting signals) — nothing may call setStatus, so nothing can go stale.
 	const scratch = join(WORLDS, "phase6-world");
 	rmSync(scratch, { recursive: true, force: true });
 	const home = join(scratch, "home");
@@ -169,16 +154,8 @@ await testAsync("session_shutdown clears the ambient teams status", async () => 
 	process.env.HOME = home;
 	try {
 		await handlers.get("session_start")({ type: "session_start" }, ctx);
-		assert.ok(
-			statusCalls.some((c) => c.key === "teams"),
-			"session_start publishes the teams status",
-		);
 		await handlers.get("session_shutdown")({ type: "session_shutdown" }, ctx);
-		assert.deepEqual(
-			statusCalls.at(-1),
-			{ key: "teams", value: undefined },
-			"shutdown must clear the teams status",
-		);
+		assert.deepEqual(statusCalls, [], "no setStatus calls across the whole lifecycle");
 	} finally {
 		if (realHome === undefined) delete process.env.HOME;
 		else process.env.HOME = realHome;

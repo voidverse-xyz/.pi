@@ -93,13 +93,16 @@ export function createViewer(options: ViewerOptions): ViewerComponent {
 	let input = "";
 	let closed = false;
 
+	let headerMeta = "";
+
 	const reload = (): void => {
 		void core.peek(address, 500).then((detail) => {
 			if (closed || !detail) return;
 			components = buildComponents(detail.sessionFile, tui, cwd);
 			const v = detail.vitals;
 			const pct = v.ctxPercent !== null ? ` · ctx ${Math.round(v.ctxPercent * 100)}%` : "";
-			header = `${detail.address} · ${detail.state}${pct} · ${v.tokens} tok · ${v.turns} turns`;
+			header = detail.label ? `${detail.address} “${detail.label}”` : detail.address;
+			headerMeta = ` · ${detail.state}${pct} · ${v.tokens} tok · ${v.turns} turns`;
 			tui.requestRender();
 		}).catch(() => {});
 	};
@@ -134,11 +137,16 @@ export function createViewer(options: ViewerOptions): ViewerComponent {
 			clearInterval(timer);
 		},
 		render(width: number): string[] {
-			const lines: string[] = [theme.fg("accent", `󱘎 ${header}`), theme.fg("dim", "─".repeat(Math.min(width, 80)))];
+			// Muted codex treatment: bold address (like a selected row), dim metadata,
+			// full-width dim rules (codex-ui's tool separators run the full width too).
+			const rule = theme.fg("dim", "─".repeat(Math.max(0, width)));
+			const lines: string[] = [theme.bold(theme.fg("text", header)) + theme.fg("dim", headerMeta), rule];
 			for (const component of components) lines.push(...component.render(width));
-			lines.push(theme.fg("dim", "─".repeat(Math.min(width, 80))));
+			lines.push(rule);
 			lines.push(`${theme.fg("accent", "› ")}${input}${theme.fg("dim", "▏")}`);
-			lines.push(theme.fg("dim", "  enter = message · alt+enter = steer · alt+j = next · esc = back"));
+			const sep = theme.fg("dim", " · ");
+			const hints = ["enter message", "alt+enter steer", "alt+j next", "esc back"];
+			lines.push(`  ${hints.map((h) => theme.fg("muted", h)).join(sep)}`);
 			return lines;
 		},
 		handleInput(data: string) {

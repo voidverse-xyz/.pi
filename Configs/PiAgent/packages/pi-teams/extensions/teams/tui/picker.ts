@@ -10,7 +10,8 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { ArchivedAgentInfo, SubagentsCore } from "../core.ts";
 import type { RosterEntry } from "../runtime/types.ts";
-import { MAIL_ICON } from "./widget.ts";
+
+export const MAIL_ICON = "󰇮"; // nf-md-email
 
 export const STATE_GLYPHS: Record<RosterEntry["state"], string> = {
 	running: "", // nf-fa-circle
@@ -69,11 +70,19 @@ function clip(text: string, width: number): string {
 	return truncateToWidth(text, width).replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+/**
+ * Pi's native selector row treatment (see the session selector): an accent `› `
+ * cursor + bold text + a full-row selectedBg for the selected row; everything
+ * else two-space indented in muted/dim.
+ */
 export function renderPickerRow(row: PickerRow, theme: Theme, width: number, selected: boolean): string {
 	const text = clip(pickerRowText(row), width - 2);
-	const prefix = selected ? "▸ " : "  ";
+	const cursor = selected ? theme.fg("accent", "› ") : "  ";
 	const color = row.kind === "agent" ? (selected ? "text" : "muted") : "dim";
-	return theme.fg(color, `${prefix}${text}`);
+	let body = theme.fg(color, text);
+	if (selected) body = theme.bold(body);
+	const line = cursor + body;
+	return selected ? theme.bg("selectedBg", line) : line;
 }
 
 export type PickerResult = { action: "view"; address: string } | { action: "closed" };
@@ -152,9 +161,9 @@ export function createPicker(options: PickerOptions): PickerComponent {
 			offEvents();
 		},
 		render(width: number): string[] {
-			const lines: string[] = [theme.fg("accent", "󱘎 Teams"), ""];
+			const lines: string[] = [theme.fg("muted", "Teams"), ""];
 			if (rows.length === 0) {
-				lines.push(theme.fg("dim", "  (no agents — spawn one with team_spawn)"));
+				lines.push(theme.fg("muted", "  no agents — spawn one with team_spawn"));
 			} else {
 				for (let i = scroll; i < Math.min(rows.length, scroll + maxBody); i++) {
 					lines.push(renderPickerRow(rows[i]!, theme, width, i === selected));
@@ -162,7 +171,11 @@ export function createPicker(options: PickerOptions): PickerComponent {
 			}
 			lines.push("");
 			if (confirmRetire) lines.push(theme.fg("error", `  Retire ${confirmRetire}? [y/N]`));
-			else lines.push(theme.fg("dim", "  ↑↓ move · enter view · x interrupt · S stop all · X retire · a archive · esc"));
+			else {
+				const sep = theme.fg("dim", " · ");
+				const hints = ["↑↓ move", "enter view", "x interrupt", "S stop all", "X retire", "a archive", "esc close"];
+				lines.push(`  ${hints.map((h) => theme.fg("muted", h)).join(sep)}`);
+			}
 			return lines;
 		},
 		handleInput(data: string) {

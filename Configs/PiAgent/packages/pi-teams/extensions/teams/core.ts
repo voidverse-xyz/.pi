@@ -66,7 +66,7 @@ export interface SubagentsCore {
 	retire(to: string): Promise<RetireResult>;
 	/** The type catalog, for the spawn tool's not-found hint and the picker. */
 	availableTypes(): AvailableType[];
-	/** Unprocessed envelopes in the main agent's mailbox (widget 📬). */
+	/** Unprocessed envelopes in the main agent's mailbox (wake pump + tests). */
 	mainUnreadCount(): number;
 	/**
 	 * Compose a wake digest from the main mailbox WITHOUT consuming it, plus a

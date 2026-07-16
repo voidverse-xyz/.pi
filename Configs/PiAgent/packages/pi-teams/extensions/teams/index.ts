@@ -9,7 +9,7 @@
  * sessions cannot spawn team agents at all (D25'). Torn down on shutdown.
  *
  * Registers the nine team_* tools, the /teams command (picker/viewer/stop/
- * peers), the stop-all shortcut, the ambient + tree widgets, and the main-mail
+ * peers), the stop-all shortcut, the live tree widget, and the main-mail
  * auto-wake pump.
  */
 
@@ -32,12 +32,9 @@ import {
 	createStatusTool,
 	createSteerTool,
 } from "./tools/main-agent.ts";
-import { createWidgetController, widgetStatusText, type WidgetController } from "./tui/widget.ts";
 import { createTreeWidget, STOP_KEY, type TreeWidgetController } from "./tui/tree-widget.ts";
 import { createPicker, type PickerResult } from "./tui/picker.ts";
 import { createViewer, type ViewerResult } from "./tui/viewer.ts";
-
-const STATUS_KEY = "teams";
 
 /**
  * sendMessage options for a main-mail wake injection (D24). BOTH matter and they
@@ -56,7 +53,6 @@ export const WAKE_DELIVERY = { deliverAs: "followUp", triggerTurn: true } as con
 export default function (pi: ExtensionAPI): void {
 	let core: SubagentsCore | null = null;
 	let lease: HostScopeLease | null = null;
-	let widget: WidgetController | null = null;
 	let tree: TreeWidgetController | null = null;
 	let overlayOpen = false;
 	/** Set when teams are unavailable this session (non-persisted, or lease held elsewhere). */
@@ -95,7 +91,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerTool(createStatusTool(getCore));
 	pi.registerTool(createPeersTool(getCore));
 
-	// --- TUI (D22): /teams picker → full-screen viewer; ambient widget. ---
+	// --- TUI (D22): /teams picker → full-screen viewer; live tree widget. ---
 	const openViewer = async (ctx: ExtensionContext, startAddress: string): Promise<void> => {
 		if (ctx.mode !== "tui" || overlayOpen || !core) return;
 		let address: string | undefined = startAddress;
@@ -271,15 +267,10 @@ export default function (pi: ExtensionAPI): void {
 				}
 			})();
 
-			// Ambient widget: publish plain status text; pi-status-line styles it.
+			// The live "Running N team agents…" tree above the editor — the one
+			// ambient surface (the old footer status segment was redundant with it:
+			// mail auto-wakes main, so waiting/unread resolve themselves).
 			if (ctx.mode === "tui") {
-				const publish = (): void => {
-					if (!widget) return;
-					ctx.ui.setStatus(STATUS_KEY, widgetStatusText(widget.snapshot()));
-				};
-				widget = createWidgetController({ core, onChange: publish });
-				publish();
-				// The live "Running N team agents…" tree above the editor.
 				tree = createTreeWidget(core, {
 					setWidget: (key, content, opts) => ctx.ui.setWidget(key, content, opts),
 					theme: ctx.ui.theme,
@@ -306,22 +297,15 @@ export default function (pi: ExtensionAPI): void {
 		pump.onSettled(); // drains background work that finished during the turn
 	});
 
-	pi.on("session_shutdown", async (_event, ctx) => {
+	pi.on("session_shutdown", async (_event, _ctx) => {
 		pump.shutdown(); // no stale turn after teardown
 		await teardown();
-		// Clear the ambient status we published — otherwise the last "󱘎 N running…"
-		// outlives the fleet it described (same idiom as pi-safety).
-		if (ctx.mode === "tui") ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
 
 	async function teardown(): Promise<void> {
 		if (tree) {
 			tree.dispose();
 			tree = null;
-		}
-		if (widget) {
-			widget.dispose();
-			widget = null;
 		}
 		if (core) {
 			try {
