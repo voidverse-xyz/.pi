@@ -27,6 +27,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-session-name` | Session naming commands |
 | `pi-show-files` | LLM-callable `show_files` curated file browser |
 | `pi-status-line` | Shared above-editor row plus dynamic two-line footer layout |
+| `pi-subagents` | **Subagents** — background fan-out workers (`/subagents`): seven `subagent_*` tools, typed or ad-hoc spawns, persistent or oneshot lifetimes, parallel under a configurable cap, join by `subagent_await` or idle auto-wake. Strict hub-and-spoke (no peer mail, no nesting); pi-safety-gated tool calls (`subagents:confirm-request`); `alt+a` stop brake. Runs alongside `pi-teams`. Plan: `~/Agents/Documents/Plans/PiAgent/pi-subagents/plan.md`. |
 | `pi-tool-monitor` | Plain active-tool status producer and `/tools` |
 
 ## Theme and keybindings

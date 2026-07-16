@@ -1,0 +1,19 @@
+{
+	"name": "pi-subagents",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Subagents — background fan-out workers for the main Pi agent: spawn type-defined or ad-hoc subagents (persistent or oneshot), run them in parallel under a cap, join results by awaiting or by idle auto-wake. Strict hub-and-spoke (no peer mail, no nesting); human confirmation delegated to pi-safety. Runs alongside pi-teams.",
+	"keywords": [
+		"pi-package"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	}
+}

@@ -156,12 +156,13 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 		return { block: true, reason: `Blocked by pi-safety (${writeTool}; declined by user)` };
 	});
 
-	// pi-teams confirmation provider: a subagent's guarded bash/edit/write call is
-	// forwarded here over pi.events (the synchronous-claim idiom). We reuse the
-	// same classifier, modes, and confirmation UI as main-agent Bash. Claim only
-	// when we can actually confirm (a live TUI); otherwise don't claim, and the
-	// requester fails closed (denies). Confirmations stay human (D10).
-	pi.events.on("teams:confirm-request", (data) => {
+	// pi-teams / pi-subagents confirmation provider: a subagent's guarded
+	// bash/edit/write call is forwarded here over pi.events (the synchronous-claim
+	// idiom). Both extensions emit the SAME request shape on their own channel; we
+	// reuse the same classifier, modes, and confirmation UI as main-agent Bash.
+	// Claim only when we can actually confirm (a live TUI); otherwise don't claim,
+	// and the requester fails closed (denies). Confirmations stay human (D10).
+	const handleConfirmRequest = (data: unknown): void => {
 		const { method, claim } = data as {
 			method: string;
 			claim: (fn: (req: { agent?: string; tool?: string; command?: string; path?: string }) => Promise<{ approved: boolean; note?: string }>) => void;
@@ -201,7 +202,9 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 			auditLog({ rawCommand: `[${agent}] ${display}`, category, mode: currentMode, decision: approved ? "approved" : "denied", source: "user" });
 			return approved ? { approved: true } : { approved: false, note: "declined by the human" };
 		});
-	});
+	};
+	pi.events.on("teams:confirm-request", handleConfirmRequest);
+	pi.events.on("subagents:confirm-request", handleConfirmRequest);
 
 	pi.registerCommand("safety", {
 		description: "Set main-agent Bash safety: off | on | max",
