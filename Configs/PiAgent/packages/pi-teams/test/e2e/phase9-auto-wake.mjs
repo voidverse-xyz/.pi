@@ -15,7 +15,7 @@
 import { strict as assert } from "node:assert";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
+import { createTestModelRuntime, EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
 
 const piSdk = await jiti.import(join(PI_PKG, "dist/index.js"));
 const piAi = await jiti.import(join(PI_PKG, "node_modules/@earendil-works/pi-ai/dist/index.js"));
@@ -62,31 +62,35 @@ function mockStream(model) {
 	return stream;
 }
 
-const authStorage = piSdk.AuthStorage.create(join(home, ".pi", "agent", "auth.json"));
-const modelRegistry = piSdk.ModelRegistry.inMemory(authStorage);
-modelRegistry.registerProvider("mock", {
-	baseUrl: "http://mock.invalid",
-	apiKey: "test-key",
-	api: "mock-api",
-	streamSimple: mockStream,
-	models: [{ id: "mock-1", name: "Mock One", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 4096 }],
+const agentDir = join(home, ".pi", "agent");
+const settingsManager = piSdk.SettingsManager.create(project, agentDir);
+const { modelRuntime, modelRegistry } = await createTestModelRuntime(piSdk, {
+	cwd: project,
+	agentDir,
+	settingsManager,
+	providers: {
+		mock: {
+			baseUrl: "http://mock.invalid",
+			apiKey: "test-key",
+			api: "mock-api",
+			streamSimple: mockStream,
+			models: [{ id: "mock-1", name: "Mock One", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 4096 }],
+		},
+	},
 });
 
-const agentDir = join(home, ".pi", "agent");
 const layout = createLayout(project, { home, sessionId: "sess-9" });
-const settingsManager = piSdk.SettingsManager.create(project, agentDir);
-const core = createCore({ layout, modelRegistry, settingsManager, authStorage });
+const core = createCore({ layout, modelRuntime, modelRegistry, settingsManager });
 
 // A REAL main-agent session — the thing auto-wake must start a turn on.
-const resolved = piSdk.resolveCliModel({ cliModel: "mock/mock-1", modelRegistry });
+const resolved = piSdk.resolveCliModel({ cliModel: "mock/mock-1", modelRuntime });
 assert.ok(resolved.model, `model resolve failed: ${resolved.error}`);
 const { session: mainSession } = await piSdk.createAgentSession({
 	cwd: project,
 	agentDir,
+	modelRuntime,
 	sessionManager: piSdk.SessionManager.create(project, agentDir),
 	settingsManager,
-	authStorage,
-	modelRegistry,
 	model: resolved.model,
 	noTools: "builtin",
 	customTools: [],

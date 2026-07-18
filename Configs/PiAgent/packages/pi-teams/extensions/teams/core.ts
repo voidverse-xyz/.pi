@@ -5,7 +5,7 @@
  *
  */
 
-import type { AuthStorage, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { CreateAgentSessionServicesOptions, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { collectResultNote, validateAgainstSchema } from "./mail/collect.ts";
 import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
 import { parseAddress } from "./mail/envelope.ts";
@@ -98,14 +98,16 @@ export interface SubagentsCore {
 	readonly runtime: SubagentRuntime;
 }
 
+type ModelRuntime = NonNullable<CreateAgentSessionServicesOptions["modelRuntime"]>;
+
 export interface CoreOptions {
 	layout: Layout;
 	maxConcurrent?: number;
 	/** Chain-depth cap (D21). May be a live getter. Default DEFAULT_MAX_HOPS. */
 	maxHops?: number | (() => number);
+	modelRuntime?: ModelRuntime;
 	modelRegistry?: ModelRegistry;
 	settingsManager?: SettingsManager;
-	authStorage?: AuthStorage;
 	projectTrusted?: () => boolean;
 	/** Human confirmation for guarded tool calls (D10a); default fail-closed deny. */
 	confirm?: ConfirmFn;
@@ -118,9 +120,9 @@ export function createCore(options: CoreOptions): SubagentsCore {
 		layout: options.layout,
 		...(options.maxConcurrent !== undefined ? { maxConcurrent: options.maxConcurrent } : {}),
 		...(options.maxHops !== undefined ? { hopsGuard: makeHopsGuard(options.maxHops) } : {}),
+		...(options.modelRuntime ? { modelRuntime: options.modelRuntime } : {}),
 		...(options.modelRegistry ? { modelRegistry: options.modelRegistry } : {}),
 		...(options.settingsManager ? { settingsManager: options.settingsManager } : {}),
-		...(options.authStorage ? { authStorage: options.authStorage } : {}),
 		...(options.projectTrusted ? { projectTrusted: options.projectTrusted } : {}),
 		...(options.confirm ? { confirm: options.confirm } : {}),
 		...(options.peersMode ? { peersMode: options.peersMode } : {}),

@@ -38,6 +38,11 @@ writeFileSync(
 	join(home, ".pi", "agent", "teams", "greeter.md"),
 	["---", "name: greeter", "description: Says hello", "---", "You are a GREETER_BODY_MARKER."].join("\n"),
 );
+// broken pins an unknown model so pre-start error delivery can be verified.
+writeFileSync(
+	join(home, ".pi", "agent", "teams", "broken.md"),
+	["---", "name: broken", "description: Fails before its turn", "model: missing/no-such-model", "---", "Never reached."].join("\n"),
+);
 
 // ------------------------------------------------------------- mock provider
 const llmCalls = [];
@@ -66,19 +71,28 @@ function mockStream(model, context) {
 	return stream;
 }
 
-const authStorage = piSdk.AuthStorage.create(join(home, ".pi", "agent", "auth.json"));
-const modelRegistry = piSdk.ModelRegistry.inMemory(authStorage);
-modelRegistry.registerProvider("mock", {
+const agentDir = join(home, ".pi", "agent");
+const settingsManager = piSdk.SettingsManager.create(project, agentDir);
+const modelServices = await piSdk.createAgentSessionServices({
+	cwd: project,
+	agentDir,
+	settingsManager,
+	resourceLoaderOptions: { noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true },
+});
+const modelRuntime = modelServices.modelRuntime;
+modelRuntime.registerProvider("mock", {
 	baseUrl: "http://mock.invalid",
 	apiKey: "test-key",
 	api: "mock-api",
 	streamSimple: mockStream,
 	models: [{ id: "mock-1", name: "Mock One", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 4096 }],
 });
+const modelRegistry = new piSdk.ModelRegistry(modelRuntime);
 
 const layout = createLayout(project, { home, sessionId: "sess-2" });
-const settingsManager = piSdk.SettingsManager.create(project, join(home, ".pi", "agent"));
-const core = createCore({ layout, modelRegistry, settingsManager, authStorage, maxConcurrent: 2 });
+// Match live index.ts: pass the main facade but let Teams lazily create its own
+// canonical ModelRuntime and mirror registered provider configs into it.
+const core = createCore({ layout, modelRegistry, settingsManager, maxConcurrent: 2 });
 
 const events = [];
 core.onEvent((e) => events.push(e));
@@ -169,6 +183,20 @@ await test("roster lists both agents with vitals", async () => {
 	assert.deepEqual(addrs, ["greeter/main", "researcher/q1"]);
 	assert.ok(roster.every((r) => r.state === "dormant"));
 	assert.equal(await core.peek("nope/x"), null);
+});
+
+console.log("pre-start errors:");
+await test("handle-build failure notifies main and leaves task pending for retry", async () => {
+	await core.spawn({ type: "broken", id: "bad-model", task: "This cannot start." });
+	await core.whenIdle();
+	assert.equal(core.mainUnreadCount(), 1, "main receives an actionable error envelope");
+	const drained = core.takeMainMailDigest();
+	assert.ok(drained?.digest.includes("Turn failed before start"));
+	assert.ok(drained?.digest.includes("missing/no-such-model"));
+	drained?.commit();
+	const detail = await core.peek("broken/bad-model", 10);
+	assert.equal(detail?.state, "dormant");
+	assert.equal(detail?.unread, 1, "original task remains pending for a fixed-model retry");
 });
 
 console.log("lifetime:");

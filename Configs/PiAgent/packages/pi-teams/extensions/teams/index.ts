@@ -234,8 +234,9 @@ export default function (pi: ExtensionAPI): void {
 				// Guarded subagent tool calls (bash/edit/write) confirm via pi-safety
 				// over pi.events (D10a); fail-closed if pi-safety is absent.
 				confirm: makeSafetyConfirm(pi),
-				// settingsManager/authStorage are not on ExtensionContext — the SDK
-				// defaults them; only modelRegistry is host-provided.
+				// The SDK creates cwd-bound settings/auth/model services for subagents.
+				// Keep the main compatibility facade only to mirror providers registered
+				// dynamically by other extensions.
 				...(ctx.modelRegistry ? { modelRegistry: ctx.modelRegistry } : {}),
 				projectTrusted: () => {
 					try {

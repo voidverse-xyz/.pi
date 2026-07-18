@@ -51,3 +51,25 @@ export const jiti = createJiti(import.meta.url, {
 		typebox: join(PI_PKG, "node_modules/typebox/build/index.mjs"),
 	},
 });
+
+/**
+ * Create the current SDK's canonical ModelRuntime plus its extension-facing
+ * ModelRegistry facade, then register deterministic mock providers. Keeping this
+ * here prevents every phase from depending on removed AuthStorage/ModelRegistry
+ * factory APIs.
+ */
+export async function createTestModelRuntime(piSdk, options) {
+	const services = await piSdk.createAgentSessionServices({
+		cwd: options.cwd,
+		agentDir: options.agentDir,
+		...(options.settingsManager ? { settingsManager: options.settingsManager } : {}),
+		resourceLoaderOptions: { noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true },
+	});
+	for (const [providerId, config] of Object.entries(options.providers ?? {})) {
+		services.modelRuntime.registerProvider(providerId, config);
+	}
+	return {
+		modelRuntime: services.modelRuntime,
+		modelRegistry: new piSdk.ModelRegistry(services.modelRuntime),
+	};
+}

@@ -8,7 +8,7 @@
 import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
+import { createTestModelRuntime, EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
 
 const piSdk = await jiti.import(join(PI_PKG, "dist/index.js"));
 const piAi = await jiti.import(join(PI_PKG, "node_modules/@earendil-works/pi-ai/dist/index.js"));
@@ -96,14 +96,20 @@ function mockStream(model, context) {
 	})();
 	return stream;
 }
-const authStorage = piSdk.AuthStorage.create(join(home, ".pi", "agent", "auth.json"));
-const modelRegistry = piSdk.ModelRegistry.inMemory(authStorage);
-modelRegistry.registerProvider("mock", { baseUrl: "http://mock.invalid", apiKey: "k", api: "mock-api", streamSimple: mockStream, models: [{ id: "mock-1", name: "Mock", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 4096 }] });
+const agentDir = join(home, ".pi", "agent");
+const settingsManager = piSdk.SettingsManager.create(project, agentDir);
+const { modelRuntime, modelRegistry } = await createTestModelRuntime(piSdk, {
+	cwd: project,
+	agentDir,
+	settingsManager,
+	providers: {
+		mock: { baseUrl: "http://mock.invalid", apiKey: "k", api: "mock-api", streamSimple: mockStream, models: [{ id: "mock-1", name: "Mock", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 4096 }] },
+	},
+});
 
 const layout = createLayout(project, { home, sessionId: "sess-4" });
-const settingsManager = piSdk.SettingsManager.create(project, join(home, ".pi", "agent"));
 const MAX_HOPS = 3;
-const core = createCore({ layout, modelRegistry, settingsManager, authStorage, maxConcurrent: 3, maxHops: MAX_HOPS });
+const core = createCore({ layout, modelRuntime, modelRegistry, settingsManager, maxConcurrent: 3, maxHops: MAX_HOPS });
 
 await test("forced ping-pong dies at the hop cap (does not loop forever)", async () => {
 	await core.spawn({ type: "worker", id: "alice" });

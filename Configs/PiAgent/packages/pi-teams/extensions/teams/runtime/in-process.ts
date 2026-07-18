@@ -17,10 +17,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
 	type AgentSession,
-	type AuthStorage,
-	createAgentSession,
-	type CreateAgentSessionOptions,
-	DefaultResourceLoader,
+	createAgentSessionFromServices,
+	createAgentSessionServices,
+	type CreateAgentSessionFromServicesOptions,
+	type CreateAgentSessionServicesOptions,
 	type ModelRegistry,
 	parseSessionEntries,
 	resolveCliModel,
@@ -105,12 +105,16 @@ import { Scheduler } from "./scheduler.ts";
 
 const TMP_ID_BYTES = 4;
 
+type ModelRuntime = NonNullable<CreateAgentSessionServicesOptions["modelRuntime"]>;
+
 export interface RuntimeOptions {
 	layout: Layout;
 	maxConcurrent?: number;
+	/** Canonical model runtime for subagent sessions. Created lazily when omitted. */
+	modelRuntime?: ModelRuntime;
+	/** Main-session compatibility facade, used to mirror extension-registered providers. */
 	modelRegistry?: ModelRegistry;
 	settingsManager?: SettingsManager;
-	authStorage?: AuthStorage;
 	projectTrusted?: () => boolean;
 	/** Chain-depth guard (D21), injected by the core facade; default allows everything. */
 	hopsGuard?: HopsGuard;
@@ -152,6 +156,8 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	private handles = new Map<string, Handle>();
 	private buildLocks = new Map<string, Promise<Handle>>();
 	private chains = new Map<string, Promise<void>>();
+	/** Shared across handles so model/provider/auth state stays coherent. */
+	private modelRuntime: ModelRuntime | undefined;
 	private retiring = new Set<string>();
 	/** Addresses with a mail turn currently in flight (per-address await liveness, M4). */
 	private runningAddresses = new Set<string>();
@@ -174,6 +180,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	constructor(private readonly options: RuntimeOptions) {
 		this.layout = options.layout;
 		this.scheduler = new Scheduler(options.maxConcurrent);
+		this.modelRuntime = options.modelRuntime;
 		this.registry = readRegistry(this.layout.registryFile);
 		this.confirm = options.confirm ?? denyAllConfirm;
 		this.userPeerMode = options.peersMode ?? "llm";
@@ -682,9 +689,18 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			} catch (error) {
 				// Handle build failed (e.g. unknown model): surface it, reset the state
 				// off "queued" so the agent isn't wedged, and leave the mail pending so a
-				// fixed type file + next wake retries.
+				// fixed type file + next wake retries. Also notify main: an internal event
+				// alone is invisible to the LLM and otherwise makes team_await time out
+				// with no actionable diagnosis.
+				const message = error instanceof Error ? error.message : String(error);
 				this.setState(address, "dormant");
-				this.emit({ type: "turn-error", address, error: error instanceof Error ? error.message : String(error) });
+				this.emit({ type: "turn-error", address, error: message });
+				this.deliverer.send({
+					from: { kind: "agent", type: record.type, id: record.id },
+					to: MAIN_ADDRESS,
+					type: "error",
+					text: `Turn failed before start: ${message}`,
+				});
 				leavePending = true;
 				return;
 			}
@@ -827,27 +843,36 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		const peersDefault = def.config.peers !== false;
 		const peersEnabled = this.effectivePeers(peersDefault);
 		const composed = composeContext(def, { ...this.identityFor(address, record), peersEnabled });
-		const loader = new DefaultResourceLoader({
+		const services = await createAgentSessionServices({
 			cwd: layout.cwd,
 			agentDir: layout.agentDir,
 			...(this.options.settingsManager ? { settingsManager: this.options.settingsManager } : {}),
-			noExtensions: true,
-			noSkills: true,
-			noPromptTemplates: true,
-			noThemes: true,
-			noContextFiles: !def.config.projectContext,
-			appendSystemPrompt: composed.appendSystemPrompt,
+			...(this.modelRuntime ? { modelRuntime: this.modelRuntime } : {}),
+			resourceLoaderOptions: {
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				noContextFiles: !def.config.projectContext,
+				appendSystemPrompt: composed.appendSystemPrompt,
+			},
 		});
-		await loader.reload();
+		this.modelRuntime = services.modelRuntime;
 
-		const sessionOptions: CreateAgentSessionOptions = {
-			cwd: layout.cwd,
-			agentDir: layout.agentDir,
+		// Extension-registered providers live on the main session's compatibility
+		// facade. Mirror their public configs into the subagent runtime so custom
+		// providers keep working without reaching into ModelRegistry internals.
+		const registry = this.options.modelRegistry;
+		if (registry) {
+			for (const providerId of registry.getRegisteredProviderIds()) {
+				const config = registry.getRegisteredProviderConfig(providerId);
+				if (config) services.modelRuntime.registerProvider(providerId, config);
+			}
+		}
+
+		const sessionOptions: CreateAgentSessionFromServicesOptions = {
+			services,
 			sessionManager,
-			resourceLoader: loader,
-			...(this.options.modelRegistry ? { modelRegistry: this.options.modelRegistry } : {}),
-			...(this.options.settingsManager ? { settingsManager: this.options.settingsManager } : {}),
-			...(this.options.authStorage ? { authStorage: this.options.authStorage } : {}),
 			noTools: "builtin",
 			customTools: [
 				...createSubagentTools(address, this, { peers: peersEnabled }),
@@ -867,21 +892,23 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				}),
 			],
 		};
-		const model = this.resolveModel(def, inherit);
+		const model = this.resolveModel(def, inherit, services.modelRuntime);
 		if (model) sessionOptions.model = model;
 		const thinkingLevel = def.config.thinking ?? inherit?.thinkingLevel;
 		if (thinkingLevel !== undefined) sessionOptions.thinkingLevel = thinkingLevel;
 
-		const { session } = await createAgentSession(sessionOptions);
+		const { session } = await createAgentSessionFromServices(sessionOptions);
 		return { session, aborted: false, trigger: null, assignment: null, retireAfterTurn: false, peersDefault };
 	}
 
-	private resolveModel(def: TypeDefinition, inherit?: InheritedDefaults): CreateAgentSessionOptions["model"] | undefined {
-		const registry = this.options.modelRegistry;
-		if (!registry) return undefined;
+	private resolveModel(
+		def: TypeDefinition,
+		inherit: InheritedDefaults | undefined,
+		modelRuntime: ModelRuntime,
+	): CreateAgentSessionFromServicesOptions["model"] | undefined {
 		const ref = def.config.model ?? inherit?.modelRef;
 		if (ref === undefined) return undefined;
-		const resolved = resolveCliModel({ cliModel: ref, modelRegistry: registry });
+		const resolved = resolveCliModel({ cliModel: ref, modelRuntime });
 		if (!resolved.model) {
 			if (def.config.model !== undefined) throw new Error(resolved.error ?? `Type "${def.config.name}": unknown model "${ref}".`);
 			return undefined;
