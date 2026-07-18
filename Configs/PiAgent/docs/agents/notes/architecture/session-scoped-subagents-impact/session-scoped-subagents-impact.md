@@ -2,7 +2,7 @@
 
 Date: 2026-07-12
 Status: analysis only; no implementation decision
-Follow-up plan: `docs/agents/plans/architecture/session-scoped-subagents-and-reliable-results/session-scoped-subagents-and-reliable-results.md`
+Follow-up plan: `Configs/PiAgent/docs/agents/plans/architecture/session-scoped-subagents-and-reliable-results/session-scoped-subagents-and-reliable-results.md`
 
 ## Executive conclusion
 

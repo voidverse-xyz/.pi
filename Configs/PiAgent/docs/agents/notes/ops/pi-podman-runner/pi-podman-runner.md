@@ -1,8 +1,8 @@
 # Pi Podman Runner
 
 The workspace-root `pi.sh` launches Pi Coding Agent inside an ephemeral Fedora
-container. A generic reusable copy is kept at
-`Configs/Podman/pi-agent-container/pi.sh`.
+container. Generic reusable runner files are kept under
+`Configs/Podman/pi-agent-container/` and `Configs/Podman/pi-agent-image/`.
 
 ## Runtime design
 

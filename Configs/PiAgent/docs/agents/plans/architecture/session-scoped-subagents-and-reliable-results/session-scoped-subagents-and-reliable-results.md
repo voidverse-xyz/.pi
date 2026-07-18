@@ -2,7 +2,7 @@
 
 Status: implemented and independently reviewed (2026-07-13)
 Scope selected by user: combined program
-Implementation note: `docs/agents/notes/architecture/session-scoped-subagents-implementation/session-scoped-subagents-implementation.md`
+Implementation note: `Configs/PiAgent/docs/agents/notes/architecture/session-scoped-subagents-implementation/session-scoped-subagents-implementation.md`
 
 ## 1. Context and confirmed requirements
 
@@ -34,7 +34,7 @@ The implementation must satisfy these requirements:
 - `subagent_spawn` does not expose the task envelope ID; `subagent_send` has an envelope ID internally but omits it from the public tool result.
 - Report envelopes do not persist `final:true`; the flag currently only schedules oneshot retirement in memory.
 - Retirement intentionally bounces all pending inbound mail. That is correct for peer questions but noisy for messages from the main session that is itself retiring the worker.
-- The impact assessment at `docs/agents/notes/architecture/session-scoped-subagents-impact/session-scoped-subagents-impact.md` records the storage and compatibility costs that this plan resolves.
+- The impact assessment at `Configs/PiAgent/docs/agents/notes/architecture/session-scoped-subagents-impact/session-scoped-subagents-impact.md` records the storage and compatibility costs that this plan resolves.
 
 ## 3. Chosen design
 

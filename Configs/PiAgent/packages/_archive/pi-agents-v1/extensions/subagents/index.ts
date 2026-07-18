@@ -1,6 +1,6 @@
 /**
  * Subagents — persistent subagents with durable memory and mailbox
- * communication (design: ~/Agents/Documents/Configs/Subagent-Docs/).
+ * communication (design: Configs/Subagent-Docs/).
  *
  * Extension entry. Registers the full eight-tool surface
  * (03-tool-surface.md): spawn, send, steer, status, collect, interrupt,

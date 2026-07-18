@@ -1,15 +1,15 @@
 # Delegated review results
 
-Reusable protocol for agent systems with asynchronous workers and an anchored await/join tool.
+Use this workflow whenever delegated review findings are expected in the current response.
 
-1. Assign one bounded reviewer per independent purview.
-2. Include the full brief and a concise verdict/findings/evidence/fixes report contract.
-3. Capture the task or collect request ID as the result anchor.
-4. Await the anchored final/correlated report before reporting completion.
-5. Return early for worker questions, escalations, or errors; handle them and await again.
-6. Timeout consumes nothing and means “still pending,” not “complete.”
-7. Cancellation means independent review is incomplete.
-8. Let final-report lifecycle cleanup run normally; do not interrupt/finalize/retire in rapid succession.
-9. Present verdict and findings before orchestration or cleanup details.
+1. Prefer one narrowly scoped reviewer. Add reviewers only for independent purviews.
+2. Put the full brief and a concise report contract in the initial task. Request verdict, prioritized findings with evidence, fixes, and verification; forbid raw file dumps.
+3. Capture a durable task/request anchor from the dispatch or collection call.
+4. Await or join the exact anchor before reporting completion. Use the host's final-result mode for one task, or collect-result mode for structured fan-in.
+5. On worker attention, question, escalation, or error, resolve it and then await the same anchor again.
+6. On timeout, say the review remains pending. Do not substitute status, cleanup logs, or partial orchestration details for findings.
+7. On cancellation, state that independent review was not completed.
+8. Let one-shot workers finish their final-report lifecycle normally; do not send redundant finalize messages or immediately retire a worker before its report is delivered.
+9. Present results in this order: verdict, findings, fixes or decision, verification, then one short operational caveat if needed.
 
-This closes the common failure mode where an orchestrator answers first and receives the actual review only on a later turn.
+A delegated review is complete only after the anchored final or collect report is available in the current context.

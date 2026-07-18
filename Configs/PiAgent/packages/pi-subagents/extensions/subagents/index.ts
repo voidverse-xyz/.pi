@@ -1,7 +1,7 @@
 /**
  * pi-subagents — extension entry.
  *
- * Plan: ~/Agents/Documents/Plans/PiAgent/pi-subagents/plan.md. Runs ALONGSIDE
+ * Plan: Configs/PiAgent/docs/agents/plans/pi-agent/pi-subagents/pi-subagents.md. Runs ALONGSIDE
  * pi-teams: subagent_* tools are background fan-out workers (hub-and-spoke, no
  * peer mail, no nesting); team_* remains the collaborative persistent team.
  *

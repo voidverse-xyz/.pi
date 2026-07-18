@@ -1,7 +1,7 @@
 /**
  * pi-teams — extension entry.
  *
- * Design: ~/Agents/Documents/Configs/Subagent-Docs/ (D1'–D27'). v1 is archived
+ * Design: Configs/Subagent-Docs/ (D1'–D27'). v1 is archived
  * at packages/_archive/pi-agents-v1/.
  *
  * At session_start the core is acquired under a single host-scope lease (D7),

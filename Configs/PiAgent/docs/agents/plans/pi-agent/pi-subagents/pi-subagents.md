@@ -7,7 +7,7 @@ idle auto-wake. Strict hub-and-spoke; subagents cannot spawn. Runs **alongside**
 Path abbreviations used in citations:
 
 - **TEAMS** = `Configs/PiAgent/packages/pi-teams/extensions/teams`
-- **PCA** = `~/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist`
+- **PCA** = `<pi-install-dir>/dist`
 - **SAFETY** = `Configs/PiAgent/packages/pi-safety/extensions/safety`
 
 ---
@@ -454,7 +454,7 @@ test/e2e/
 ## 5. Changes outside the deliverable
 
 1. `~/.pi/agent/settings.json` — append
-   `"/home/john/Agents/Documents/Configs/PiAgent/packages/pi-subagents"` to `packages`.
+   `"<workspace>/Configs/PiAgent/packages/pi-subagents"` to `packages`.
    (Live file, not in repo — apply with Edit, not a script.)
 2. `Configs/PiAgent/packages/pi-safety/extensions/safety/index.ts` — extract the
    `teams:confirm-request` handler body (`index.ts:164-204`) into

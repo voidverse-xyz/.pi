@@ -117,6 +117,12 @@ paths, personal contact details, and generated logs. When an artifact also has
 reusable value beyond the project, save a sanitized generic version in this
 shared repository using the `Reusable Artifact Capture` rules above.
 
+For this shared repository, keep the top-level `Skills/`, `Plans/`, `Workflows/`,
+`Subagents/`, `MCP/`, and `Configs/` directories reusable and project-agnostic.
+Do not place project-specific artifacts in a root `docs/agents/` tree here;
+instead, put them under the relevant contained project's own documentation tree,
+such as `Configs/PiAgent/docs/agents/` for PiAgent-specific work.
+
 ## Directory Map
 
 - `AGENTS.md`: instructions agents read before working in this repository.

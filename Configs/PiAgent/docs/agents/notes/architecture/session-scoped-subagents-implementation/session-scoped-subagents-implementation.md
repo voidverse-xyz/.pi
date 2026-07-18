@@ -1,7 +1,7 @@
 # Session-scoped subagents implementation
 
 Implemented: 2026-07-13
-Plan: `docs/agents/plans/architecture/session-scoped-subagents-and-reliable-results/session-scoped-subagents-and-reliable-results.md`
+Plan: `Configs/PiAgent/docs/agents/plans/architecture/session-scoped-subagents-and-reliable-results/session-scoped-subagents-and-reliable-results.md`
 
 ## Delivered
 

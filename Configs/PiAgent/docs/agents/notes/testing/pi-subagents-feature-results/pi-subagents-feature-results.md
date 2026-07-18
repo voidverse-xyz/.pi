@@ -1,6 +1,6 @@
 # Pi Subagents Feature Test Results
 
-Companion to `docs/agents/plans/testing/pi-subagents-feature-validation/pi-subagents-feature-validation.md`.
+Companion to `Configs/PiAgent/docs/agents/plans/testing/pi-subagents-feature-validation/pi-subagents-feature-validation.md`.
 
 ## Overall status
 
@@ -15,7 +15,7 @@ Companion to `docs/agents/plans/testing/pi-subagents-feature-validation/pi-subag
 5. **Coexistence:** `pi-teams` passed its strict 11-harness suite and a live oneshot returned `TEAMS-LIVE-FIXED` after reload.
 6. **Cleanup:** final subagent roster and open-task list were empty.
 
-Implementation details: `docs/agents/notes/testing/pi-subagents-defect-fixes/pi-subagents-defect-fixes.md`.
+Implementation details: `Configs/PiAgent/docs/agents/notes/testing/pi-subagents-defect-fixes/pi-subagents-defect-fixes.md`.
 
 ## Pre-fix focused retest (historical)
 
