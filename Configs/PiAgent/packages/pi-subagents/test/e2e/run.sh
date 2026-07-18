@@ -53,6 +53,7 @@ TESTS=(
 	phase6-control.mjs
 	phase7-resume.mjs
 	phase8-sandbox.mjs
+	phase9-tui.mjs
 	loadcheck.mjs
 )
 for t in "${TESTS[@]}"; do

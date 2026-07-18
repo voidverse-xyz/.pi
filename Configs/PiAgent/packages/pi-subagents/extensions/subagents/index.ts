@@ -10,8 +10,8 @@
  * spawn subagents at all. Torn down on shutdown.
  *
  * Registers the seven subagent_* tools, the /subagents command (picker/viewer/
- * stop), the stop-all shortcut, the ambient + tree widgets, and the main-mail
- * auto-wake pump.
+ * stop), the stop-all shortcut, the unified tree/status widget, and the
+ * main-mail auto-wake pump.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -31,12 +31,9 @@ import {
 	createStatusTool,
 	createSteerTool,
 } from "./tools/main-agent.ts";
-import { createWidgetController, widgetStatusText, type WidgetController } from "./tui/widget.ts";
 import { createTreeWidget, STOP_KEY, type TreeWidgetController } from "./tui/tree-widget.ts";
 import { createPicker, type PickerResult } from "./tui/picker.ts";
 import { createViewer, type ViewerResult } from "./tui/viewer.ts";
-
-const STATUS_KEY = "subagents";
 
 /**
  * sendMessage options for a main-mail wake injection. BOTH matter and they
@@ -52,7 +49,6 @@ export const WAKE_DELIVERY = { deliverAs: "followUp", triggerTurn: true } as con
 export default function (pi: ExtensionAPI): void {
 	let core: SubagentsCore | null = null;
 	let lease: HostScopeLease | null = null;
-	let widget: WidgetController | null = null;
 	let tree: TreeWidgetController | null = null;
 	let overlayOpen = false;
 	/** Set when subagents are unavailable this session (non-persisted, or lease held elsewhere). */
@@ -240,18 +236,11 @@ export default function (pi: ExtensionAPI): void {
 				}
 			})();
 
-			// Ambient widget: publish plain status text; pi-status-line styles it.
+			// The single ambient surface: running/waiting/mail counts plus live
+			// per-agent activity. Nothing is published into the shared footer.
 			if (ctx.mode === "tui") {
-				const publish = (): void => {
-					if (!widget) return;
-					ctx.ui.setStatus(STATUS_KEY, widgetStatusText(widget.snapshot()));
-				};
-				widget = createWidgetController({ core, onChange: publish });
-				publish();
-				// The live "Running N subagents…" tree above the editor.
 				tree = createTreeWidget(core, {
 					setWidget: (key, content, opts) => ctx.ui.setWidget(key, content, opts),
-					theme: ctx.ui.theme,
 				});
 			}
 		} catch (error) {
@@ -275,22 +264,15 @@ export default function (pi: ExtensionAPI): void {
 		pump.onSettled(); // drains background work that finished during the turn
 	});
 
-	pi.on("session_shutdown", async (_event, ctx) => {
+	pi.on("session_shutdown", async () => {
 		pump.shutdown(); // no stale turn after teardown
 		await teardown();
-		// Clear the ambient status we published — otherwise the last "󰚩 N running…"
-		// outlives the fleet it described (same idiom as pi-safety).
-		if (ctx.mode === "tui") ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
 
 	async function teardown(): Promise<void> {
 		if (tree) {
 			tree.dispose();
 			tree = null;
-		}
-		if (widget) {
-			widget.dispose();
-			widget = null;
 		}
 		if (core) {
 			try {

@@ -46,8 +46,9 @@ confirmed spec (all decisions locked in conversation):
 10. **R10 — Safety like teams.** Guarded bash/edit/write confirm through pi-safety
     (fail-closed); state tree + type-def dirs hard-denied; per-type `tools` allowlist.
 11. **R11 — Same cwd.** No worktree isolation in v1.
-12. **R12 — UI.** `/subagents` command with picker + viewer, live tree widget above the
-    editor, and a stop brake (command + shortcut).
+12. **R12 — UI.** `/subagents` command with picker + viewer, one live tree/status
+    widget above the editor (running/waiting/mail summary, activity rows, bottom
+    padding, no footer segment), and a stop brake (command + shortcut).
 
 Non-goals (explicit): peer messaging, blocking ask, collect-with-schema, hops guard,
 worktrees, replacing pi-teams.
@@ -359,10 +360,12 @@ Adapted from teams TUI with renames and two deletions (no peers command, no arch
 changes):
 
 ```
-┌ 󰚩 Running 2 subagents · alt+a stop ─────────────────┐
-│ ├─ adhoc/tmp-3f21   4 tools  Bash: npm test          │
-│ └─ scout/main       2 tools  Read: src/auth/jwt.ts   │
-└──────────────────────────────────────────────────────┘
+󰚩 2 running · 1 waiting · 󰇮 3 · alt+a stop
+├─ adhoc/tmp-3f21 · 4 tool uses
+│  └ Bash: npm test
+└─ scout/main · 2 tool uses
+   └ Read: src/auth/jwt.ts
+
 ```
 
 | Surface | Keys / actions |
@@ -371,10 +374,11 @@ changes):
 | picker | ↑↓/kj move · Enter view · `a` archive section · `x` cancel · `X` retire (y/N) · `S` stop all · Esc close |
 | viewer | Esc back · alt+j next agent · Enter send-as-user · alt+Enter steer · live tail |
 | global | `alt+a` = stop all working subagents (non-destructive; mail stays pending) |
-| ambient | `setStatus("subagents", "󰚩 2 running · 📬 1")` — hidden at zero agents |
+| ambient | one above-editor widget: running/waiting/mail header + live activity tree + trailing blank line; no shared-footer `setStatus` |
 
 Empty states: picker with no agents shows "No subagents — spawn one with
-subagent_spawn"; tree widget renders nothing when idle; viewer on a retired address
+subagent_spawn"; the ambient widget renders nothing without activity or unread mail,
+but remains visible for mail-only status; viewer on a retired address
 exits to picker (`TEAMS/index.ts:114-119` idiom).
 
 ### 3.10 Least privilege & failure states summary
@@ -427,8 +431,8 @@ extensions/subagents/
   tools/main-agent.ts                 adapt TEAMS/tools/main-agent.ts — subagent_* tools; spawn type|prompt; multi-await; no collect/peers
   tools/sub-agent.ts                  adapt TEAMS/tools/sub-agent.ts — report only (16k text / 64k data caps kept)
   tools/results.ts                    copy TEAMS/tools/results.ts
-  tui/widget.ts                       adapt TEAMS/tui/widget.ts — icons/wording
-  tui/tree-widget.ts                  adapt TEAMS/tui/tree-widget.ts — WIDGET_KEY, STOP_KEY alt+a
+  tui/widget.ts                       running/waiting/mail snapshot + icons
+  tui/tree-widget.ts                  unified status/activity widget + bottom padding, STOP_KEY alt+a
   tui/picker.ts                       adapt TEAMS/tui/picker.ts — header/hints wording
   tui/viewer.ts                       adapt TEAMS/tui/viewer.ts — header wording
 test/e2e/
@@ -536,7 +540,7 @@ registration):
     with the notify summary; picker `x`/`X` paths behave; viewer Enter/alt+Enter
     send-vs-steer works (R8, R12).
 14. Coexistence: in one session spawn a teams agent AND a subagents agent → both tree
-    widgets/status lines render, both wake pumps deliver, pi-safety confirms for both
+    widgets render, both wake pumps deliver, pi-safety confirms for both
     channels (risk #6); pi-teams behavior unchanged.
 15. Cleanup: quit Pi → `.host-owner.json` released, no orphan node processes; scratch
     tmp worlds removed by the suite.
