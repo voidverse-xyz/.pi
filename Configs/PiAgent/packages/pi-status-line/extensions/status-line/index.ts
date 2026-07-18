@@ -372,6 +372,7 @@ function footerFits(sides: FooterSides, width: number): boolean {
 export default function (pi: ExtensionAPI) {
 	let activeTui: TUI | undefined;
 	let getExtensionStatuses: (() => ReadonlyMap<string, string>) | undefined;
+	let headerPinTimer: ReturnType<typeof setInterval> | undefined;
 
 	const requestRender = () => {
 		activeTui?.requestRender();
@@ -387,6 +388,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", (_event, ctx) => {
 		activeTui = undefined;
 		getExtensionStatuses = undefined;
+		if (headerPinTimer) {
+			clearInterval(headerPinTimer);
+			headerPinTimer = undefined;
+		}
 		if (ctx.mode === "tui") {
 			ctx.ui.setWidget(HEADER_WIDGET_KEY, undefined, { placement: "aboveEditor" });
 			ctx.ui.setFooter(undefined);
@@ -528,16 +533,30 @@ export default function (pi: ExtensionAPI) {
 			};
 		});
 
-		ctx.ui.setWidget(
-			HEADER_WIDGET_KEY,
-			(_tui, theme) => ({
-				invalidate() {},
-				render(width: number): string[] {
-					const extensionStatuses = getExtensionStatuses?.();
-					return extensionStatuses ? renderHeader(extensionStatuses, theme, width) : [];
-				},
-			}),
-			{ placement: "aboveEditor" },
-		);
+		// The project/Git + model row is the STATUS BAR of the widget stack: it
+		// belongs directly above the editor, below every content widget (todo list,
+		// teams/subagents trees) — those sit under the working indicator. pi core
+		// keeps aboveEditor widgets in a Map where every setWidget call moves that
+		// key to the END (= rendered bottom-most), so any widget that refreshes its
+		// content would otherwise hop BELOW this static row. Pin the row to the
+		// bottom by re-asserting it on a slow tick — cheap (a tiny factory object),
+		// and a no-op visually whenever it is already last.
+		const mountHeader = (): void => {
+			ctx.ui.setWidget(
+				HEADER_WIDGET_KEY,
+				(_tui, theme) => ({
+					invalidate() {},
+					render(width: number): string[] {
+						const extensionStatuses = getExtensionStatuses?.();
+						return extensionStatuses ? renderHeader(extensionStatuses, theme, width) : [];
+					},
+				}),
+				{ placement: "aboveEditor" },
+			);
+		};
+		mountHeader();
+		if (headerPinTimer) clearInterval(headerPinTimer);
+		headerPinTimer = setInterval(mountHeader, 1000);
+		headerPinTimer.unref?.();
 	});
 }
