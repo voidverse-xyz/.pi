@@ -2,8 +2,11 @@
 
 Claude Code-style todo list for Pi (ref IMG_5781).
 
-The agent plans and tracks multi-step work by calling the `todo_write` tool with the
-**complete** list each time (it replaces the previous list). The live checklist renders
+The agent plans and tracks only genuinely complex work that naturally has at least
+three substantive steps by calling the `todo_write` tool with the **complete** list each
+time (it replaces the previous list). One- and two-step tasks, quick fixes, simple
+lookups, and a single change plus verification are handled directly without a todo
+list. The live checklist renders
 in an `aboveEditor` widget with a simple, static title line, the tree hanging off it
 via a `└` connector, and a blank padding line below the block:
 
@@ -29,8 +32,9 @@ and full control over truncation — require a component.
 - **`todo_write` tool** — LLM-callable, and the ONLY way to change the list (an empty
   list clears it). Items are `{ content, status, activeForm? }` with statuses
   `pending | in_progress | completed`; at most one `in_progress`. System-prompt
-  guidelines steer the agent to plan 3+-step tasks up front, keep one task in
-  progress, and mark completions immediately.
+  guidelines restrict the tool to genuinely complex work with 3+ substantive steps,
+  explicitly forbid one- or two-step lists and filler steps, keep one task in progress,
+  and mark completions immediately.
 - **`alt+o`** — the only user control: cycles expanded → collapsed → hidden
   (Claude Code uses `ctrl+t`, but pi core owns that for thinking blocks). There is
   deliberately no slash command. Collapsed keeps the title plus a one-line summary

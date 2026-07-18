@@ -122,12 +122,14 @@ export default function todoList(pi: ExtensionAPI) {
 		label: "Todo List",
 		description:
 			"Create and manage a structured task list for the current session. Call it with the COMPLETE list every time — " +
-			"it replaces the previous list. Use it to plan multi-step work and to give the user visibility into progress. " +
-			"Mark a task in_progress BEFORE starting it (only one at a time), and completed IMMEDIATELY after finishing it; " +
-			"do not batch up completions. Skip the todo list entirely for trivial single-step tasks.",
-		promptSnippet: "todo_write — plan and track multi-step work as a visible todo list (replaces the whole list each call)",
+			"it replaces the previous list. Use it ONLY for genuinely complex work that naturally requires at least 3 substantive " +
+			"steps. NEVER create a todo list for one- or two-step tasks, quick fixes, simple lookups, a single edit plus verification, " +
+			"or other routine work; do those directly, and never invent filler steps just to reach three. For qualifying work, mark a " +
+			"task in_progress BEFORE starting it (only one at a time), and completed IMMEDIATELY after finishing it; do not batch " +
+			"up completions.",
+		promptSnippet: "todo_write — track genuinely complex work with 3+ substantive steps; never use for 1-2 step tasks",
 		promptGuidelines: [
-			"For any task with 3+ steps (or multiple distinct deliverables), call todo_write up front to plan the work, then keep it current as you go.",
+			"Use todo_write only when a task is genuinely complex and naturally decomposes into at least 3 substantive steps. Never use it for 1- or 2-step tasks, quick fixes, simple lookups, or a single change plus verification; do not invent filler steps to reach three.",
 			"todo_write replaces the entire list: resend every item each call, changing only the statuses/content that moved.",
 			"Keep exactly one todo in_progress at a time; mark it completed as soon as it is actually done (tests pass, verified), never in advance.",
 			"Give each todo an imperative `content` ('Fix store layer') and an `activeForm` ('Fixing store layer') for the in-progress display.",
