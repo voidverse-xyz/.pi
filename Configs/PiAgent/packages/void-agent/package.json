@@ -1,14 +1,17 @@
 {
-  "name": "pi-codex-ui",
+  "name": "void-agent",
   "version": "1.0.1",
   "type": "module",
-  "description": "Codex CLI-inspired Pi presentation: prompt editor, working indicator, and tool-turn separators while preserving tool definitions, widgets, and status lines.",
+  "description": "Void Agent presentation for Pi: theme, prompt editor, working indicator, and tool-turn separators while preserving tool definitions, widgets, and status lines.",
   "keywords": [
     "pi-package"
   ],
   "pi": {
     "extensions": [
       "./extensions"
+    ],
+    "themes": [
+      "./themes"
     ]
   },
   "peerDependencies": {

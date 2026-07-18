@@ -11,7 +11,7 @@
  *     □ Fix mail                 <- pending: dim box, plain text
  *
  * The title is a plain list header — NOT a working indicator: no spinner, no
- * elapsed time, no tokens, no dynamic label (pi-codex-ui's loader row owns all
+ * elapsed time, no tokens, no dynamic label (Void Agent's loader row owns all
  * of that). It renders whenever the list is non-empty, working or idle, so the
  * list always reads as what it is: a todo list.
  *

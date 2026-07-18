@@ -7,8 +7,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const EXTENSION = join(HERE, "..", "extensions", "codex-ui", "index.ts");
-const THEME = join(HERE, "..", "..", "..", ".pi", "agent", "themes", "codex.json");
+const EXTENSION = join(HERE, "..", "extensions", "void-agent", "index.ts");
+const THEME = join(HERE, "..", "themes", "void-agent.json");
 
 function findPiPackage() {
 	const home = process.env.HOME ?? "";
@@ -25,7 +25,7 @@ function findPiPackage() {
 }
 
 const PI_PACKAGE = findPiPackage();
-const scratch = mkdtempSync(join(tmpdir(), "pi-codex-ui-"));
+const scratch = mkdtempSync(join(tmpdir(), "void-agent-"));
 const originalArgv1 = process.argv[1];
 const originalRandom = Math.random;
 const originalNow = Date.now;
@@ -103,7 +103,7 @@ try {
 		indicator = new WorkingStatusIndicator({ requestRender() {} }, workingMessage, workingIndicator);
 	};
 
-	// Breathe reaches both endpoints: true black and the Codex prompt gray.
+	// Breathe reaches both endpoints: true black and the Void Agent prompt gray.
 	await startStyle(0);
 	Date.now = () => 1_400; // midpoint random period is 2,800ms; half-period is the gray peak
 	let lines = indicator.render(60);
@@ -180,7 +180,7 @@ try {
 	);
 	await runCommand("matrix", "");
 	assert.equal(
-		JSON.parse(readFileSync(join(scratch, "codex-ui.json"), "utf8")).matrix,
+		JSON.parse(readFileSync(join(scratch, "void-agent.json"), "utf8")).matrix,
 		false,
 		"/matrix with no argument toggles rain off",
 	);
@@ -190,7 +190,7 @@ try {
 	await runCommand("working-animation", "");
 	assert.equal(indicator.render(60).length, 4, "a second no-argument toggle restores the block");
 	assert.deepEqual(
-		JSON.parse(readFileSync(join(scratch, "codex-ui.json"), "utf8")),
+		JSON.parse(readFileSync(join(scratch, "void-agent.json"), "utf8")),
 		{ workingAnimation: true, matrix: true },
 		"animation command settings persist",
 	);

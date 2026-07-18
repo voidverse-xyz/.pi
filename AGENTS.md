@@ -167,8 +167,8 @@ shared repository using the `Reusable Artifact Capture` rules above.
   model/thinking pinned right, with Git truncated first when narrow — plus its
   two-line footer. Git includes repo/branch, worktree name, in-progress operation
   (rebase/merge/cherry-pick/revert/bisect), and conflict/dirty/ahead/behind/stash
-  counts only when relevant. The active Codex theme grades thinking levels from
-  gray (off) through blue and purple to red (max).
+  counts only when relevant. The active Void Agent theme grades thinking levels
+  from gray (off) through blue and purple to red (max).
   `pi-tool-monitor` tracks tool calls via `tool_execution_start/update/end` and
   publishes plain running-tool text under a reserved status key. `pi-agents`
   likewise publishes plain subagent activity. `pi-status-line` styles and places

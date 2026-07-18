@@ -1,4 +1,4 @@
-# Codex UI parity for Pi
+# Void Agent presentation for Pi
 
 ## Reference capture
 
@@ -16,14 +16,16 @@ The local Codex CLI 0.144.1 TUI used these stable presentation details:
 
 ## Pi implementation
 
-Color tokens live in `Configs/PiAgent/.pi/agent/themes/codex.json`.
-Structural presentation lives in `Configs/PiAgent/packages/pi-codex-ui/` because a
-Pi JSON theme cannot change editor geometry, tool framing, separators, or headers.
+Color tokens and structural presentation are bundled in
+`Configs/PiAgent/packages/void-agent/`. The theme lives at
+`themes/void-agent.json`, while the extension lives at
+`extensions/void-agent/index.ts`, because a Pi JSON theme cannot change editor
+geometry, tool framing, separators, or headers.
 The package deliberately leaves existing status-line extensions and above/below-editor
 widgets untouched so their content and positions remain stable.
 
 The extension subclasses `CustomEditor`, preserving Pi's input behavior and app
-keybindings while replacing only rendered borders with a full-width Codex-style
+keybindings while replacing only rendered borders with a full-width Void Agent
 background surface. It does not replace or wrap tool definitions. Instead, a
 presentation-only runtime patches append a divider after Pi's existing completed tool
 rows and repaint the built-in working indicator after it renders. The working-row patch

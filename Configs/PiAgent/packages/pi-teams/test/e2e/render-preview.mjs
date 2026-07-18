@@ -1,22 +1,21 @@
 /**
  * render-preview.mjs — render the REAL TUI components (tree widget, picker,
- * viewer chrome) with the REAL codex theme palette to ANSI, for visual review.
+ * viewer chrome) with the real Void Agent theme palette to ANSI, for visual review.
  * Not part of run.sh. Prints ANSI to stdout; `--json` emits {name, lines[]}.
  */
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { EXT, jiti } from "./env.mjs";
 
 const tree = await jiti.import(join(EXT, "tui/tree-widget.ts"));
 const picker = await jiti.import(join(EXT, "tui/picker.ts"));
 const viewer = await jiti.import(join(EXT, "tui/viewer.ts"));
 
-// --- a Theme shim backed by the real codex.json palette ---
-const codex = JSON.parse(readFileSync(join(homedir(), ".pi/agent/themes/codex.json"), "utf8"));
+// --- a Theme shim backed by the bundled Void Agent palette ---
+const voidAgent = JSON.parse(readFileSync(join(EXT, "../../../void-agent/themes/void-agent.json"), "utf8"));
 const resolve = (name) => {
-	const c = codex.colors[name] ?? name;
-	return codex.vars[c] ?? (typeof c === "string" && c.startsWith("#") ? c : undefined);
+	const c = voidAgent.colors[name] ?? name;
+	return voidAgent.vars[c] ?? (typeof c === "string" && c.startsWith("#") ? c : undefined);
 };
 const rgb = (hex) => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
 const theme = {

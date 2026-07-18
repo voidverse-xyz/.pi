@@ -19,9 +19,9 @@ const DIM = "\x1b[2m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 const RESET_FG = "\x1b[39m";
-const TOOL_PATCH = Symbol.for("pi-codex-ui.tool-render-patch");
+const TOOL_PATCH = Symbol.for("void-agent.tool-render-patch");
 const WORKING_TICK_MS = 200;
-const ANIMATION_CONFIG_PATH = join(getAgentDir(), "codex-ui.json");
+const ANIMATION_CONFIG_PATH = join(getAgentDir(), "void-agent.json");
 
 interface AnimationConfig {
 	workingAnimation: boolean;
@@ -337,7 +337,7 @@ function isEditorBorder(line: string): boolean {
 	return /^─+$/.test(plain) || /^─── [↑↓] \d+ more ─*$/.test(plain);
 }
 
-class CodexEditor extends CustomEditor {
+class VoidAgentEditor extends CustomEditor {
 	constructor(
 		tui: TUI,
 		editorTheme: EditorTheme,
@@ -391,7 +391,7 @@ type ToolExecutionPrototype = {
 	[TOOL_PATCH]?: { original: (this: ToolExecutionLike, width: number) => string[] };
 };
 
-const WORKING_BG_PATCH = Symbol.for("pi-codex-ui.working-bg-patch");
+const WORKING_BG_PATCH = Symbol.for("void-agent.working-bg-patch");
 
 // Current full-line background animation; set per agent run, cleared when the
 // run settles. The patched render below reads it on every frame.
@@ -485,7 +485,7 @@ async function installToolSeparatorPatch(): Promise<(() => void) | undefined> {
 	}
 }
 
-export default async function codexUi(pi: ExtensionAPI): Promise<void> {
+export default async function voidAgent(pi: ExtensionAPI): Promise<void> {
 	const restoreToolRenderer = await installToolSeparatorPatch();
 	const restoreWorkingBg = await installWorkingBgPatch();
 	const animationConfig = loadAnimationConfig();
@@ -592,7 +592,7 @@ export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 	};
 
 	pi.registerCommand("matrix", {
-		description: "Toggle Codex working-indicator Matrix rain: /matrix [on|off|status]",
+		description: "Toggle Void Agent working-indicator Matrix rain: /matrix [on|off|status]",
 		getArgumentCompletions: toggleCompletions,
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") {
@@ -622,7 +622,7 @@ export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 	});
 
 	pi.registerCommand("working-animation", {
-		description: "Toggle the Codex animated working block: /working-animation [on|off|status]",
+		description: "Toggle the Void Agent animated working block: /working-animation [on|off|status]",
 		getArgumentCompletions: toggleCompletions,
 		handler: async (args, ctx) => {
 			if (ctx.mode !== "tui") {
@@ -659,15 +659,15 @@ export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 		if (ctx.mode !== "tui") return;
 
 		if (!restoreToolRenderer) {
-			ctx.ui.notify("Codex UI could not install its tool separator renderer", "warning");
+			ctx.ui.notify("Void Agent could not install its tool separator renderer", "warning");
 		}
 		if (!restoreWorkingBg) {
-			ctx.ui.notify("Codex UI could not install its working-background renderer", "warning");
+			ctx.ui.notify("Void Agent could not install its working-background renderer", "warning");
 		}
-		ctx.ui.setTheme("codex");
+		ctx.ui.setTheme("void-agent");
 		ctx.ui.setHeader(() => ({ render: () => [], invalidate() {} }));
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) =>
-			new CodexEditor(tui, editorTheme, keybindings, ctx.ui.theme),
+			new VoidAgentEditor(tui, editorTheme, keybindings, ctx.ui.theme),
 		);
 	});
 

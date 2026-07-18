@@ -19,7 +19,7 @@ via a `└` connector, and a blank padding line below the block:
 ```
 
 The title is a **list header, not a working indicator**: no spinner, no elapsed time,
-no token count, no dynamic label — pi-codex-ui's loader row owns all of that. It is a
+no token count, no dynamic label — Void Agent's loader row owns all of that. It is a
 muted `󰝖 Todos` plus a dim progress count, and it renders whenever the list is
 non-empty, **working or idle**, so the checklist always reads as what it is.
 

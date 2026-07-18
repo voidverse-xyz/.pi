@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Standalone preview of the pi-codex-ui working-indicator background blocks:
+// Standalone preview of the Void Agent working-indicator background blocks:
 // full-width animations transitioning between black and the theme gray with
 // sparse theme-green Matrix character rain layered over all three rows,
-// mirroring makeLineBgStyle in extensions/codex-ui/index.ts so the effect can
+// mirroring makeLineBgStyle in extensions/void-agent/index.ts so the effect can
 // be eyeballed without launching pi:
 //   node test/preview-working-sweep.mjs          # live, all styles stacked, ctrl+c to quit
 //   node test/preview-working-sweep.mjs --frames # dump static frames per style
@@ -10,12 +10,12 @@
 const RESET = "\x1b[0m";
 const RESET_FG = "\x1b[39m";
 const TAU = Math.PI * 2;
-const TEXT = [0xcd, 0xd6, 0xf4]; // codex theme text
-const DIM = [0x6f, 0x70, 0x78]; // codex theme dim
+const TEXT = [0xcd, 0xd6, 0xf4]; // Void Agent theme text
+const DIM = [0x6f, 0x70, 0x78]; // Void Agent theme dim
 const BLACK = [0, 0, 0];
-// Transition target: codex theme prompt-field gray (`userMessageBg`).
+// Transition target: Void Agent theme prompt-field gray (`userMessageBg`).
 const GRAY = [0x37, 0x37, 0x39];
-const MATRIX_GREEN = [0xab, 0xdf, 0xa7]; // codex theme success
+const MATRIX_GREEN = [0xab, 0xdf, 0xa7]; // Void Agent theme success
 const MATRIX_ROWS = 3;
 const MATRIX_GLYPHS = ["0", "1", "ｱ", "ｲ", "ｳ", "ｴ", "ｵ", "ｶ", "ｷ", "ｸ", "ｹ", "ｺ", "ｻ", "ｼ", "ｽ", "ｾ", "ｿ"];
 const MATRIX_SEED = 250_000;
@@ -113,7 +113,7 @@ function paintPaddingLine(width, style, t, textWidth, row) {
 	return `${out}${RESET}`;
 }
 
-const SPINNER_ACCENT = [0x94, 0xe2, 0xd5]; // codex theme accent (cyan)
+const SPINNER_ACCENT = [0x94, 0xe2, 0xd5]; // Void Agent theme accent (cyan)
 const content = `${fg(SPINNER_ACCENT)}⠹${RESET} ${fg(TEXT)}Working…${RESET} ${fg(DIM)}(1m 12s · ↓ 62.3k tokens)${RESET}`;
 // The real indicator is a three-line block: padding, status text, padding.
 const block = (name, t) => {

@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json",
-  "name": "codex",
+  "name": "void-agent",
   "vars": {
     "inputBg": "#373739",
     "selectedBg": "#4a4a4d",

@@ -1,8 +1,9 @@
-# pi-codex-ui
+# void-agent
 
-A Codex CLI-inspired presentation layer for Pi. It pairs with the global `codex`
-theme and leaves Pi's registered tool definitions untouched, preserving configured
-shells, safety/sandbox wrappers, mutation previews, diffs, and expansion behavior.
+Void Agent is a self-contained presentation package for Pi. It bundles its `void-agent`
+theme with the UI extension and leaves Pi's registered tool definitions untouched,
+preserving configured shells, safety/sandbox wrappers, mutation previews, diffs, and
+expansion behavior.
 
 ## UI changes
 
@@ -41,5 +42,5 @@ Calling either command without an argument toggles its setting. Both settings pe
 ## Install
 
 1. Add this package path to Pi's `packages` setting.
-2. Set `"theme": "codex"`.
+2. Set `"theme": "void-agent"`.
 3. Run `/reload` or restart Pi.
