@@ -149,14 +149,17 @@ such as `Configs/PiAgent/docs/agents/` for PiAgent-specific work.
   contains older snapshots that Pi does not load.
 - `Configs/PiAgent/.pi/agent/skills/`: source of truth for the `plan-commit`
   skill.
-  `pi-plan` provides branch-persistent, main-agent hard read-only Plan mode via
-  `/plan` and `Shift+Tab`. It automatically routes tasks to one loaded skill tagged
-  `plan-template: true`, supports `/plan --skill <name> <task>` as an explicit
-  override, and exposes only approved project-read-only and companion UI/session
-  tools plus `save_plan`. The LLM selects
-  a project-relative Markdown path, the user authorizes the exact path once per
-  branch, and later revisions atomically replace it. The shared base instructions
-  live in `Skills/plan/`.
+  `pi-plan` provides four branch-persistent states: unrestricted Off plus
+  hard-restricted Ask, Discuss, and Plan modes via `/ask`, `/discuss`, `/plan`,
+  and a `Shift+Tab` cycle. Ask is quick chat (normally 1–4 sentences) with only
+  trusted read tools; Discuss has normal response length with read tools plus
+  `ask_user`/`show_files`; Plan keeps tagged `plan-template: true` routing,
+  `/plan --skill <name> <task>`, and authorized `save_plan`. Plan may also use
+  only fresh ad-hoc one-shot `pi-subagents` workers whose coding tools are forced
+  to `read`/`grep`/`find`/`ls`; follow-up/control calls are scoped to workers
+  created by Plan mode. The LLM selects a project-relative Markdown path, the
+  user authorizes the exact path once per branch, and later revisions atomically
+  replace it. The shared base instructions live in `Skills/plan/`.
   `clear-alias` (added 2026-07-07) registers `/clear` as a muscle-memory alias
   for `/new` using `ctx.newSession()`, so existing session-switch hooks still
   apply.
