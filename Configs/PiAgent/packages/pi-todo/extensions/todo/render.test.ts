@@ -12,6 +12,7 @@ import {
 	TITLE_ICON,
 	type TodoItem,
 	validateTodos,
+	validateTodoTransition,
 } from "./render.ts";
 
 // Tagging fake: styles become readable markers so assertions check both text and color.
@@ -117,9 +118,16 @@ test("summarizeTodos: plain text with progress count", () => {
 	assert.equal(summarizeTodos([]), "Todo list is empty.");
 });
 
-test("validateTodos: rejects empty content and multiple in_progress", () => {
+test("validateTodos: rejects empty content, duplicate identities, and multiple in_progress", () => {
 	assert.equal(validateTodos(list), null);
 	assert.match(validateTodos([{ content: "  ", status: "pending" }]) ?? "", /non-empty/);
+	assert.match(
+		validateTodos([
+			{ content: "same", status: "pending" },
+			{ content: " same ", status: "pending" },
+		]) ?? "",
+		/unique content/,
+	);
 	assert.match(
 		validateTodos([
 			{ content: "a", status: "in_progress" },
@@ -127,6 +135,48 @@ test("validateTodos: rejects empty content and multiple in_progress", () => {
 		]) ?? "",
 		/one todo may be in_progress/,
 	);
+});
+
+test("validateTodoTransition: normal updates preserve every existing item", () => {
+	const previous: TodoItem[] = [
+		{ content: "a", status: "in_progress", activeForm: "doing a" },
+		{ content: "b", status: "pending" },
+	];
+	assert.equal(
+		validateTodoTransition(previous, [
+			{ content: "b", status: "in_progress", activeForm: "doing b" },
+			{ content: "a", status: "completed" },
+			{ content: "c", status: "pending" },
+		]),
+		null,
+		"status changes, reordering, activeForm changes, and additions are safe",
+	);
+	assert.match(validateTodoTransition(previous, [{ content: "b", status: "in_progress" }]) ?? "", /must keep every existing item.*a/i);
+	assert.match(validateTodoTransition(previous, [{ content: "A", status: "completed" }, { content: "b", status: "pending" }]) ?? "", /must keep every existing item.*a/i);
+});
+
+test("validateTodoTransition: completed items remain until an explicit clear or replacement", () => {
+	const previous: TodoItem[] = [
+		{ content: "a", status: "completed" },
+		{ content: "b", status: "in_progress" },
+	];
+	assert.match(validateTodoTransition(previous, [{ content: "b", status: "completed" }]) ?? "", /must keep every existing item.*a/i);
+	assert.match(validateTodoTransition([{ content: "a", status: "in_progress" }], []) ?? "", /must keep every existing item.*a/i);
+	assert.match(validateTodoTransition([{ content: "a", status: "completed" }], []) ?? "", /must keep every existing item.*a/i);
+	assert.equal(validateTodoTransition([{ content: "a", status: "completed" }], [], "clear"), null, "completed lists still require explicit clear intent");
+});
+
+test("validateTodoTransition: destructive operations require explicit valid intent", () => {
+	const unfinished: TodoItem[] = [{ content: "a", status: "in_progress" }];
+	assert.match(validateTodoTransition(unfinished, [{ content: "replacement", status: "in_progress" }], "replace") ?? "", /reason/);
+	assert.equal(
+		validateTodoTransition(unfinished, [{ content: "replacement", status: "in_progress" }], "replace", "User changed the requested work"),
+		null,
+	);
+	assert.match(validateTodoTransition(unfinished, [], "clear") ?? "", /reason/);
+	assert.equal(validateTodoTransition(unfinished, [], "clear", "User asked to abandon the checklist"), null);
+	assert.match(validateTodoTransition(unfinished, [], "replace", "wrong shape") ?? "", /non-empty/);
+	assert.match(validateTodoTransition(unfinished, [{ content: "a", status: "pending" }], "clear", "wrong shape") ?? "", /empty/);
 });
 
 test("coerceTodos: accepts valid shapes, rejects garbage", () => {
@@ -144,18 +194,51 @@ test("coerceTodos: accepts valid shapes, rejects garbage", () => {
 	);
 });
 
-test("extractLatestTodos: last todo_write call wins, bad shapes skipped", () => {
-	const call = (todos: unknown) => ({
-		role: "assistant",
-		content: [{ type: "toolCall", id: "x", name: "todo_write", arguments: { todos } }],
+test("extractLatestTodos: last successful branch result wins; attempts and errors are ignored", () => {
+	const result = (todos: unknown, options: { toolName?: string; isError?: boolean } = {}) => ({
+		type: "message",
+		message: {
+			role: "toolResult",
+			toolName: options.toolName ?? "todo_write",
+			isError: options.isError ?? false,
+			details: { todos },
+		},
 	});
-	const messages = [
-		{ role: "user", content: "hi" },
-		call([{ content: "old", status: "pending" }]),
-		{ role: "assistant", content: [{ type: "text", text: "ok" }] },
-		call([{ content: "new", status: "completed" }]),
-		call("garbage"), // ignored — earlier valid call is kept
+	const attemptedOnly = {
+		type: "message",
+		message: {
+			role: "assistant",
+			content: [{ type: "toolCall", id: "x", name: "todo_write", arguments: { todos: [] } }],
+		},
+	};
+	const branch = [
+		{ type: "message", message: { role: "user", content: "hi" } },
+		result([{ content: "old", status: "pending" }]),
+		attemptedOnly,
+		result([{ content: "errored", status: "completed" }], { isError: true }),
+		result([{ content: "wrong tool", status: "completed" }], { toolName: "other" }),
+		result("garbage"),
+		result([{ content: "new", status: "completed" }]),
 	];
-	assert.deepEqual(extractLatestTodos(messages, "todo_write"), [{ content: "new", status: "completed" }]);
+	assert.deepEqual(extractLatestTodos(branch, "todo_write"), [{ content: "new", status: "completed" }]);
+	assert.deepEqual(extractLatestTodos([...branch, result([])], "todo_write"), []);
 	assert.deepEqual(extractLatestTodos([], "todo_write"), []);
+});
+
+test("extractLatestTodos: divergent branch inputs restore their own successful snapshots", () => {
+	const root = {
+		type: "message",
+		message: { role: "toolResult", toolName: "todo_write", isError: false, details: { todos: [{ content: "root", status: "pending" }] } },
+	};
+	const left = {
+		type: "message",
+		message: { role: "toolResult", toolName: "todo_write", isError: false, details: { todos: [{ content: "left", status: "in_progress" }] } },
+	};
+	const right = {
+		type: "message",
+		message: { role: "toolResult", toolName: "todo_write", isError: false, details: { todos: [{ content: "right", status: "completed" }] } },
+	};
+	assert.deepEqual(extractLatestTodos([root, left], "todo_write"), [{ content: "left", status: "in_progress" }]);
+	assert.deepEqual(extractLatestTodos([root, right], "todo_write"), [{ content: "right", status: "completed" }]);
+	assert.deepEqual(extractLatestTodos([root], "todo_write"), [{ content: "root", status: "pending" }]);
 });

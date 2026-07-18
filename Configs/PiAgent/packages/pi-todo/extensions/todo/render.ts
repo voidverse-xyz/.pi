@@ -20,6 +20,7 @@
  */
 
 export type TodoStatus = "pending" | "in_progress" | "completed";
+export type TodoOperation = "update" | "replace" | "clear";
 
 export interface TodoItem {
 	content: string;
@@ -125,12 +126,57 @@ export function summarizeTodos(todos: TodoItem[]): string {
 
 /** Returns an error string for an invalid list, or null when valid. */
 export function validateTodos(todos: TodoItem[]): string | null {
+	const identities = new Set<string>();
 	for (const item of todos) {
-		if (!item.content.trim()) return "Every todo needs non-empty content.";
+		const identity = item.content.trim();
+		if (!identity) return "Every todo needs non-empty content.";
+		if (identities.has(identity)) return `Every todo needs unique content; duplicate: ${JSON.stringify(identity)}.`;
+		identities.add(identity);
 	}
 	const inProgress = todos.filter((t) => t.status === "in_progress").length;
 	if (inProgress > 1) {
 		return `Only one todo may be in_progress at a time (got ${inProgress}). Finish or demote the others first.`;
+	}
+	return null;
+}
+
+/**
+ * Validate one accepted snapshot against the current state before replacement.
+ * Normal progress is intentionally non-destructive: every prior item, including
+ * completed history, remains visible. Explicit replace/clear operations are the
+ * auditable escape hatches for a user-directed replan or abandoned checklist.
+ */
+export function validateTodoTransition(
+	previous: TodoItem[],
+	next: TodoItem[],
+	operation: TodoOperation = "update",
+	reason?: string,
+): string | null {
+	if (operation === "clear") {
+		if (next.length > 0) return 'operation "clear" requires an empty todos array.';
+		const hasUnfinished = previous.some((item) => item.status !== "completed");
+		if (hasUnfinished && !reason?.trim()) {
+			return 'Clearing unfinished todos requires a non-empty reason and is allowed only for a direct user request or abandoned work.';
+		}
+		return null;
+	}
+
+	if (operation === "replace") {
+		if (next.length === 0) return 'operation "replace" requires a non-empty todos array; use "clear" to empty the list.';
+		if (!reason?.trim()) return 'operation "replace" requires a non-empty reason describing the user-directed replan.';
+		return null;
+	}
+
+	const nextIdentities = new Set(next.map((item) => item.content.trim()));
+	const missing = previous.filter((item) => !nextIdentities.has(item.content.trim()));
+	if (missing.length > 0) {
+		const names = missing.slice(0, 4).map((item) => JSON.stringify(item.content.trim())).join(", ");
+		const suffix = missing.length > 4 ? `, and ${missing.length - 4} more` : "";
+		return (
+			`A normal todo update must keep every existing item. Missing: ${names}${suffix}. ` +
+			"Mark finished tasks completed and keep them in the list. Use operation \"replace\" only for a direct user-requested replan, " +
+			"or operation \"clear\" only for a direct clear/abandon request."
+		);
 	}
 	return null;
 }
@@ -158,22 +204,21 @@ export function coerceTodos(value: unknown): TodoItem[] | null {
 }
 
 /**
- * Pull the most recent todo_write call's list out of replayed session messages
- * so it survives resume/reload. Accepts the loose message shapes the session
- * log actually contains; returns an empty list when none is found.
+ * Pull the most recent successful todo_write result snapshot from an active
+ * session branch. Attempted/failed calls are ignored, so rejected transitions
+ * cannot become live state after reload or tree navigation.
  */
-export function extractLatestTodos(messages: Iterable<unknown>, toolName: string): TodoItem[] {
+export function extractLatestTodos(entries: Iterable<unknown>, toolName: string): TodoItem[] {
 	let latest: TodoItem[] = [];
-	for (const message of messages) {
-		const m = message as { role?: string; content?: unknown };
-		if (m?.role !== "assistant" || !Array.isArray(m.content)) continue;
-		for (const part of m.content) {
-			const p = part as { type?: string; name?: string; arguments?: Record<string, unknown> };
-			if (p?.type === "toolCall" && p.name === toolName) {
-				const todos = coerceTodos(p.arguments?.todos);
-				if (todos) latest = todos;
-			}
-		}
+	for (const entry of entries) {
+		const e = entry as {
+			type?: string;
+			message?: { role?: string; toolName?: string; isError?: boolean; details?: { todos?: unknown } };
+		};
+		const message = e?.type === "message" ? e.message : undefined;
+		if (message?.role !== "toolResult" || message.toolName !== toolName || message.isError === true) continue;
+		const todos = coerceTodos(message.details?.todos);
+		if (todos) latest = todos;
 	}
 	return latest;
 }

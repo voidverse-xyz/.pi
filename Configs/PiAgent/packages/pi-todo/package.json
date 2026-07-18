@@ -2,7 +2,7 @@
 	"name": "pi-todo",
 	"version": "0.1.0",
 	"type": "module",
-	"description": "Claude Code-style todo list: an LLM-callable todo_write tool with a live checklist widget above the editor (green strikethrough for done, dim boxes for pending) under a simple always-on '󰝖 Todos · n/m' title, alt+o to cycle expanded/collapsed/hidden, /todos to inspect or clear, and restore on session resume.",
+	"description": "Claude Code-style todo list: transition-safe whole-list updates, explicit replace/clear intent, a live checklist widget above the editor, alt+o view cycling, and branch-correct session restore.",
 	"keywords": [
 		"pi-package"
 	],

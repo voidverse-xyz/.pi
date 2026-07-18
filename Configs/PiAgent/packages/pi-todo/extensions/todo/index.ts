@@ -40,7 +40,9 @@ import {
 	renderTodoWidgetLines,
 	summarizeTodos,
 	type TodoItem,
+	type TodoOperation,
 	validateTodos,
+	validateTodoTransition,
 } from "./render.ts";
 
 const TOOL_NAME = "todo_write";
@@ -70,8 +72,19 @@ const TodoWriteParams = Type.Object(
 	{
 		todos: Type.Array(TodoSchema, {
 			maxItems: MAX_TODOS,
-			description: "The complete todo list. This REPLACES the previous list, so always send every item, not just the changed one.",
+			description: "The complete todo list. A normal update must retain every existing item, including completed items.",
 		}),
+		operation: Type.Optional(
+			StringEnum(["update", "replace", "clear"] as const, {
+				description:
+					"update (default) preserves every existing item; replace is only for a direct user-requested replan; clear empties the list.",
+			}),
+		),
+		reason: Type.Optional(
+			Type.String({
+				description: "Required for replace, and for clearing unfinished work. State the direct user request or abandoned plan.",
+			}),
+		),
 	},
 	{ additionalProperties: false },
 );
@@ -121,45 +134,43 @@ export default function todoList(pi: ExtensionAPI) {
 		name: TOOL_NAME,
 		label: "Todo List",
 		description:
-			"Create and manage a structured task list for the current session. Call it with the COMPLETE list every time — " +
-			"it replaces the previous list. Use it ONLY for genuinely complex work that naturally requires at least 3 substantive " +
-			"steps. NEVER create a todo list for one- or two-step tasks, quick fixes, simple lookups, a single edit plus verification, " +
-			"or other routine work; do those directly, and never invent filler steps just to reach three. For qualifying work, mark a " +
-			"task in_progress BEFORE starting it (only one at a time), and completed IMMEDIATELY after finishing it; do not batch " +
-			"up completions. REMOVE todos from the list once they are completed and no longer relevant to the remaining work, and " +
-			"remove any todo that becomes obsolete (plan changed, user redirected) — the list should only show what still matters. " +
-			"When all work is finished, send an empty todos array to clear the list entirely.",
-		promptSnippet: "todo_write — track genuinely complex work with 3+ substantive steps; never use for 1-2 step tasks",
+			"Create and manage a structured task list for the current session. Call it with the COMPLETE list every time. " +
+			"Use it ONLY for genuinely complex work that naturally requires at least 3 substantive steps; never create a list for " +
+			"one- or two-step tasks, quick fixes, simple lookups, or a single change plus verification. During normal progress use " +
+			"operation update (the default), NEVER remove an existing todo, and keep completed todos visible. Mark a task " +
+			"in_progress BEFORE starting it and completed IMMEDIATELY after it is verified, then advance the next task in the same " +
+			"complete list. Use replace only for a direct user-requested replan and clear only after all items are completed or when " +
+			"the user directly asks to clear/abandon the checklist; destructive operations require their reason when work is unfinished.",
+		promptSnippet: "todo_write — track genuinely complex work with 3+ substantive steps; normal updates preserve the full list",
 		promptGuidelines: [
 			"Use todo_write only when a task is genuinely complex and naturally decomposes into at least 3 substantive steps. Never use it for 1- or 2-step tasks, quick fixes, simple lookups, or a single change plus verification; do not invent filler steps to reach three.",
-			"todo_write replaces the entire list: resend every item each call, changing only the statuses/content that moved.",
-			"Keep exactly one todo in_progress at a time; mark it completed as soon as it is actually done (tests pass, verified), never in advance.",
-			"Give each todo an imperative `content` ('Fix store layer') and an `activeForm` ('Fixing store layer') for the in-progress display.",
-			"If new work surfaces mid-task, add it to the list rather than silently expanding scope.",
-			"Prune as you go: once a completed todo is no longer relevant to the remaining work, drop it from the next todo_write call — likewise drop todos made obsolete by a plan change or user redirect. The visible list should reflect what still matters, not history.",
-			"When the last todo is done, clear the list with `todo_write {\"todos\": []}` so a stale checklist doesn't linger into the next task.",
+			"For normal progress, call todo_write with operation `update` (or omit operation) and resend the complete list. Never remove any existing item; keep completed items visible until the checklist is explicitly cleared or replaced.",
+			"Keep exactly one todo in_progress at a time. As soon as a task is actually done (tests pass, verified), mark that same item completed in the complete list before advancing the next task; never skip the observable completed state.",
+			"Give each todo stable, unique imperative `content` ('Fix store layer') and an `activeForm` ('Fixing store layer'). Do not reword content during a normal update because content is the item identity.",
+			"If new work surfaces, add it without removing existing items. Use operation `replace` with a reason only when the user directly changes or replaces the plan; never use replace to evade marking progress complete.",
+			"Use operation `clear` only after all todos have been completed, or with a reason when the user directly requests that unfinished work be cleared or abandoned. Do not clear in the same turn that marks the final item complete; leave the completed checklist visible with the final report.",
 		],
 		parameters: TodoWriteParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const err = validateTodos(params.todos as TodoItem[]);
-			if (err) throw new Error(err);
-			todos = params.todos as TodoItem[];
+			const next = params.todos as TodoItem[];
+			const operation = (params.operation ?? "update") as TodoOperation;
+			const shapeError = validateTodos(next);
+			if (shapeError) throw new Error(shapeError);
+			const transitionError = validateTodoTransition(todos, next, operation, params.reason);
+			if (transitionError) throw new Error(transitionError);
+
+			// Commit only after both shape and transition validation succeed. Clone
+			// the snapshot so result/session data cannot alias mutable tool arguments.
+			todos = next.map((item) => ({ ...item }));
 			refreshWidget(ctx);
 			const allDone = todos.length > 0 && todos.every((t) => t.status === "completed");
-			const hasCompleted = todos.some((t) => t.status === "completed");
-			let hint: string;
-			if (todos.length === 0) {
-				hint = "Todo list cleared.";
-			} else if (allDone) {
-				hint = "All todos are completed — clear the list now with todo_write {\"todos\": []} unless more work remains.";
-			} else if (hasCompleted) {
-				hint =
-					"Continue tracking your progress: mark tasks in_progress when you start them and completed when done. " +
-					"Drop completed todos from the next call once they are no longer relevant to the remaining work.";
-			} else {
-				hint = "Continue tracking your progress: mark tasks in_progress when you start them and completed when done.";
-			}
+			const hint =
+				todos.length === 0
+					? "Todo list cleared."
+					: allDone
+						? "All todos are completed. Leave this checklist visible with the final report; clear it when later work begins or when the user asks."
+						: "Continue tracking progress in the complete list: preserve every item, mark finished work completed, and then advance the next task.";
 			return {
 				content: [
 					{
@@ -167,15 +178,17 @@ export default function todoList(pi: ExtensionAPI) {
 						text: todos.length === 0 ? hint : `Todo list updated.\n${summarizeTodos(todos)}\n${hint}`,
 					},
 				],
-				details: { todos },
+				details: { todos: todos.map((item) => ({ ...item })), operation, ...(params.reason ? { reason: params.reason } : {}) },
 			};
 		},
 
 		renderCall(args, theme) {
 			const list = Array.isArray(args.todos) ? (args.todos as TodoItem[]) : [];
 			const done = list.filter((t) => t.status === "completed").length;
+			const operation = args.operation ?? "update";
 			let text = theme.fg("toolTitle", theme.bold("todo_write "));
 			text += theme.fg("muted", `${done}/${list.length} done`);
+			if (operation !== "update") text += theme.fg("warning", ` · ${operation}`);
 			const active = list.find((t) => t.status === "in_progress");
 			if (active) text += theme.fg("dim", ` · ${active.activeForm || active.content}`);
 			return new Text(text, 0, 0);
@@ -202,17 +215,22 @@ export default function todoList(pi: ExtensionAPI) {
 		},
 	});
 
+	const restoreFromActiveBranch = (ctx: ExtensionContext): void => {
+		// Successful result details are the committed state. Reading only the
+		// active branch keeps reload/resume/fork/tree navigation branch-correct.
+		todos = extractLatestTodos(ctx.sessionManager.getBranch(), TOOL_NAME);
+	};
+
 	pi.on("session_start", (_event, ctx) => {
-		// Rebuild from the replayed session log so the list survives resume,
-		// /reload, and fork — the last todo_write call wins.
-		const messages: unknown[] = [];
-		for (const entry of ctx.sessionManager.getEntries()) {
-			if (entry.type === "message") messages.push(entry.message);
-		}
-		todos = extractLatestTodos(messages, TOOL_NAME);
+		restoreFromActiveBranch(ctx);
 		viewMode = "expanded";
 		mountWidget(ctx);
 		activeTui?.requestRender();
+	});
+
+	pi.on("session_tree", (_event, ctx) => {
+		restoreFromActiveBranch(ctx);
+		refreshWidget(ctx);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {

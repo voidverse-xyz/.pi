@@ -4,11 +4,12 @@ Claude Code-style todo list for Pi (ref IMG_5781).
 
 The agent plans and tracks only genuinely complex work that naturally has at least
 three substantive steps by calling the `todo_write` tool with the **complete** list each
-time (it replaces the previous list). One- and two-step tasks, quick fixes, simple
-lookups, and a single change plus verification are handled directly without a todo
-list. The live checklist renders
-in an `aboveEditor` widget with a simple, static title line, the tree hanging off it
-via a `└` connector, and a blank padding line below the block:
+time. Normal updates retain every existing item, including completed history, so a
+task cannot disappear instead of visibly becoming complete. One- and two-step tasks,
+quick fixes, simple lookups, and a single change plus verification are handled directly
+without a todo list. The live checklist renders in an `aboveEditor` widget with a
+simple, static title line, the tree hanging off it via a `└` connector, and a blank
+padding line below the block:
 
 ```
 󰝖 Todos · 1/3
@@ -29,14 +30,21 @@ and full control over truncation — require a component.
 
 ## Surfaces
 
-- **`todo_write` tool** — LLM-callable, and the ONLY way to change the list (an empty
-  list clears it). Items are `{ content, status, activeForm? }` with statuses
-  `pending | in_progress | completed`; at most one `in_progress`. System-prompt
-  guidelines restrict the tool to genuinely complex work with 3+ substantive steps,
-  explicitly forbid one- or two-step lists and filler steps, keep one task in progress,
-  mark completions immediately, prune completed/obsolete todos once they no longer
-  matter to the remaining work, and clear the list when everything is done
-  (the tool result nudges this contextually — e.g. "all completed → clear now").
+- **`todo_write` tool** — LLM-callable, and the ONLY way to change the list. Items are
+  `{ content, status, activeForm? }` with statuses `pending | in_progress | completed`;
+  at most one is `in_progress`, and normalized `content` is a unique stable identity.
+  Calls also accept `operation?: update | replace | clear` and `reason?`:
+  - `update` (default) is non-destructive: it must retain every existing item while
+    statuses, ordering, `activeForm`, and newly discovered work may change. Finished
+    tasks are marked `completed` and stay visible; direct omission is rejected.
+  - `replace` requires a non-empty list and reason, and is reserved for a direct
+    user-requested replan rather than normal progress.
+  - `clear` requires an empty list. It is safe after every item is completed; clearing
+    unfinished work requires a reason and is reserved for a direct user request or
+    abandoned checklist.
+
+  System-prompt guidance also keeps the completed final list visible with the final
+  report instead of immediately clearing it.
 - **`alt+o`** — the only user control: cycles expanded → collapsed → hidden
   (Claude Code uses `ctrl+t`, but pi core owns that for thinking blocks). There is
   deliberately no slash command. Collapsed keeps the title plus a one-line summary
@@ -50,18 +58,22 @@ and full control over truncation — require a component.
   Long lists never hit pi core's generic 10-line widget cut: past 8 items the
   expanded view windows around the active item with dim `… +n earlier` /
   `… +n more · alt+o` marker rows.
-- **Resume** — on `session_start` the list is rebuilt from the most recent
-  `todo_write` call in the replayed session messages, so it survives `/reload`,
-  resume, and fork with no extra persistence.
+- **Resume and branches** — on `session_start` and `session_tree`, the list is rebuilt
+  from the most recent successful `todo_write` result on the active branch. Rejected
+  calls and abandoned branches cannot become live state, while `/reload`, resume,
+  fork/clone, and tree navigation retain the correct snapshot without extra files.
 
 ## Layout
 
-- `extensions/todo/index.ts` — tool, widget component, shortcut, resume.
-- `extensions/todo/render.ts` — pure rendering/validation/replay-extraction.
-- `extensions/todo/render.test.ts` — unit tests:
+- `extensions/todo/index.ts` — tool, transition enforcement, widget, shortcut, restore.
+- `extensions/todo/render.ts` — pure rendering, transition validation, branch extraction.
+- `extensions/todo/render.test.ts` — pure unit tests.
+- `extensions/todo/extension.test.mjs` — loaded-extension lifecycle tests.
 
 ```
-node --test packages/pi-todo/extensions/todo/render.test.ts
+node --test \
+  packages/pi-todo/extensions/todo/render.test.ts \
+  packages/pi-todo/extensions/todo/extension.test.mjs
 ```
 
 Enable by adding the package path to `packages` in `~/.pi/agent/settings.json`,
