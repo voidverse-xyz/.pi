@@ -101,6 +101,7 @@ import type {
 import { Scheduler } from "./scheduler.ts";
 
 const TMP_ID_BYTES = 4;
+const MAX_LABEL_CHARS = 80;
 const AWAIT_POLL_MS = 40;
 const DEFAULT_AWAIT_TIMEOUT_S = 300;
 
@@ -192,6 +193,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	// ----------------------------------------------------------------- spawn
 	async spawn(options: SpawnOptions): Promise<SpawnResult> {
 		if (this.disposed) throw new Error("runtime disposed");
+		const explicitLabel = normalizeLabel(options.label);
 		const isAdhoc = options.prompt !== undefined;
 		if (isAdhoc === (options.type !== undefined)) {
 			throw new Error("Pass exactly one of `type` (a library def) or `prompt` (an ad-hoc agent).");
@@ -232,8 +234,10 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		}
 
 		const address = formatAgentAddress(type, id);
+		const existing = getAgent(this.registry, address);
+		const label = explicitLabel ?? existing?.label ?? fallbackLabel(options, type, id);
 		const now = new Date().toISOString();
-		const { record, created } = upsertAgent(this.registry, { type, id, lifetime, typeFileHash: hash, now });
+		const { record, created } = upsertAgent(this.registry, { type, id, lifetime, label, typeFileHash: hash, now });
 		mkdirSync(this.layout.agentInstanceDir(type, id), { recursive: true });
 		this.persist();
 
@@ -249,6 +253,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 		return {
 			address,
+			label,
 			created,
 			state: record.vitals.state,
 			vitals: record.vitals,
@@ -379,7 +384,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			removeAgent(this.registry, to);
 			this.persist();
 			closeAllFor(this.layout.openTasksFile, to);
-			const archiveDir = archiveAgentDir(this.layout, record.type, record.id, new Date().toISOString());
+			const archiveDir = archiveAgentDir(this.layout, record.type, record.id, new Date().toISOString(), record.label);
 			this.emit({ type: "agent-retired", address: to, archiveDir });
 			return { retired: true, archiveDir };
 		} finally {
@@ -395,8 +400,12 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	/** Live activity for currently-working agents (tree widget). */
 	activitySnapshot(): AgentActivityRow[] {
 		return [...this.activity.entries()]
-			.map(([address, a]) => ({ address, ...a }))
-			.sort((x, y) => x.address.localeCompare(y.address));
+			.map(([address, a]) => ({
+				address,
+				label: getAgent(this.registry, address)?.label ?? address,
+				...a,
+			}))
+			.sort((x, y) => x.label.localeCompare(y.label) || x.address.localeCompare(y.address));
 	}
 
 	/**
@@ -566,11 +575,12 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		const address = formatAgentAddress(record.type, record.id);
 		return {
 			address,
+			label: record.label ?? address,
 			type: record.type,
 			id: record.id,
 			state: record.vitals.state,
 			lifetime: record.lifetime,
-			purview: record.id,
+			purview: record.label ?? record.id,
 			vitals: record.vitals,
 			unread: pendingCount(this.layout.mailboxDir(record.type, record.id)),
 			updatedAt: record.lastActiveAt,
@@ -685,17 +695,37 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				items: pending.map((p): DigestItem => ({ envelope: p.envelope, redelivered: p.redelivered })),
 			});
 
-			this.activity.set(address, { tool: "", summary: "thinking…", toolUses: 0 });
+			const startingVitals = vitalsFrom(handle.session, "running");
+			this.activity.set(address, {
+				tool: "",
+				summary: "thinking…",
+				toolUses: 0,
+				tokens: startingVitals.tokens,
+				ctxPercent: startingVitals.ctxPercent,
+			});
 			let failure: { stopReason: string; message: string } | null = null;
 			const unsubscribe = handle.session.subscribe((event) => {
-				// Track the current tool call for the tree widget.
-				if (event.type === "entry_appended") {
-					const activity = extractToolActivity((event as { entry?: unknown }).entry);
-					if (activity) {
+				// message_end is emitted just before SessionManager persistence. Defer one
+				// microtask so getSessionStats() includes that finalized message, then
+				// refresh cumulative tokens/context and any tool calls it introduced.
+				if (event.type === "message_end") {
+					const activity = event.message.role === "assistant"
+						? extractToolActivity({ type: "message", message: event.message })
+						: null;
+					queueMicrotask(() => {
 						const prev = this.activity.get(address);
-						this.activity.set(address, { ...activity, toolUses: (prev?.toolUses ?? 0) + 1 });
+						if (!prev) return;
+						const live = vitalsFrom(handle.session, "running");
+						this.activity.set(address, activity
+							? {
+								...activity,
+								toolUses: prev.toolUses + activity.toolUses,
+								tokens: live.tokens,
+								ctxPercent: live.ctxPercent,
+							}
+							: { ...prev, tokens: live.tokens, ctxPercent: live.ctxPercent });
 						this.emit({ type: "state-changed", address, state: "running" });
-					}
+					});
 					return;
 				}
 				if (event.type !== "agent_end") return;
@@ -870,6 +900,25 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	}
 }
 
+/** Validate and normalize an explicit LLM/user display label. */
+function normalizeLabel(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	const flat = value.replace(/\s+/g, " ").trim();
+	if (!flat) throw new Error("Subagent label must not be empty.");
+	if (Array.from(flat).length > MAX_LABEL_CHARS) throw new Error(`Subagent label must be at most ${MAX_LABEL_CHARS} characters.`);
+	return flat;
+}
+
+/** Backward-compatible label for direct callers and resumed pre-label tool calls. */
+function fallbackLabel(options: SpawnOptions, type: string, id: string): string {
+	const source = options.task ?? (options.prompt !== undefined ? options.prompt.replace(/^You are\s+/i, "") : "");
+	const flat = source.replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim();
+	const sentence = flat.match(/^(.+?[.!?])(?:\s|$)/)?.[1] ?? flat;
+	if (!sentence) return `${type}/${id}`;
+	const chars = Array.from(sentence);
+	return chars.length <= MAX_LABEL_CHARS ? sentence : `${chars.slice(0, MAX_LABEL_CHARS - 1).join("").trimEnd()}…`;
+}
+
 /** A one-line description for an ad-hoc def, derived from its prompt. */
 function adhocDescription(prompt: string): string {
 	const flat = prompt.replace(/\s+/g, " ").trim();
@@ -880,14 +929,21 @@ function adhocDescription(prompt: string): string {
 function extractToolActivity(entry: unknown): AgentActivity | null {
 	const e = entry as { type?: string; message?: { role?: string; content?: unknown } };
 	if (e?.type !== "message" || e.message?.role !== "assistant" || !Array.isArray(e.message.content)) return null;
-	for (let i = e.message.content.length - 1; i >= 0; i--) {
-		const part = e.message.content[i] as { type?: string; name?: unknown; arguments?: unknown };
-		if (part?.type === "toolCall") {
-			const tool = String(part.name ?? "?");
-			return { tool, summary: toolSummary(tool, part.arguments), toolUses: 0 };
-		}
-	}
-	return null;
+	const calls = e.message.content.filter((part) => (part as { type?: string })?.type === "toolCall") as Array<{
+		type?: string;
+		name?: unknown;
+		arguments?: unknown;
+	}>;
+	const part = calls.at(-1);
+	if (!part) return null;
+	const tool = String(part.name ?? "?");
+	return {
+		tool,
+		summary: toolSummary(tool, part.arguments),
+		toolUses: calls.length,
+		tokens: 0,
+		ctxPercent: null,
+	};
 }
 
 /** A short one-line summary of a tool call for the tree widget. */

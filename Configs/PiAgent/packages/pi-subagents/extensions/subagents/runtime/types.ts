@@ -24,11 +24,17 @@ export interface AgentActivity {
 	summary: string;
 	/** Tool calls made this turn. */
 	toolUses: number;
+	/** Cumulative session tokens at the latest finalized message. */
+	tokens: number;
+	/** Current context fill 0–100, or null until Pi can calculate it. */
+	ctxPercent: number | null;
 }
 
 /** One tree-widget row: an agent's live activity keyed by address. */
 export interface AgentActivityRow extends AgentActivity {
 	address: string;
+	/** Human display name supplied by the spawning LLM. */
+	label: string;
 }
 
 /**
@@ -52,6 +58,8 @@ export interface SpawnOptions {
 	prompt?: string;
 	/** Instance id. Typed persistent defaults to "main"; REQUIRED for persistent ad-hoc; forbidden for oneshots. */
 	id?: string;
+	/** Short human display name for TUI surfaces. Tool calls require it; direct callers get a deterministic fallback. */
+	label?: string;
 	/** Default: "persistent" for typed spawns, "oneshot" for ad-hoc. */
 	lifetime?: Lifetime;
 	/** Optional first task — spawn + assign in one call (its envelope id is the await anchor). */
@@ -69,6 +77,8 @@ export interface SpawnOptions {
 export interface SpawnResult {
 	/** `<type>/<id>`. */
 	address: string;
+	/** Stable human display name used by TUI surfaces. */
+	label: string;
 	/** false = existed, spawn woke it, memory intact (get-or-create). */
 	created: boolean;
 	state: AgentState;
@@ -148,6 +158,7 @@ export interface RetireResult {
 /** One roster row: registry record + live vitals. */
 export interface RosterEntry {
 	address: string;
+	label: string;
 	type: string;
 	id: string;
 	state: AgentState;

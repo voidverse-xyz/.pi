@@ -8,11 +8,12 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { EXT, jiti } from "./env.mjs";
+import { EXT, PI_PKG, jiti } from "./env.mjs";
 import { test, summary, until } from "./harness.mjs";
 
 const tree = await jiti.import(join(EXT, "tui/tree-widget.ts"));
 const widget = await jiti.import(join(EXT, "tui/widget.ts"));
+const { visibleWidth } = await import(join(PI_PKG, "node_modules/@earendil-works/pi-tui/dist/index.js"));
 const plainTheme = { fg: (_color, text) => text };
 
 console.log("unified widget lines:");
@@ -22,8 +23,8 @@ await test("idle state renders no widget", () => {
 await test("header includes running, waiting, unread mail, and the stop hint", () => {
 	const lines = tree.renderTreeLines(
 		[
-			{ address: "worker/main", tool: "bash", summary: "Bash: npm test", toolUses: 3 },
-			{ address: "reviewer/main", tool: "read", summary: "Read: src/index.ts", toolUses: 1 },
+			{ address: "adhoc/tmp-a1b2", label: "test runner", tool: "bash", summary: "Bash: npm test", toolUses: 3, tokens: 12_400, ctxPercent: 18.4 },
+			{ address: "reviewer/main", label: "source scout", tool: "read", summary: "Read: src/index.ts", toolUses: 1, tokens: 8100, ctxPercent: 11.2 },
 		],
 		{ running: 2, waiting: 1, unread: 3 },
 		plainTheme,
@@ -33,8 +34,8 @@ await test("header includes running, waiting, unread mail, and the stop hint", (
 	assert.ok(lines[0].includes("1 waiting"));
 	assert.ok(lines[0].includes(`${widget.MAIL_ICON} 3`));
 	assert.ok(lines[0].includes(`${tree.STOP_KEY} stop`));
-	assert.ok(lines.some((line) => line.includes("worker/main") && line.includes("3 tool uses")));
-	assert.ok(lines.some((line) => line.includes("reviewer/main") && line.includes("1 tool use") && !line.includes("1 tool uses")));
+	assert.ok(lines.some((line) => line.includes("test runner") && !line.includes("adhoc/tmp-a1b2") && line.includes(`${tree.TOOL_ICON} 3 tools`) && line.includes(`${tree.TOKEN_ICON} 12k tokens`) && line.includes(`${tree.CONTEXT_ICON} 18%`)));
+	assert.ok(lines.some((line) => line.includes("source scout") && line.includes(`${tree.TOOL_ICON} 1 tool`) && !line.includes(`${tree.TOOL_ICON} 1 tools`) && line.includes(`${tree.TOKEN_ICON} 8.1k tokens`) && line.includes(`${tree.CONTEXT_ICON} 11%`)));
 	assert.equal(lines.at(-1), "", "widget ends with one raw blank padding line");
 });
 await test("mail-only status remains visible without advertising the stop brake", () => {
@@ -45,12 +46,17 @@ await test("mail-only status remains visible without advertising the stop brake"
 });
 await test("activity rows cover a briefly lagging roster snapshot", () => {
 	const lines = tree.renderTreeLines(
-		[{ address: "worker/lag", tool: "", summary: "thinking…", toolUses: 0 }],
+		[{ address: "worker/lag", label: "lag watcher", tool: "", summary: "thinking…", toolUses: 0, tokens: 0, ctxPercent: null }],
 		{ running: 0, waiting: 0, unread: 0 },
 		plainTheme,
 	);
 	assert.ok(lines[0].includes("1 running"));
-	assert.ok(lines.some((line) => line.includes("worker/lag")));
+	assert.ok(lines.some((line) => line.includes("lag watcher") && line.includes(`${tree.TOOL_ICON} 0 tools`) && line.includes(`${tree.TOKEN_ICON} 0 tokens`) && line.includes(`${tree.CONTEXT_ICON} ?`)));
+});
+await test("compact token formatting matches Pi-style thresholds", () => {
+	assert.equal(widget.formatTokens(999), "999");
+	assert.equal(widget.formatTokens(8_100), "8.1k");
+	assert.equal(widget.formatTokens(12_400), "12k");
 });
 
 console.log("component-backed padding:");
@@ -59,7 +65,7 @@ await test("controller mounts a raw component whose render preserves the trailin
 	let component;
 	let cleared = false;
 	let renderRequests = 0;
-	const rows = [{ address: "worker/main", tool: "bash", summary: "Bash: npm test", toolUses: 1 }];
+	const rows = [{ address: "worker/main", label: "test runner", tool: "bash", summary: "Bash: npm test", toolUses: 1, tokens: 12_400, ctxPercent: 18 }];
 	let unread = 1;
 	const core = {
 		status: async () => [{ state: "running" }],
@@ -83,6 +89,9 @@ await test("controller mounts a raw component whose render preserves the trailin
 	assert.ok(await until(() => component !== undefined, 1000), "widget component mounted");
 	const rendered = component.render(120);
 	assert.equal(rendered.at(-1), "", "component returns the raw padding row");
+	const narrow = component.render(32);
+	assert.ok(narrow.every((line) => visibleWidth(line) <= 32), "narrow rows are clipped to the widget width");
+	assert.ok(narrow.some((line) => line.includes("test runner")), "the human label survives before right-side metrics are truncated");
 	unread = 2;
 	listener({ type: "state-changed" });
 	assert.ok(await until(() => renderRequests > 0, 1000), "runtime changes request a rerender");

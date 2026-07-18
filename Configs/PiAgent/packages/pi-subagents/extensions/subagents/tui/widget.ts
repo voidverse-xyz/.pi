@@ -1,7 +1,7 @@
 /**
  * tui/widget.ts — shared status data for the subagents tree widget.
  *
- *   󰚩 2 running · 1 waiting · 󰇮 3
+ *    2 running · 1 waiting · 󰇮 3
  *
  * running (running+queued) · waiting (blocked on a pi-safety confirmation) ·
  * unread main mail. The tree widget owns presentation; nothing is published to
@@ -10,8 +10,18 @@
 
 import type { SubagentsCore } from "../core.ts";
 
-export const AGENTS_ICON = "󰚩"; // nf-md-robot
+export const AGENTS_ICON = ""; // nf-cod-list_tree
 export const MAIL_ICON = "󰇮"; // nf-md-email
+
+/** Match Pi's compact token counters across subagent TUI surfaces. */
+export function formatTokens(count: number): string {
+	const safe = Math.max(0, Math.round(count));
+	if (safe < 1_000) return String(safe);
+	if (safe < 10_000) return `${(safe / 1_000).toFixed(1)}k`;
+	if (safe < 1_000_000) return `${Math.round(safe / 1_000)}k`;
+	if (safe < 10_000_000) return `${(safe / 1_000_000).toFixed(1)}M`;
+	return `${Math.round(safe / 1_000_000)}M`;
+}
 
 export interface WidgetSnapshot {
 	running: number;

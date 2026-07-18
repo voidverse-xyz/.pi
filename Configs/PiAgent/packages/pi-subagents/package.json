@@ -1,8 +1,8 @@
 {
 	"name": "pi-subagents",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"type": "module",
-	"description": "Subagents — background fan-out workers for the main Pi agent: spawn type-defined or ad-hoc subagents (persistent or oneshot), run them in parallel under a cap, join results by awaiting or by idle auto-wake. Strict hub-and-spoke (no peer mail, no nesting); human confirmation delegated to pi-safety. Runs alongside pi-teams.",
+	"description": "Subagents — labeled background fan-out workers with live per-agent tool, token, and context activity; parallel scheduling, explicit await or idle auto-wake, strict hub-and-spoke isolation, and pi-safety confirmation.",
 	"keywords": [
 		"pi-package"
 	],

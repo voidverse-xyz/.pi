@@ -6,7 +6,7 @@
  */
 
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { Type, type Static } from "typebox";
 import type { SubagentsCore } from "../core.ts";
 import { parseAddress } from "../mail/envelope.ts";
 import type { Lifetime } from "../store/registry.ts";
@@ -15,6 +15,21 @@ import type { AwaitTarget } from "../runtime/types.ts";
 import { errorResult, jsonResult } from "./results.ts";
 
 type GetCore = () => SubagentsCore;
+
+const MAX_LABEL_CHARS = 80;
+
+/** Compatibility for resumed tool calls stored before `label` became required. */
+function fallbackSpawnLabel(raw: Record<string, unknown>): string {
+	const source =
+		typeof raw.task === "string" ? raw.task :
+		typeof raw.prompt === "string" ? raw.prompt.replace(/^You are\s+/i, "") :
+		typeof raw.id === "string" ? raw.id :
+		typeof raw.type === "string" ? raw.type : "subagent";
+	const flat = source.replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim() || "subagent";
+	const sentence = flat.match(/^(.+?[.!?])(?:\s|$)/)?.[1] ?? flat;
+	const chars = Array.from(sentence);
+	return chars.length <= MAX_LABEL_CHARS ? sentence : `${chars.slice(0, MAX_LABEL_CHARS - 1).join("").trimEnd()}…`;
+}
 
 /** These tools target a subagent instance — `main`/`user`/garbage are rejected up front. */
 function agentTargetError(address: string): ReturnType<typeof errorResult> | null {
@@ -32,6 +47,11 @@ const SpawnParams = Type.Object({
 	id: Type.Optional(
 		Type.String({ description: "Instance id (e.g. 'auth'). Typed persistent defaults to 'main'; REQUIRED for persistent ad-hoc; omit for oneshots." }),
 	),
+	label: Type.String({
+		minLength: 1,
+		maxLength: MAX_LABEL_CHARS,
+		description: "Short task-specific display name shown in the subagent widget instead of its internal address (for example: 'auth review').",
+	}),
 	lifetime: Type.Optional(
 		Type.Union([Type.Literal("persistent"), Type.Literal("oneshot")], {
 			description:
@@ -47,6 +67,7 @@ const SpawnParams = Type.Object({
 		Type.Array(Type.String(), { description: "Ad-hoc only: coding-tool allowlist from read/bash/edit/write/grep/find/ls (default: all)." }),
 	),
 });
+type SpawnInput = Static<typeof SpawnParams>;
 
 export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnParams> {
 	return {
@@ -55,9 +76,19 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 		description:
 			"Spawn a background subagent — from a type def (type) or an inline role prompt (prompt). Non-blocking: it works " +
 			"while you continue; join results with subagent_await, or end your turn and finished agents wake you with their " +
-			"reports. Get-or-create for persistent addresses: an existing <type>/<id> wakes with memory intact (created:false). " +
-			"Subagents cannot spawn other agents or message each other — you are the sole coordinator.",
+			"reports. Always provide a short task-specific label for the user-facing widget. Get-or-create for persistent " +
+			"addresses: an existing <type>/<id> wakes with memory intact (created:false). Subagents cannot spawn other agents " +
+			"or message each other — you are the sole coordinator.",
+		promptGuidelines: [
+			"Always give subagent_spawn a concise, task-specific label so the user sees a meaningful name in the subagent widget.",
+		],
 		parameters: SpawnParams,
+		prepareArguments(args): SpawnInput {
+			if (!args || typeof args !== "object") return args as SpawnInput;
+			const input = args as Record<string, unknown>;
+			if (typeof input.label === "string") return args as SpawnInput;
+			return { ...input, label: fallbackSpawnLabel(input) } as SpawnInput;
+		},
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const core = getCore();
 			try {
@@ -65,6 +96,7 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 					...(params.type !== undefined ? { type: params.type } : {}),
 					...(params.prompt !== undefined ? { prompt: params.prompt } : {}),
 					...(params.id !== undefined ? { id: params.id } : {}),
+					label: params.label,
 					...(params.lifetime !== undefined ? { lifetime: params.lifetime as Lifetime } : {}),
 					...(params.task !== undefined ? { task: params.task } : {}),
 					...(params.model !== undefined ? { model: params.model } : {}),

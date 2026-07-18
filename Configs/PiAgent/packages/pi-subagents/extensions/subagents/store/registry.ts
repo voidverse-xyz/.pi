@@ -36,6 +36,8 @@ export interface AgentRecord {
 	type: string;
 	id: string;
 	lifetime: Lifetime;
+	/** Human display name; optional only for registries written before labels existed. */
+	label?: string;
 	/** Incarnation fence `gen_<32hex>` — bumped when the session handle is rebuilt. */
 	generationId: string;
 	/** sha256 of the resolved constitution (.md) at last wake (live-resolve fence). */
@@ -71,6 +73,7 @@ export interface UpsertInput {
 	type: string;
 	id: string;
 	lifetime: Lifetime;
+	label?: string;
 	typeFileHash: string;
 	now: string;
 }
@@ -82,12 +85,14 @@ export function upsertAgent(registry: Registry, input: UpsertInput): { record: A
 	if (existing) {
 		existing.typeFileHash = input.typeFileHash;
 		existing.lastActiveAt = input.now;
+		if (input.label !== undefined) existing.label = input.label;
 		return { record: existing, created: false };
 	}
 	const record: AgentRecord = {
 		type: input.type,
 		id: input.id,
 		lifetime: input.lifetime,
+		...(input.label !== undefined ? { label: input.label } : {}),
 		generationId: newGenerationId(),
 		typeFileHash: input.typeFileHash,
 		createdAt: input.now,
@@ -116,6 +121,7 @@ export function removeAgent(registry: Registry, address: string): boolean {
 
 export interface AgentPatch {
 	lifetime?: Lifetime;
+	label?: string;
 	generationId?: string;
 	typeFileHash?: string;
 	lastActiveAt?: string;
@@ -152,6 +158,11 @@ function hasValidIdentity(value: unknown): value is AgentRecord {
 	const r = value as Record<string, unknown>;
 	if (typeof r.type !== "string" || typeof r.id !== "string") return false;
 	if (r.lifetime !== "persistent" && r.lifetime !== "oneshot") return false;
+	if (r.label !== undefined && typeof r.label !== "string") delete r.label;
+	if (typeof r.label === "string") {
+		r.label = r.label.replace(/\s+/g, " ").trim();
+		if (!r.label) delete r.label;
+	}
 	if (typeof r.generationId !== "string" || !GENERATION_ID_RE.test(r.generationId)) return false;
 	if (typeof r.typeFileHash !== "string") return false;
 	if (typeof r.createdAt !== "string" || typeof r.lastActiveAt !== "string") return false;

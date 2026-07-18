@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { SubagentsCore } from "../core.ts";
+import { formatTokens } from "./widget.ts";
 
 interface Component {
 	render(width: number): string[];
@@ -98,9 +99,9 @@ export function createViewer(options: ViewerOptions): ViewerComponent {
 			if (closed || !detail) return;
 			components = buildComponents(detail.sessionFile, tui, cwd);
 			const v = detail.vitals;
-			const pct = v.ctxPercent !== null ? ` · ctx ${Math.round(v.ctxPercent * 100)}%` : "";
-			header = detail.address;
-			headerMeta = ` · ${detail.state}${pct} · ${v.tokens} tok · ${v.turns} turns`;
+			const pct = v.ctxPercent !== null ? `ctx ${Math.round(v.ctxPercent)}%` : "ctx ?";
+			header = detail.label || detail.address;
+			headerMeta = ` · ${detail.state} · ${pct} · ${formatTokens(v.tokens)} tok · ${v.turns} turns`;
 			tui.requestRender();
 		}).catch(() => {});
 	};

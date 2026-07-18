@@ -106,7 +106,7 @@ await test("poison envelopes are quarantined to .corrupt", () => {
 console.log("registry:");
 await test("corrupt vitals are repaired, broken identity dropped", () => {
 	const registry = emptyRegistry();
-	upsertAgent(registry, { type: "scout", id: "a", lifetime: "persistent", typeFileHash: "h", now: new Date().toISOString() });
+	upsertAgent(registry, { type: "scout", id: "a", lifetime: "persistent", label: "source scout", typeFileHash: "h", now: new Date().toISOString() });
 	writeRegistry(layout.registryFile, registry);
 	const raw = JSON.parse(readFileSync(layout.registryFile, "utf8"));
 	raw.agents["scout/a"].vitals = "garbage";
@@ -114,6 +114,7 @@ await test("corrupt vitals are repaired, broken identity dropped", () => {
 	writeFileSync(layout.registryFile, JSON.stringify(raw));
 	const read = readRegistry(layout.registryFile);
 	assert.ok(read.agents["scout/a"], "record with valid identity survives");
+	assert.equal(read.agents["scout/a"].label, "source scout", "display label survives registry round-trip");
 	assert.equal(read.agents["scout/a"].vitals.state, "dormant", "vitals repaired to dormant defaults");
 	assert.equal(read.agents["broken/x"], undefined, "unusable identity dropped");
 });

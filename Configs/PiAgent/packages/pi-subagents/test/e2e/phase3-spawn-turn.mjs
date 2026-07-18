@@ -7,7 +7,7 @@
  * Run: node phase3-spawn-turn.mjs
  */
 import { strict as assert } from "node:assert";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EXT, jiti } from "./env.mjs";
 import { makeWorld, test, summary, until } from "./harness.mjs";
@@ -25,8 +25,9 @@ console.log("typed spawn:");
 let scoutAnchor = null;
 await test("spawn+task returns immediately with the anchor; final report correlates to it", async () => {
 	world.scripts.push({ match: (c) => c.address === "scout/main" && c.lastUserText.includes("Map the repo"), reply: () => ({ tools: [{ name: "report", args: { text: "Mapped.", final: true } }] }) });
-	const result = await core.spawn({ type: "scout", task: "Map the repo layout." });
+	const result = await core.spawn({ type: "scout", label: "repo mapper", task: "Map the repo layout." });
 	assert.equal(result.address, "scout/main");
+	assert.equal(result.label, "repo mapper");
 	assert.equal(result.created, true);
 	assert.ok(result.taskEnvelopeId, "anchor returned");
 	scoutAnchor = result.taskEnvelopeId;
@@ -39,6 +40,7 @@ await test("spawn+task returns immediately with the anchor; final report correla
 await test("get-or-create: respawn wakes with memory intact (created:false)", async () => {
 	const again = await core.spawn({ type: "scout" });
 	assert.equal(again.created, false);
+	assert.equal(again.label, "repo mapper", "respawn without a label preserves the existing display name");
 });
 await test("identity block is hub-and-spoke (no peer prose)", async () => {
 	const call = world.llmCalls.find((c) => c.address === "scout/main");
@@ -46,12 +48,36 @@ await test("identity block is hub-and-spoke (no peer prose)", async () => {
 	assert.ok(!call.systemPrompt.includes("peer"), "no peer wording");
 	assert.ok(call.systemPrompt.includes("Surface blocking ambiguity EARLY"));
 });
+await test("live activity carries the human label, cumulative tokens, context, and exact tool-call count", async () => {
+	writeFileSync(join(world.project, "probe.txt"), "probe\n");
+	world.scripts.push({
+		match: (c) => c.address === "scout/activity" && c.lastUserText.includes("Inspect the probe"),
+		reply: () => ({ tools: [
+			{ name: "read", args: { path: "probe.txt" } },
+			{ name: "read", args: { path: "probe.txt" } },
+		] }),
+	});
+	world.scripts.push({
+		match: (c) => c.address === "scout/activity" && c.lastUserText.includes("Inspect the probe"),
+		reply: () => ({ delayMs: 250, text: "Probe inspected." }),
+	});
+	await core.spawn({ type: "scout", id: "activity", label: "probe inspector", task: "Inspect the probe file." });
+	const row = await until(() => {
+		const candidate = core.activitySnapshot().find((entry) => entry.address === "scout/activity");
+		return candidate?.toolUses === 2 && candidate.tokens > 0 && candidate.ctxPercent !== null ? candidate : null;
+	}, 2000);
+	assert.ok(row, "observed finalized usage while the second model response was pending");
+	assert.equal(row.label, "probe inspector");
+	assert.equal(row.tool, "read");
+	await core.whenIdle();
+});
 
 console.log("ad-hoc spawn:");
 await test("oneshot ad-hoc: def.md written, turn runs with the prompt, auto-retires, transcript archived", async () => {
 	world.scripts.push({ match: (c) => c.address.startsWith("adhoc/") && c.lastUserText.includes("Count the beans"), reply: () => ({ tools: [{ name: "report", args: { text: "42 beans.", final: true } }] }) });
-	const result = await core.spawn({ prompt: "You are BEANCOUNTER. Count precisely.", task: "Count the beans." });
+	const result = await core.spawn({ prompt: "You are BEANCOUNTER. Count precisely.", label: "bean counter", task: "Count the beans." });
 	assert.ok(result.address.startsWith("adhoc/tmp-"), "auto-named oneshot");
+	assert.equal(result.label, "bean counter");
 	const [type, id] = result.address.split("/");
 	assert.ok(existsSync(layout.adhocDefFile(type, id)), "def.md persisted before the turn");
 	assert.ok(readFileSync(layout.adhocDefFile(type, id), "utf8").includes("BEANCOUNTER"));
@@ -60,7 +86,7 @@ await test("oneshot ad-hoc: def.md written, turn runs with the prompt, auto-reti
 	const roster = await core.status();
 	assert.ok(!roster.some((r) => r.address === result.address), "oneshot auto-retired after final report");
 	const archived = core.archived();
-	assert.ok(archived.some((a) => a.address === result.address), "archived post-mortem");
+	assert.ok(archived.some((a) => a.address === result.address && a.label === "bean counter"), "archived post-mortem keeps the display label");
 	const archiveDir = join(layout.archiveRoot, type);
 	const dirs = readdirSync(archiveDir);
 	const jsonls = readdirSync(join(archiveDir, dirs[0])).filter((f) => f.endsWith(".jsonl"));
@@ -78,6 +104,8 @@ await test("spawn validation: exactly one of type/prompt; model/thinking/tools a
 	await assert.rejects(() => core.spawn({ type: "scout", prompt: "P" }), /exactly one/);
 	await assert.rejects(() => core.spawn({ type: "scout", model: "mock/mock-1" }), /ad-hoc-only/);
 	await assert.rejects(() => core.spawn({ prompt: "P", tools: ["read", "teleport"] }), /unknown tools/);
+	await assert.rejects(() => core.spawn({ prompt: "P", label: "   " }), /must not be empty/);
+	await assert.rejects(() => core.spawn({ prompt: "P", label: "x".repeat(81) }), /at most 80/);
 	await assert.rejects(() => core.spawn({ type: "nope" }), /Unknown subagent type/);
 });
 

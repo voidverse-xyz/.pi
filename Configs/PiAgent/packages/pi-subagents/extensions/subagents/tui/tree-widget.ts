@@ -3,10 +3,10 @@
  * The header carries the counts formerly published in the shared footer, then
  * one row per currently-working agent shows its tool-use count and current call:
  *
- *   󰚩 2 running · 1 waiting · 󰇮 3 · alt+a stop
- *   ├─ adhoc/tmp-3f21 · 10 tool uses
+ *    2 running · 1 waiting · 󰇮 3 · alt+a stop
+ *   ├─ test runner ·  10 tools ·  12k tokens ·  18%
  *   │  └ Bash: npm test
- *   └─ scout/main · 3 tool uses
+ *   └─ source scout ·  3 tools ·  8.1k tokens ·  11%
  *      └ Read: src/index.ts
  *
  * A raw component factory (rather than string-array content) preserves the
@@ -18,7 +18,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 import type { SubagentsCore } from "../core.ts";
 import type { AgentActivityRow } from "../runtime/types.ts";
-import { AGENTS_ICON, emptySnapshot, takeSnapshot, type WidgetSnapshot, widgetSegments } from "./widget.ts";
+import { AGENTS_ICON, emptySnapshot, formatTokens, takeSnapshot, type WidgetSnapshot, widgetSegments } from "./widget.ts";
 
 /**
  * The human brake: stop every working subagent. Bound in index.ts and shown in
@@ -28,6 +28,11 @@ import { AGENTS_ICON, emptySnapshot, takeSnapshot, type WidgetSnapshot, widgetSe
  * keybindings take alt+t/alt+m); Esc stays Pi's own turn-abort.
  */
 export const STOP_KEY = "alt+a";
+
+/** Match pi-teams' compact activity metric icons. */
+export const TOOL_ICON = ""; // nf-oct-terminal
+export const TOKEN_ICON = ""; // nf-oct-cpu — token activity
+export const CONTEXT_ICON = ""; // nf-fa-hdd_o — context capacity
 
 export interface TreeTheme {
 	fg(color: string, text: string): string;
@@ -50,7 +55,13 @@ export function renderTreeLines(rows: AgentActivityRow[], snapshot: WidgetSnapsh
 		const last = i === rows.length - 1;
 		const branch = last ? "└─" : "├─";
 		const cont = last ? "   " : "│  ";
-		lines.push(theme.fg("text", `${branch} ${row.address} · ${row.toolUses} tool use${row.toolUses === 1 ? "" : "s"}`));
+		const context = row.ctxPercent === null ? "?" : `${Math.round(row.ctxPercent)}%`;
+		const metrics = [
+			`${TOOL_ICON} ${row.toolUses} tool${row.toolUses === 1 ? "" : "s"}`,
+			`${TOKEN_ICON} ${formatTokens(row.tokens)} tokens`,
+			`${CONTEXT_ICON} ${context}`,
+		];
+		lines.push(theme.fg("text", `${branch} ${row.label || row.address} · ${metrics.join(" · ")}`));
 		lines.push(theme.fg("dim", `${cont}└ ${row.summary || "thinking…"}`));
 	});
 	lines.push("");

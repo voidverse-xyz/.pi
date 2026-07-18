@@ -15,7 +15,7 @@ import { SelectList, type SelectItem, truncateToWidth } from "@earendil-works/pi
 import type { TUI } from "@earendil-works/pi-tui";
 import type { ArchivedAgentInfo, SubagentsCore } from "../core.ts";
 import type { RosterEntry } from "../runtime/types.ts";
-import { MAIL_ICON } from "./widget.ts";
+import { formatTokens, MAIL_ICON } from "./widget.ts";
 
 export const STATE_GLYPHS: Record<RosterEntry["state"], string> = {
 	running: "", // nf-fa-circle
@@ -54,15 +54,15 @@ export function pickerRowText(row: PickerRow): string {
 	switch (row.kind) {
 		case "agent": {
 			const { entry } = row;
-			const pct = entry.vitals.ctxPercent !== null ? ` · ${Math.round(entry.vitals.ctxPercent * 100)}%` : "";
+			const pct = entry.vitals.ctxPercent !== null ? ` · ${Math.round(entry.vitals.ctxPercent)}% ctx` : " · ctx ?";
 			const badge = row.unread > 0 ? ` · ${MAIL_ICON} ${row.unread}` : "";
-			return `${STATE_GLYPHS[entry.state]} ${entry.address} · ${entry.state}${pct}${badge}`;
+			return `${STATE_GLYPHS[entry.state]} ${entry.label || entry.address} · ${entry.state} · ${formatTokens(entry.vitals.tokens)} tok${pct}${badge}`;
 		}
 		case "archive-header":
 			return `${row.expanded ? "" : ""} .archive (${row.count})`;
 		case "archived": {
 			const when = row.info.retiredAt ? ` · retired ${row.info.retiredAt.slice(0, 10)}` : "";
-			return `   ${row.info.address}${when}`;
+			return `   ${row.info.label || row.info.address}${when}`;
 		}
 	}
 }
@@ -72,12 +72,12 @@ export function pickerRowItem(row: PickerRow): SelectItem {
 	switch (row.kind) {
 		case "agent": {
 			const { entry } = row;
-			const pct = entry.vitals.ctxPercent !== null ? ` · ${Math.round(entry.vitals.ctxPercent * 100)}% ctx` : "";
+			const pct = entry.vitals.ctxPercent !== null ? `${Math.round(entry.vitals.ctxPercent)}% ctx` : "ctx ?";
 			const badge = row.unread > 0 ? ` · ${MAIL_ICON} ${row.unread}` : "";
 			return {
 				value: `agent:${entry.address}`,
-				label: `${STATE_GLYPHS[entry.state]} ${entry.address}`,
-				description: `${entry.state}${pct}${badge}`,
+				label: `${STATE_GLYPHS[entry.state]} ${entry.label || entry.address}`,
+				description: `${entry.state} · ${formatTokens(entry.vitals.tokens)} tok · ${pct}${badge}`,
 			};
 		}
 		case "archive-header":
@@ -89,7 +89,7 @@ export function pickerRowItem(row: PickerRow): SelectItem {
 		case "archived":
 			return {
 				value: `archived:${row.info.address}`,
-				label: `   ${row.info.address}`,
+				label: `   ${row.info.label || row.info.address}`,
 				...(row.info.retiredAt ? { description: `retired ${row.info.retiredAt.slice(0, 10)}` } : {}),
 			};
 	}

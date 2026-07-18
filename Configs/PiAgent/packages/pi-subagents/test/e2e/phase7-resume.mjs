@@ -36,8 +36,8 @@ await test("life 1: typed persistent + ad-hoc persistent do work and go dormant"
 	const core = world.makeCore(layout, { maxConcurrent: 4 });
 	world.scripts.push({ match: (c) => c.address === "keeper/main" && c.lastUserText.includes("Remember the code word"), reply: () => ({ tools: [{ name: "report", args: { text: "Stored.", final: true } }] }) });
 	world.scripts.push({ match: (c) => c.address === "adhoc/notes" && c.lastUserText.includes("Note this"), reply: () => ({ tools: [{ name: "report", args: { text: "Noted.", final: true } }] }) });
-	await core.spawn({ type: "keeper", task: "Remember the code word: XYZZY." });
-	await core.spawn({ prompt: "You are NOTETAKER, a persistent ad-hoc agent.", lifetime: "persistent", id: "notes", task: "Note this: PLUGH." });
+	await core.spawn({ type: "keeper", label: "memory keeper", task: "Remember the code word: XYZZY." });
+	await core.spawn({ prompt: "You are NOTETAKER, a persistent ad-hoc agent.", lifetime: "persistent", id: "notes", label: "note keeper", task: "Note this: PLUGH." });
 	await core.whenIdle();
 	const roster = await core.status();
 	assert.equal(roster.length, 2, "both persistent agents alive (no auto-retire)");
@@ -49,6 +49,7 @@ await test("life 2: a fresh core reloads the roster; follow-ups run with prior h
 	const core = world.makeCore(layout, { maxConcurrent: 4 });
 	const roster = await core.status();
 	assert.deepEqual(roster.map((r) => r.address).sort(), ["adhoc/notes", "keeper/main"], "registry reloaded from disk");
+	assert.deepEqual(roster.map((r) => r.label).sort(), ["memory keeper", "note keeper"], "display labels survive restart");
 
 	world.scripts.push({ match: (c) => c.address === "keeper/main" && c.lastUserText.includes("What was the code word"), reply: () => ({ tools: [{ name: "report", args: { text: "It was XYZZY.", final: true } }] }) });
 	world.scripts.push({ match: (c) => c.address === "adhoc/notes" && c.lastUserText.includes("What did you note"), reply: () => ({ tools: [{ name: "report", args: { text: "PLUGH.", final: true } }] }) });

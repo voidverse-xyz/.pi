@@ -17,16 +17,18 @@ export const RETIREMENT_MARKER = ".retired-at";
 interface RetirementMarker {
 	address: string;
 	retiredAt: string;
+	label?: string;
 }
 
 /** Read the retirement marker (JSON — archiveAgentDir is the only writer). */
-function readRetirementMarker(dir: string): { address?: string; retiredAt?: string } {
+function readRetirementMarker(dir: string): { address?: string; retiredAt?: string; label?: string } {
 	try {
 		const parsed = JSON.parse(readFileSync(join(dir, RETIREMENT_MARKER), "utf8")) as Partial<RetirementMarker>;
 		if (parsed && typeof parsed === "object") {
 			return {
 				...(typeof parsed.address === "string" ? { address: parsed.address } : {}),
 				...(typeof parsed.retiredAt === "string" ? { retiredAt: parsed.retiredAt } : {}),
+				...(typeof parsed.label === "string" && parsed.label.trim() ? { label: parsed.label.trim() } : {}),
 			};
 		}
 	} catch {
@@ -36,7 +38,7 @@ function readRetirementMarker(dir: string): { address?: string; retiredAt?: stri
 }
 
 /** Move an agent instance dir to .archive/. Returns the archive path, or null if nothing to move. */
-export function archiveAgentDir(layout: Layout, type: string, id: string, nowIso: string): string | null {
+export function archiveAgentDir(layout: Layout, type: string, id: string, nowIso: string, label?: string): string | null {
 	const src = layout.agentInstanceDir(type, id);
 	if (!existsSync(src)) return null;
 	let dest = layout.archiveDir(type, id);
@@ -46,13 +48,14 @@ export function archiveAgentDir(layout: Layout, type: string, id: string, nowIso
 	while (existsSync(dest)) dest = `${layout.archiveDir(type, id)}-${n++}`;
 	mkdirSync(join(dest, ".."), { recursive: true });
 	renameSync(src, dest);
-	const marker: RetirementMarker = { address: `${type}/${id}`, retiredAt: nowIso };
+	const marker: RetirementMarker = { address: `${type}/${id}`, retiredAt: nowIso, ...(label ? { label } : {}) };
 	writeFileSync(join(dest, RETIREMENT_MARKER), JSON.stringify(marker), "utf8");
 	return dest;
 }
 
 export interface ArchivedInfo {
 	address: string;
+	label?: string;
 	retiredAt?: string;
 }
 
@@ -71,7 +74,11 @@ export function readArchived(layout: Layout): ArchivedInfo[] {
 			// Prefer the marker's true address; fall back to the dir name with the
 			// collision suffix stripped only when no marker recorded the address.
 			const address = marker.address ?? `${type}/${id.replace(/-\d+$/, "")}`;
-			out.push({ address, ...(marker.retiredAt ? { retiredAt: marker.retiredAt } : {}) });
+			out.push({
+				address,
+				...(marker.label ? { label: marker.label } : {}),
+				...(marker.retiredAt ? { retiredAt: marker.retiredAt } : {}),
+			});
 		}
 	}
 	return out.sort((a, b) => a.address.localeCompare(b.address));

@@ -30,4 +30,14 @@ assert.deepEqual(
 );
 assert.deepEqual(keysOf(ext.commands), ["subagents"], "/subagents command");
 
+const spawn = ext.tools.get("subagent_spawn").definition;
+assert.ok(spawn.parameters.required.includes("label"), "subagent_spawn requires an LLM-provided display label");
+assert.equal(spawn.parameters.properties.label.maxLength, 80, "label schema stays compact");
+assert.ok(spawn.promptGuidelines.some((line) => line.includes("task-specific label")), "system guidance tells the LLM to name the widget row");
+assert.equal(
+	spawn.prepareArguments({ prompt: "You are a reviewer.", task: "Review authentication." }).label,
+	"Review authentication.",
+	"pre-label resumed tool calls receive a deterministic compatibility label",
+);
+
 console.log("loadcheck ok — tools:", keysOf(ext.tools).sort().join(", "), "· commands:", keysOf(ext.commands).join(", "));

@@ -45,6 +45,8 @@ export interface AvailableType {
 /** A retired agent visible in the picker's .archive section. */
 export interface ArchivedAgentInfo {
 	address: string;
+	/** Human display name, when recorded by a label-aware runtime. */
+	label?: string;
 	/** ISO retirement time, if recorded. */
 	retiredAt?: string;
 }
