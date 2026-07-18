@@ -2,6 +2,7 @@ import type { AssistantMessage, StopReason } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const MAX_SUMMARY_CHARS = 140;
+const SUMMARY_ICON = "•";
 const GENERIC_HEADING = /^(?:summary|result|results|done|completed|completion|changes|what changed|implementation|outcome|status)[:.]?$/i;
 
 interface RunState {
@@ -99,7 +100,7 @@ function fallbackSummary(stopReason: StopReason | undefined): string {
 export function buildCompletionNotice(run: RunState, finishedAt: number): string {
 	const duration = formatDuration(finishedAt - run.startedAt);
 	const summary = summarizeFinalResponse(run.finalText ?? "") ?? fallbackSummary(run.stopReason);
-	return `Done in ${duration} · ↑${formatTokens(run.inputTokens)} · ↓${formatTokens(run.outputTokens)} — ${summary}`;
+	return `${SUMMARY_ICON} ${summary} · ${duration} · ↑${formatTokens(run.inputTokens)} · ↓${formatTokens(run.outputTokens)}`;
 }
 
 export default function runSummary(pi: ExtensionAPI): void {

@@ -106,7 +106,7 @@ try {
 	await flushTimers();
 	assert.deepEqual(notifications, [
 		{
-			message: "Done in 1m 5s · ↑3.0k · ↓500 — Finished verification.",
+			message: "• Finished verification. · 1m 5s · ↑3.0k · ↓500",
 			type: "info",
 		},
 	]);
@@ -121,7 +121,7 @@ try {
 	await flushTimers();
 	assert.equal(
 		notifications.at(-1).message,
-		"Done in <1s · ↑15 · ↓1 — The agent run was stopped.",
+		"• The agent run was stopped. · <1s · ↑15 · ↓1",
 		"an empty final response clears stale prose and uses the stop-reason fallback",
 	);
 

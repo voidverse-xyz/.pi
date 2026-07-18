@@ -3,7 +3,7 @@
 Shows one muted Pi notification after the main agent fully finishes:
 
 ```text
-Done in 2m 14s · ↑45.2k · ↓3.1k — Implemented the requested completion summary.
+• Implemented the requested completion summary. · 2m 14s · ↑45.2k · ↓3.1k
 ```
 
 The extension:
@@ -16,8 +16,9 @@ The extension:
 - totals Pi's `usage.input` and `usage.output` buckets from every finalized
   assistant message in that run. `↑` is uncached input, matching Pi's footer;
   cache read/write (`R`/`W`) buckets are intentionally omitted;
-- derives the outcome from the first meaningful sentence of the final assistant
-  text, stripping common Markdown and truncating it to one compact line;
+- leads with a simple bullet and the outcome, derived from the first meaningful
+  sentence of the final assistant text, then shows elapsed time and token usage;
+  common Markdown is stripped and the summary is truncated to one compact line;
 - makes no additional model call and adds no summary latency or token use;
 - emits only in interactive TUI mode. Pi's `info` notification path uses the
   active theme's dim/muted text treatment.

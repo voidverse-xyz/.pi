@@ -18,14 +18,16 @@ cancel the notification through `agent_start`.
 The TUI line has this shape:
 
 ```text
-Done in 2m 14s · ↑45.2k · ↓3.1k — Implemented the requested change.
+• Implemented the requested change. · 2m 14s · ↑45.2k · ↓3.1k
 ```
 
-`↑` is Pi's uncached `usage.input` bucket and `↓` is `usage.output`; cache read
-and write buckets are deliberately omitted. The outcome comes from the first
-meaningful sentence of the final assistant response after local Markdown
-cleanup. There is no extra model call. Error, abort, and token-limit runs have
-honest local fallbacks. Non-TUI modes do not emit the notice.
+A simple bullet and the locally derived outcome lead the line, so the visible
+text reads as a summary rather than a timing status. `↑` is Pi's uncached
+`usage.input` bucket and `↓` is `usage.output`; cache read and write buckets are
+deliberately omitted. The outcome comes from the first meaningful sentence of
+the final assistant response after local Markdown cleanup. There is no extra
+model call. Error, abort, and token-limit runs have honest local fallbacks.
+Non-TUI modes do not emit the notice.
 
 ## Subagent labels
 
