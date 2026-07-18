@@ -16,7 +16,7 @@
  *
  * Configurable via ~/.pi/agent/status-line.json:
  *   { "order": [segment ids], "hidden": [segment ids], "mode": "verbose" | "compact" }
- * Segment ids: plan-mode, subagents, context, extensions, tool-monitor, tokens, cost, hourly.
+ * Segment ids: plan-mode, subagents, context, extension-statuses, tool-monitor, tokens, cost, hourly.
  * A missing/invalid file (or unknown ids in it) degrades to the defaults — never
  * crashes. Segments not listed in `order` append in default order. `compact` mode
  * drops labels and shrinks separators; below NARROW_WIDTH columns the footer
@@ -214,7 +214,7 @@ type FooterMode = "verbose" | "compact";
 // Stable segment ids, in DEFAULT order. Most render into a fixed line/side slot;
 // tool-monitor dynamically uses line 1-left when subagents are absent and line
 // 2-left when subagents occupy line 1. `order` also sets narrow-width drop priority.
-const SEGMENT_IDS = ["plan-mode", "subagents", "context", "extensions", "tool-monitor", "tokens", "cost", "hourly"] as const;
+const SEGMENT_IDS = ["plan-mode", "subagents", "context", "extension-statuses", "tool-monitor", "tokens", "cost", "hourly"] as const;
 type SegmentId = (typeof SEGMENT_IDS)[number];
 
 type Slot = "1L" | "1R" | "2L" | "2R";
@@ -222,7 +222,7 @@ const SEGMENT_SLOTS: Record<SegmentId, Slot> = {
 	"plan-mode": "1L",
 	subagents: "1L",
 	context: "1R",
-	extensions: "1R",
+	"extension-statuses": "1R",
 	"tool-monitor": "2L", // composeSides overrides dynamically
 	tokens: "2R",
 	cost: "2R",
@@ -257,11 +257,13 @@ function isFooterMode(value: unknown): value is FooterMode {
 
 // Coerces an untrusted JSON value into a deduped list of KNOWN segment ids —
 // unknown ids and non-arrays are silently ignored (never crash on bad config).
+// Preserve configs written before `extensions` was renamed to `extension-statuses`.
 function toIdList(value: unknown): SegmentId[] {
 	if (!Array.isArray(value)) return [];
 	const out: SegmentId[] = [];
 	for (const entry of value) {
-		if (isSegmentId(entry) && !out.includes(entry)) out.push(entry);
+		const id = entry === "extensions" ? "extension-statuses" : entry;
+		if (isSegmentId(id) && !out.includes(id)) out.push(id);
 	}
 	return out;
 }
@@ -330,7 +332,7 @@ function buildSegmentTexts(
 		"plan-mode": planMode ? theme.fg("success", planMode) : "",
 		subagents: subagents ? theme.fg("dim", subagents) : "",
 		context: formatContext(ctx, theme, mode),
-		extensions: joinSegments(otherStatuses, separator),
+		"extension-statuses": joinSegments(otherStatuses, separator),
 		"tool-monitor": toolMonitor ? renderToolMonitorStatus(toolMonitor, theme) : "",
 		tokens:
 			input > 0 || output > 0

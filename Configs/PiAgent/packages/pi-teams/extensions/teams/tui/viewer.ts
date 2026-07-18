@@ -100,7 +100,7 @@ export function createViewer(options: ViewerOptions): ViewerComponent {
 			if (closed || !detail) return;
 			components = buildComponents(detail.sessionFile, tui, cwd);
 			const v = detail.vitals;
-			const pct = v.ctxPercent !== null ? ` · ctx ${Math.round(v.ctxPercent * 100)}%` : "";
+			const pct = v.ctxPercent !== null ? ` · ctx ${Math.round(v.ctxPercent)}%` : "";
 			header = detail.label ? `${detail.address} “${detail.label}”` : detail.address;
 			headerMeta = ` · ${detail.state}${pct} · ${v.tokens} tok · ${v.turns} turns`;
 			tui.requestRender();
@@ -138,15 +138,13 @@ export function createViewer(options: ViewerOptions): ViewerComponent {
 		},
 		render(width: number): string[] {
 			// Muted codex treatment: bold address (like a selected row), dim metadata,
-			// full-width dim rules (codex-ui's tool separators run the full width too).
-			const rule = theme.fg("dim", "─".repeat(Math.max(0, width)));
+			// full-width rules in Pi's own separator color ("border" — dim in codex).
+			const rule = theme.fg("border", "─".repeat(Math.max(0, width)));
 			const lines: string[] = [theme.bold(theme.fg("text", header)) + theme.fg("dim", headerMeta), rule];
 			for (const component of components) lines.push(...component.render(width));
 			lines.push(rule);
 			lines.push(`${theme.fg("accent", "› ")}${input}${theme.fg("dim", "▏")}`);
-			const sep = theme.fg("dim", " · ");
-			const hints = ["enter message", "alt+enter steer", "alt+j next", "esc back"];
-			lines.push(`  ${hints.map((h) => theme.fg("muted", h)).join(sep)}`);
+			lines.push(theme.fg("dim", "  enter message · alt+enter steer · alt+j next · esc back"));
 			return lines;
 		},
 		handleInput(data: string) {

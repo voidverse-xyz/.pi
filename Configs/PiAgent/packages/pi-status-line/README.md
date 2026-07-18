@@ -27,19 +27,19 @@ reorders segments within their effective slot and sets narrow-width drop priorit
 | `plan-mode` | line 1, left | ` plan mode`, success-green | same |
 | `subagents` | line 1, left | activity from `pi-agents`, dimmed | same |
 | `context` | line 1, right | hard-drive icon + `NN%` context usage, colored by fullness | `NN%` (icon dropped) |
-| `extensions` | line 1, right | every other extension's `setStatus()` text, ` \| `-joined | space-joined |
+| `extension-statuses` | line 1, right | every other extension's `setStatus()` text, ` \| `-joined | space-joined |
 | `tool-monitor` | line 1-left alone; line 2-left with subagents | running-tool indicator with themed activity band | same |
 | `tokens` | line 2, right | ` 12k  3.4k` session tokens | same |
 | `cost` | line 2, right | `$0.123` session cost | `$0.12` |
 | `hourly` | line 2, right | ` last 1h: 42k` | ` 1h 42k` |
 
-Default order: `plan-mode, subagents, context, extensions, tool-monitor, tokens, cost, hourly`.
+Default order: `plan-mode, subagents, context, extension-statuses, tool-monitor, tokens, cost, hourly`.
 
 ## Configuration — `~/.pi/agent/status-line.json`
 
 ```json
 {
-	"order": ["plan-mode", "subagents", "context", "extensions", "tool-monitor", "tokens", "cost", "hourly"],
+	"order": ["plan-mode", "subagents", "context", "extension-statuses", "tool-monitor", "tokens", "cost", "hourly"],
 	"hidden": ["hourly"],
 	"mode": "verbose"
 }
@@ -47,7 +47,8 @@ Default order: `plan-mode, subagents, context, extensions, tool-monitor, tokens,
 
 - `order` — segment ids in the order you want them. Ids you leave out append in
   default order; unknown ids are ignored.
-- `hidden` — segment ids to never render.
+- `hidden` — segment ids to never render. The legacy `extensions` id is read as
+  `extension-statuses` for compatibility.
 - `mode` — `"verbose"` (default; today's full rendering) or `"compact"`
   (labels dropped, values kept, separators shrunk to a space).
 

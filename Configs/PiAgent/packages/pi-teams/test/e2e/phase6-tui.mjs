@@ -1,8 +1,9 @@
 /**
- * Phase-6 TUI e2e for pi-teams: the pure render helpers (picker rows, flat +
- * archive; tree widget lines). The interactive picker/viewer overlays are wired
- * in index.ts but need a live TUI, so only the pure builders are exercised here.
- * The tree widget is the ONE ambient surface — there is no footer status segment.
+ * Phase-6 TUI e2e for pi-teams: pure render helpers (picker rows, flat +
+ * archive; tree widget lines) plus the tree controller's stable-mount contract.
+ * The interactive picker/viewer overlays are wired in index.ts but need a live
+ * TUI. The tree widget is the ONE ambient surface — there is no footer status
+ * segment.
  *
  * Run: node phase6-tui.mjs
  */
@@ -28,7 +29,7 @@ async function testAsync(name, fn) {
 
 console.log("picker rows:");
 const roster = [
-	{ address: "refactorer/auth", type: "refactorer", id: "auth", state: "running", lifetime: "persistent", purview: "auth", vitals: { state: "running", ctxPercent: 0.6, tokens: 100, cost: 0, turns: 3 }, unread: 0, updatedAt: "" },
+	{ address: "refactorer/auth", type: "refactorer", id: "auth", state: "running", lifetime: "persistent", purview: "auth", vitals: { state: "running", ctxPercent: 60, tokens: 100, cost: 0, turns: 3 }, unread: 0, updatedAt: "" },
 	{ address: "docs/main", type: "docs", id: "main", state: "dormant", lifetime: "persistent", purview: "main", vitals: { state: "dormant", ctxPercent: null, tokens: 0, cost: 0, turns: 0 }, unread: 0, updatedAt: "" },
 ];
 test("flat rows sorted by address; no team headers (D12)", () => {
@@ -59,26 +60,43 @@ test("row text shows state glyph, address, ctx%, unread badge", () => {
 
 console.log("tree widget:");
 const plainTheme = { fg: (_c, t) => t };
-test("empty when nothing is working", () => {
-	assert.deepEqual(tree.renderTreeLines([], plainTheme), []);
+test("empty when nothing is working and no main mail is unread", () => {
+	assert.deepEqual(tree.renderTreeLines([], 0, plainTheme), []);
 });
-test("renders a tree row + current tool per running agent", () => {
+test("renders Nerd Font metric icons, short labels, and the current tool", () => {
 	const lines = tree.renderTreeLines(
 		[
-			{ address: "refactorer/auth", tool: "bash", summary: "Bash: find CLI files", toolUses: 10 },
-			{ address: "docs/main", tool: "read", summary: "Read: src/index.ts", toolUses: 1 },
+			{ address: "refactorer/auth", tool: "bash", summary: "Bash: find CLI files", toolUses: 10, ctxPercent: 41.2, tokens: 23_000, unread: 0 },
+			{ address: "docs/main", tool: "read", summary: "Read: src/index.ts", toolUses: 1, ctxPercent: null, tokens: 950, unread: 0 },
 		],
+		0,
 		plainTheme,
 	);
-	assert.ok(lines[0].includes("Running 2 team agents"));
-	assert.ok(lines.some((l) => l.includes("refactorer/auth") && l.includes("10 tool uses")));
+	assert.ok(lines[0].includes(`${tree.AGENTS_ICON} Running 2 team agents`));
+	assert.equal(lines.at(-1), "", "visible widget ends with a blank spacer line");
+	assert.ok(lines.some((l) => l.includes("refactorer/auth") && l.includes(`${tree.TOOL_ICON} 10 tools`) && l.includes(`${tree.CONTEXT_ICON} 41.2%`) && l.includes(`${tree.TOKEN_ICON} 23k tokens`)));
 	assert.ok(lines.some((l) => l.includes("Bash: find CLI files")));
-	assert.ok(lines.some((l) => l.includes("docs/main") && l.includes("1 tool use") && !l.includes("1 tool uses")));
+	assert.ok(lines.some((l) => l.includes("docs/main") && l.includes(`${tree.TOOL_ICON} 1 tool`) && !l.includes("1 tools") && l.includes(`${tree.CONTEXT_ICON} ?`) && l.includes(`${tree.TOKEN_ICON} 950 tokens`)));
 	assert.ok(lines.some((l) => l.includes("└─"))); // last-branch glyph
+});
+test("main and per-agent unread mail use the mail icon", () => {
+	const lines = tree.renderTreeLines(
+		[{ address: "worker/main", tool: "bash", summary: "Bash: test", toolUses: 2, ctxPercent: 8, tokens: 1_250, unread: 2 }],
+		3,
+		plainTheme,
+	);
+	assert.ok(lines[0].includes(`${tree.MAIL_ICON} 3 main mail`));
+	assert.ok(lines[1].includes(`${tree.MAIL_ICON} 2 mail`));
+	const mailOnly = tree.renderTreeLines([], 1, plainTheme);
+	assert.ok(mailOnly[0].includes(`${tree.AGENTS_ICON} Teams`));
+	assert.ok(mailOnly[0].includes(`${tree.MAIL_ICON} 1 main mail`));
+	assert.ok(!mailOnly[0].includes(`${tree.STOP_KEY} stop`), "mail-only header has no stop hint");
+	assert.equal(mailOnly.at(-1), "", "mail-only widget also ends with spacing");
 });
 test("a display label renders next to the address in tree and picker rows", () => {
 	const lines = tree.renderTreeLines(
-		[{ address: "worker/tmp-3f9a", label: "lint sweep", tool: "bash", summary: "Bash: eslint", toolUses: 2 }],
+		[{ address: "worker/tmp-3f9a", label: "lint sweep", tool: "bash", summary: "Bash: eslint", toolUses: 2, ctxPercent: 8, tokens: 1_250, unread: 0 }],
+		0,
 		plainTheme,
 	);
 	assert.ok(lines.some((l) => l.includes("worker/tmp-3f9a “lint sweep”")), `tree row shows the label: ${lines[1]}`);
@@ -89,10 +107,40 @@ test("a display label renders next to the address in tree and picker rows", () =
 	assert.ok(!noLabel.includes("“"), "no quotes when there is no label");
 });
 test("the stop hint is shown while agents run, and never when idle", () => {
-	const lines = tree.renderTreeLines([{ address: "a/1", tool: "bash", summary: "Bash: x", toolUses: 1 }], plainTheme);
+	const lines = tree.renderTreeLines([{ address: "a/1", tool: "bash", summary: "Bash: x", toolUses: 1, ctxPercent: 1.5, tokens: 12, unread: 0 }], 0, plainTheme);
 	// The brake must be discoverable exactly when it is usable.
 	assert.ok(lines[0].includes(`${tree.STOP_KEY} stop`), `header should advertise the stop key, got: ${lines[0]}`);
-	assert.deepEqual(tree.renderTreeLines([], plainTheme), [], "no hint (and no widget) when nothing is working");
+	assert.deepEqual(tree.renderTreeLines([], 0, plainTheme), [], "no hint (and no widget) when nothing is working");
+});
+test("controller mounts once so refreshes cannot hop below the status row", () => {
+	let rows = [];
+	let mainUnread = 0;
+	let listener = () => {};
+	let renders = 0;
+	const setCalls = [];
+	const controller = tree.createTreeWidget(
+		{
+			activitySnapshot: () => rows,
+			mainUnreadCount: () => mainUnread,
+			onEvent: (fn) => ((listener = fn), () => {}),
+		},
+		{ setWidget: (key, content, options) => setCalls.push({ key, content, options }) },
+	);
+	assert.equal(setCalls.length, 1, "component occupies one stable widget-map slot at startup");
+	const component = setCalls[0].content({ requestRender: () => renders++ }, plainTheme);
+	assert.deepEqual(component.render(120), [], "mounted component is visually silent while idle");
+	rows = [{ address: "worker/main", tool: "read", summary: "Read: file", toolUses: 1, ctxPercent: 5, tokens: 500, unread: 0 }];
+	listener();
+	const visible = component.render(120);
+	assert.ok(visible[0].includes(`${tree.AGENTS_ICON} Running 1 team agent`));
+	assert.equal(visible.at(-1), "", "visible component provides trailing spacing");
+	mainUnread = 1;
+	listener();
+	assert.equal(setCalls.length, 1, "activity and mail refreshes never reinsert the widget");
+	assert.ok(renders >= 2, "state changes request component rerenders");
+	controller.dispose();
+	assert.equal(setCalls.length, 2, "dispose removes the widget once");
+	assert.equal(setCalls[1].content, undefined);
 });
 await testAsync("the advertised stop key is the one index.ts actually binds", async () => {
 	// Guards the hint from drifting from the binding: both must come from STOP_KEY.

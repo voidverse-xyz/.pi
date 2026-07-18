@@ -274,7 +274,6 @@ export default function (pi: ExtensionAPI): void {
 			if (ctx.mode === "tui") {
 				tree = createTreeWidget(core, {
 					setWidget: (key, content, opts) => ctx.ui.setWidget(key, content, opts),
-					theme: ctx.ui.theme,
 				});
 			}
 		} catch (error) {

@@ -29,6 +29,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-subagents` | **Subagents** — background fan-out workers (`/subagents`): seven `subagent_*` tools, typed or ad-hoc spawns, persistent or oneshot lifetimes, parallel under a configurable cap, join by `subagent_await` or idle auto-wake. Strict hub-and-spoke (no peer mail, no nesting); pi-safety-gated tool calls (`subagents:confirm-request`); unified above-editor activity widget with running/waiting/mail status and bottom padding (no footer segment); `alt+a` stop brake. Runs alongside `pi-teams`. Plan: `~/Agents/Documents/Plans/PiAgent/pi-subagents/plan.md`. |
 | `pi-todo` | LLM-callable `todo_write` Claude Code-style task list: above-editor checklist widget under a simple always-on `󰝖 Todos · n/m` title (shown working or idle) with bottom padding and active-item truncation windowing, `alt+d` expand/collapse/hide cycle (the only user control — no slash command), and restore-on-resume |
 | `pi-tool-monitor` | Plain active-tool status producer and `/tools` |
+| `pi-workflow` | **Workflow** — LLM-callable `workflow` tool running deterministic JS orchestration scripts (`agent`/`parallel`/`pipeline`/`phase`/`log`) over one-shot sandboxed subagents; journal-backed `resumeFromRunId`, saved workflows + `/workflows`, live progress tree, `alt+w` stop brake, pi-safety gating over `workflow:confirm-request` |
 
 ## Theme and keybindings
 

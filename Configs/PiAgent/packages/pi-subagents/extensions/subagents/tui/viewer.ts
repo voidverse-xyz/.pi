@@ -20,7 +20,6 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { SubagentsCore } from "../core.ts";
-import { AGENTS_ICON } from "./widget.ts";
 
 interface Component {
 	render(width: number): string[];
@@ -90,6 +89,7 @@ export function createViewer(options: ViewerOptions): ViewerComponent {
 	const { core, tui, theme, address, cwd, onDone } = options;
 	let components: Component[] = [];
 	let header = address;
+	let headerMeta = "";
 	let input = "";
 	let closed = false;
 
@@ -99,7 +99,8 @@ export function createViewer(options: ViewerOptions): ViewerComponent {
 			components = buildComponents(detail.sessionFile, tui, cwd);
 			const v = detail.vitals;
 			const pct = v.ctxPercent !== null ? ` · ctx ${Math.round(v.ctxPercent * 100)}%` : "";
-			header = `${detail.address} · ${detail.state}${pct} · ${v.tokens} tok · ${v.turns} turns`;
+			header = detail.address;
+			headerMeta = ` · ${detail.state}${pct} · ${v.tokens} tok · ${v.turns} turns`;
 			tui.requestRender();
 		}).catch(() => {});
 	};
@@ -134,11 +135,14 @@ export function createViewer(options: ViewerOptions): ViewerComponent {
 			clearInterval(timer);
 		},
 		render(width: number): string[] {
-			const lines: string[] = [theme.fg("accent", `${AGENTS_ICON} ${header}`), theme.fg("dim", "─".repeat(Math.min(width, 80)))];
+			// Muted codex treatment: bold address (like a selected row), dim metadata,
+			// full-width rules in Pi's own separator color ("border" — dim in codex).
+			const rule = theme.fg("border", "─".repeat(Math.max(0, width)));
+			const lines: string[] = [theme.bold(theme.fg("text", header)) + theme.fg("dim", headerMeta), rule];
 			for (const component of components) lines.push(...component.render(width));
-			lines.push(theme.fg("dim", "─".repeat(Math.min(width, 80))));
+			lines.push(rule);
 			lines.push(`${theme.fg("accent", "› ")}${input}${theme.fg("dim", "▏")}`);
-			lines.push(theme.fg("dim", "  enter = message · alt+enter = steer · alt+j = next · esc = back"));
+			lines.push(theme.fg("dim", "  enter message · alt+enter steer · alt+j next · esc back"));
 			return lines;
 		},
 		handleInput(data: string) {

@@ -126,7 +126,9 @@ export default function todoList(pi: ExtensionAPI) {
 			"steps. NEVER create a todo list for one- or two-step tasks, quick fixes, simple lookups, a single edit plus verification, " +
 			"or other routine work; do those directly, and never invent filler steps just to reach three. For qualifying work, mark a " +
 			"task in_progress BEFORE starting it (only one at a time), and completed IMMEDIATELY after finishing it; do not batch " +
-			"up completions.",
+			"up completions. REMOVE todos from the list once they are completed and no longer relevant to the remaining work, and " +
+			"remove any todo that becomes obsolete (plan changed, user redirected) — the list should only show what still matters. " +
+			"When all work is finished, send an empty todos array to clear the list entirely.",
 		promptSnippet: "todo_write — track genuinely complex work with 3+ substantive steps; never use for 1-2 step tasks",
 		promptGuidelines: [
 			"Use todo_write only when a task is genuinely complex and naturally decomposes into at least 3 substantive steps. Never use it for 1- or 2-step tasks, quick fixes, simple lookups, or a single change plus verification; do not invent filler steps to reach three.",
@@ -134,6 +136,8 @@ export default function todoList(pi: ExtensionAPI) {
 			"Keep exactly one todo in_progress at a time; mark it completed as soon as it is actually done (tests pass, verified), never in advance.",
 			"Give each todo an imperative `content` ('Fix store layer') and an `activeForm` ('Fixing store layer') for the in-progress display.",
 			"If new work surfaces mid-task, add it to the list rather than silently expanding scope.",
+			"Prune as you go: once a completed todo is no longer relevant to the remaining work, drop it from the next todo_write call — likewise drop todos made obsolete by a plan change or user redirect. The visible list should reflect what still matters, not history.",
+			"When the last todo is done, clear the list with `todo_write {\"todos\": []}` so a stale checklist doesn't linger into the next task.",
 		],
 		parameters: TodoWriteParams,
 
@@ -142,14 +146,25 @@ export default function todoList(pi: ExtensionAPI) {
 			if (err) throw new Error(err);
 			todos = params.todos as TodoItem[];
 			refreshWidget(ctx);
+			const allDone = todos.length > 0 && todos.every((t) => t.status === "completed");
+			const hasCompleted = todos.some((t) => t.status === "completed");
+			let hint: string;
+			if (todos.length === 0) {
+				hint = "Todo list cleared.";
+			} else if (allDone) {
+				hint = "All todos are completed — clear the list now with todo_write {\"todos\": []} unless more work remains.";
+			} else if (hasCompleted) {
+				hint =
+					"Continue tracking your progress: mark tasks in_progress when you start them and completed when done. " +
+					"Drop completed todos from the next call once they are no longer relevant to the remaining work.";
+			} else {
+				hint = "Continue tracking your progress: mark tasks in_progress when you start them and completed when done.";
+			}
 			return {
 				content: [
 					{
 						type: "text",
-						text:
-							"Todo list updated.\n" +
-							`${summarizeTodos(todos)}\n` +
-							"Continue tracking your progress: mark tasks in_progress when you start them and completed when done.",
+						text: todos.length === 0 ? hint : `Todo list updated.\n${summarizeTodos(todos)}\n${hint}`,
 					},
 				],
 				details: { todos },

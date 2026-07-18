@@ -82,7 +82,7 @@ export interface SubagentsCore {
 	agentUnreadCount(address: string): number;
 	/** Retired agents still on disk in .archive (D13). */
 	archived(): ArchivedAgentInfo[];
-	/** Live per-agent activity for the tree widget (current tool call + count). */
+	/** Live per-agent activity, usage, and queued mail for the tree widget. */
 	activitySnapshot(): AgentActivityRow[];
 	/** User-level peer-messaging control (D12): "on"/"off" force it, "llm" delegates to main. */
 	setUserPeerMode(mode: PeerMode): void;

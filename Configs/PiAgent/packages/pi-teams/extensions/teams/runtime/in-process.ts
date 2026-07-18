@@ -474,12 +474,25 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		return { userMode: this.userPeerMode, mainOverride: this.mainPeerOverride, userControls: this.userPeerMode !== "llm" };
 	}
 
-	/** Live activity for currently-working agents (tree widget). */
+	/** Live activity and usage for currently-working agents (tree widget). */
 	activitySnapshot(): AgentActivityRow[] {
 		return [...this.activity.entries()]
 			.map(([address, a]) => {
-				const label = getAgent(this.registry, address)?.label;
-				return { address, ...(label !== undefined ? { label } : {}), ...a };
+				const record = getAgent(this.registry, address);
+				const stats = this.handles.get(address)?.session.getSessionStats();
+				// A null live percentage (notably just after compaction) means unknown;
+				// preserve it rather than falling back to a stale pre-compaction value.
+				const ctxPercent = stats?.contextUsage === undefined ? (record?.vitals.ctxPercent ?? null) : stats.contextUsage.percent;
+				const tokens = stats?.tokens.total ?? record?.vitals.tokens ?? 0;
+				const unread = record ? pendingCount(this.layout.mailboxDir(record.type, record.id)) : 0;
+				return {
+					address,
+					...(record?.label !== undefined ? { label: record.label } : {}),
+					...a,
+					ctxPercent,
+					tokens,
+					unread,
+				};
 			})
 			.sort((x, y) => x.address.localeCompare(y.address));
 	}

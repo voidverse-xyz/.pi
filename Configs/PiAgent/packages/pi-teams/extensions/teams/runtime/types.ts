@@ -29,11 +29,17 @@ export interface AgentActivity {
 	toolUses: number;
 }
 
-/** One tree-widget row: an agent's live activity keyed by address. */
+/** One tree-widget row: an agent's live activity and usage keyed by address. */
 export interface AgentActivityRow extends AgentActivity {
 	address: string;
 	/** Display-only label from spawn, if one was given. */
 	label?: string;
+	/** Current context fill from the live session, 0–100; null when unknown. */
+	ctxPercent: number | null;
+	/** Cumulative input/output/cache tokens consumed by this agent session. */
+	tokens: number;
+	/** Unread mail queued for this agent while its current turn runs. */
+	unread: number;
 }
 
 /**

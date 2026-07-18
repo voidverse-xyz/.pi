@@ -13,6 +13,7 @@ Codex/Configs/tmp/
 Codex/Configs/.tmp/
 
 # Local setup archives and credentials.
+/auth.json
 Configs/PiAgent/archive/*.zip
 .ssh/
 *.pem

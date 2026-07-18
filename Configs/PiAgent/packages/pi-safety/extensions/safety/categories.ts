@@ -17,7 +17,7 @@ export type Category = "destructive" | "network" | "exec" | "other";
  * Semantic theme color key for a category's header/divider. These resolve
  * through the active theme (theme.fg), so destructive reads red and network
  * reads blue/cyan in colored themes, and both follow a theme swap. In a
- * monochrome theme (e.g. black-white) they resolve to its grays.
+ * monochrome theme, they resolve to its grays.
  */
 export type CategoryColor = "error" | "warning" | "accent" | "success";
 

@@ -1,0 +1,33 @@
+FROM quay.io/fedora/fedora:44
+
+LABEL org.opencontainers.image.title="pi-agent-fedora"
+LABEL org.opencontainers.image.description="Fedora image with Pi Coding Agent, tmux, fd, and ripgrep preinstalled"
+LABEL org.opencontainers.image.base.name="quay.io/fedora/fedora:44"
+LABEL io.pi-agent.preinstalled="2"
+
+ARG PI_PACKAGE="@earendil-works/pi-coding-agent"
+
+RUN dnf --assumeyes install \
+        ca-certificates \
+        fd-find \
+        git \
+        nodejs \
+        npm \
+        ripgrep \
+        shadow-utils \
+        tmux \
+    && npm install \
+        --global \
+        --ignore-scripts \
+        --registry=https://registry.npmjs.org \
+        "$PI_PACKAGE" \
+    && dnf clean all \
+    && rm --recursive --force /var/cache/dnf \
+    && command -v fd \
+    && command -v rg \
+    && command -v pi \
+    && pi --version
+
+WORKDIR /workspace
+
+CMD ["sleep", "infinity"]

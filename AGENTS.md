@@ -200,8 +200,7 @@ shared repository using the `Reusable Artifact Capture` rules above.
   best-effort inverse edit replay when the baseline predates the extension).
   Works in non-git directories; nothing here shells out to git. Bash-made
   changes are out of scope by design.
-- `Configs/PiAgent/.pi/agent/themes/`: source of truth for custom Pi themes
-  (`black-white`, a grayscale theme, added 2026-07-03).
+- `Configs/PiAgent/.pi/agent/themes/`: source of truth for custom Pi themes.
 - `~/.pi/agent/extensions` is a dangling legacy symlink; no legacy extensions
   are present. `~/.pi/agent/themes` is symlinked to
   `Configs/PiAgent/.pi/agent/themes/`. Re-run `pi`'s `/reload` (or restart)

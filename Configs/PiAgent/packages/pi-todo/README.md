@@ -34,7 +34,9 @@ and full control over truncation — require a component.
   `pending | in_progress | completed`; at most one `in_progress`. System-prompt
   guidelines restrict the tool to genuinely complex work with 3+ substantive steps,
   explicitly forbid one- or two-step lists and filler steps, keep one task in progress,
-  and mark completions immediately.
+  mark completions immediately, prune completed/obsolete todos once they no longer
+  matter to the remaining work, and clear the list when everything is done
+  (the tool result nudges this contextually — e.g. "all completed → clear now").
 - **`alt+o`** — the only user control: cycles expanded → collapsed → hidden
   (Claude Code uses `ctrl+t`, but pi core owns that for thinking blocks). There is
   deliberately no slash command. Collapsed keeps the title plus a one-line summary
