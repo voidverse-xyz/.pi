@@ -1,7 +1,7 @@
 /**
  * Shared status layout for Pi:
  *   above editor: project/Git status on the left; model + thinking on the right
- *   footer line 1: subagent status on the left when present, otherwise tool activity;
+ *   footer line 1: Plan mode + subagent status on the left; otherwise tool activity;
  *                  context + extension statuses on the right
  *   footer line 2: tool activity on the left when subagents occupy line 1;
  *                  token/cost usage on the right
@@ -16,7 +16,7 @@
  *
  * Configurable via ~/.pi/agent/status-line.json:
  *   { "order": [segment ids], "hidden": [segment ids], "mode": "verbose" | "compact" }
- * Segment ids: subagents, context, extensions, tool-monitor, tokens, cost, hourly.
+ * Segment ids: plan-mode, subagents, context, extensions, tool-monitor, tokens, cost, hourly.
  * A missing/invalid file (or unknown ids in it) degrades to the defaults — never
  * crashes. Segments not listed in `order` append in default order. `compact` mode
  * drops labels and shrinks separators; below NARROW_WIDTH columns the footer
@@ -132,6 +132,7 @@ function alignRight(text: string, width: number): string {
 // Reserved plain-text producer keys; buildSegmentTexts styles them and
 // composeSides chooses their footer rows.
 const TOOL_MONITOR_STATUS_KEY = "tool-monitor";
+const PLAN_MODE_STATUS_KEY = "plan-mode";
 // Subagent status takes line 1-left whenever it is visible.
 const SUBAGENT_STATUS_KEY = "subagents";
 
@@ -213,11 +214,12 @@ type FooterMode = "verbose" | "compact";
 // Stable segment ids, in DEFAULT order. Most render into a fixed line/side slot;
 // tool-monitor dynamically uses line 1-left when subagents are absent and line
 // 2-left when subagents occupy line 1. `order` also sets narrow-width drop priority.
-const SEGMENT_IDS = ["subagents", "context", "extensions", "tool-monitor", "tokens", "cost", "hourly"] as const;
+const SEGMENT_IDS = ["plan-mode", "subagents", "context", "extensions", "tool-monitor", "tokens", "cost", "hourly"] as const;
 type SegmentId = (typeof SEGMENT_IDS)[number];
 
 type Slot = "1L" | "1R" | "2L" | "2R";
 const SEGMENT_SLOTS: Record<SegmentId, Slot> = {
+	"plan-mode": "1L",
 	subagents: "1L",
 	context: "1R",
 	extensions: "1R",
@@ -314,15 +316,18 @@ function buildSegmentTexts(
 	const otherStatuses = Array.from(extensionStatuses.entries())
 		.filter(([key]) =>
 			key !== TOOL_MONITOR_STATUS_KEY
+			&& key !== PLAN_MODE_STATUS_KEY
 			&& key !== SUBAGENT_STATUS_KEY
 			&& !HEADER_STATUS_KEYS.has(key)
 		)
 		.map(([, value]) => value);
 
+	const planMode = extensionStatuses.get(PLAN_MODE_STATUS_KEY) ?? "";
 	const subagents = extensionStatuses.get(SUBAGENT_STATUS_KEY) ?? "";
 	const toolMonitor = extensionStatuses.get(TOOL_MONITOR_STATUS_KEY) ?? "";
 
 	return {
+		"plan-mode": planMode ? theme.fg("success", planMode) : "",
 		subagents: subagents ? theme.fg("dim", subagents) : "",
 		context: formatContext(ctx, theme, mode),
 		extensions: joinSegments(otherStatuses, separator),

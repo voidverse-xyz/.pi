@@ -13,6 +13,8 @@ Host-managed, hard read-only Plan mode for Pi, backed by the shared `plan` skill
 
 Plan mode, an explicitly selected Plan skill, and the authorized plan path are persisted as branch-local session state. Reload, resume, fork, and `/tree` restore the state on the active branch; a new session starts with Plan mode off.
 
+While active, `pi-plan` publishes ` plan mode` (`nf-oct-tasklist`) under the `plan-mode` status key. `pi-status-line` renders that dedicated segment success-green on footer line 1-left.
+
 ## Plan-skill templates
 
 The base `plan` skill always supplies the host-controlled planning and save boundaries. Supplemental skills opt into routing with this top-level frontmatter field:
@@ -38,9 +40,9 @@ The extension contributes only tagged skill directories from the shared `Skills/
 Plan mode snapshots the current active tools, enables Pi's trusted core read tools, retains trusted companion UI tools that were already active, adds `save_plan`, and restores the snapshot when Plan mode ends:
 
 - always while planning: `read`, `grep`, `find`, `ls`, `save_plan`
-- when already active: `ask_user`, `show_files`
+- when already active: `ask_user`, `show_files`, `todo_write`
 
-A default-deny `tool_call` guard also blocks every other main-agent tool, including tools activated by another extension after Plan mode starts. Allowed tools must match their expected Pi built-in or local package provenance, so a colliding custom tool cannot gain access merely by registering an approved name. Bash, general mutation tools, subagent spawning, and unknown custom tools are therefore unavailable to the main agent.
+A default-deny `tool_call` guard also blocks every other main-agent tool, including tools activated by another extension after Plan mode starts. Allowed tools must match their expected Pi built-in or local package provenance, so a colliding custom tool cannot gain access merely by registering an approved name. `todo_write` changes only the session checklist and remains available so Plan mode can track and clear its work without granting project-file mutation. Bash, general mutation tools, subagent spawning, and unknown custom tools are therefore unavailable to the main agent.
 
 This is a main-agent guard, not an operating-system sandbox. It does not prevent user-entered `!` commands, manually invoked slash commands, already-running subagents, other extension background work, or external processes from changing the workspace. Static symlinks are rejected, but a concurrent external filesystem actor can still race path-based Node filesystem operations; use a read-only container/mount when that threat is in scope.
 

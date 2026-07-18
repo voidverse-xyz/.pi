@@ -4,8 +4,9 @@ Owns Pi's shared status layout:
 
 - **Above-editor row** — CWD/Git from `pi-git-status` on the left; model and
   thinking level from `pi-model-thinking` on the right.
-- **Footer line 1** — `pi-agents` activity on the left when present; otherwise
-  tool-monitor moves up into that space. Context and extension statuses stay right.
+- **Footer line 1** — ` plan mode` appears success-green on the left, followed by
+  `pi-agents` activity when present; otherwise tool-monitor moves up into that space.
+  Context and other extension statuses stay right.
 - **Footer line 2** — tool-monitor moves here when subagent status occupies line 1;
   session token/cost usage (plus trailing 1h) stays right.
 
@@ -23,6 +24,7 @@ reorders segments within their effective slot and sets narrow-width drop priorit
 
 | id | slot | verbose | compact |
 |----|------|---------|---------|
+| `plan-mode` | line 1, left | ` plan mode`, success-green | same |
 | `subagents` | line 1, left | activity from `pi-agents`, dimmed | same |
 | `context` | line 1, right | hard-drive icon + `NN%` context usage, colored by fullness | `NN%` (icon dropped) |
 | `extensions` | line 1, right | every other extension's `setStatus()` text, ` \| `-joined | space-joined |
@@ -31,13 +33,13 @@ reorders segments within their effective slot and sets narrow-width drop priorit
 | `cost` | line 2, right | `$0.123` session cost | `$0.12` |
 | `hourly` | line 2, right | ` last 1h: 42k` | ` 1h 42k` |
 
-Default order: `subagents, context, extensions, tool-monitor, tokens, cost, hourly`.
+Default order: `plan-mode, subagents, context, extensions, tool-monitor, tokens, cost, hourly`.
 
 ## Configuration — `~/.pi/agent/status-line.json`
 
 ```json
 {
-	"order": ["subagents", "context", "extensions", "tool-monitor", "tokens", "cost", "hourly"],
+	"order": ["plan-mode", "subagents", "context", "extensions", "tool-monitor", "tokens", "cost", "hourly"],
 	"hidden": ["hourly"],
 	"mode": "verbose"
 }

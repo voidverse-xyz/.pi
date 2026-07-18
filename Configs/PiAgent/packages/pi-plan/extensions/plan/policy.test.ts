@@ -47,6 +47,12 @@ const trustedOwners: TrustedCustomToolOwners = {
 		scope: "user",
 		origin: "package",
 	},
+	todo_write: {
+		source: "/shared/packages/pi-todo",
+		path: "/shared/packages/pi-todo/extensions/todo/index.ts",
+		scope: "user",
+		origin: "package",
+	},
 	[SAVE_PLAN_TOOL]: {
 		source: "/shared/packages/pi-plan",
 		path: "/shared/packages/pi-plan/extensions/plan/index.ts",
@@ -62,6 +68,7 @@ const trustedTools: ToolSource[] = [
 	builtin("ls"),
 	packageTool("ask_user", "pi-questions", "extensions/questions/index.ts"),
 	packageTool("show_files", "pi-show-files", "extensions/show-files/index.ts"),
+	packageTool("todo_write", "pi-todo", "extensions/todo/index.ts"),
 	packageTool(SAVE_PLAN_TOOL, "pi-plan", "extensions/plan/index.ts"),
 ];
 
@@ -94,11 +101,11 @@ test("parsePlanCommand recognizes controls and preserves task text", () => {
 test("planModeTools keeps only exact trusted definitions and save_plan", () => {
 	assert.deepEqual(
 		planModeTools(
-			["read", "bash", "write", "ask_user", "show_files", "subagent_spawn"],
+			["read", "bash", "write", "ask_user", "show_files", "todo_write", "subagent_spawn"],
 			trustedTools,
 			trustedOwners,
 		),
-		["read", "grep", "find", "ls", "ask_user", "show_files", SAVE_PLAN_TOOL],
+		["read", "grep", "find", "ls", "ask_user", "show_files", "todo_write", SAVE_PLAN_TOOL],
 	);
 	assert.deepEqual(
 		planModeTools([], trustedTools, trustedOwners),
@@ -121,6 +128,10 @@ test("trusted-tool policy rejects name, path, source, scope, and origin collisio
 	);
 	assert.equal(
 		isTrustedPlanTool(packageTool("ask_user", "pi-questions", "extensions/other/index.ts"), trustedOwners),
+		false,
+	);
+	assert.equal(
+		isTrustedPlanTool(packageTool("todo_write", "other/pi-todo", "extensions/todo/index.ts"), trustedOwners),
 		false,
 	);
 	const wrongScope = packageTool("show_files", "pi-show-files", "extensions/show-files/index.ts");

@@ -28,6 +28,7 @@ import {
 
 const STATE_ENTRY = "plan-mode.state";
 const STATUS_KEY = "plan-mode";
+const PLAN_STATUS_ICON = ""; // nf-oct-tasklist
 const PLAN_SKILL_NAME = "plan";
 const PLAN_ENTRY_PATH = realpathSync(fileURLToPath(import.meta.url));
 const PACKAGES_ROOT = resolve(dirname(PLAN_ENTRY_PATH), "../../..");
@@ -54,6 +55,7 @@ function trustedPackageTool(packageName: string, entryRelativePath: string) {
 const TRUSTED_CUSTOM_TOOLS: TrustedCustomToolOwners = {
 	ask_user: trustedPackageTool("pi-questions", "extensions/questions/index.ts"),
 	show_files: trustedPackageTool("pi-show-files", "extensions/show-files/index.ts"),
+	todo_write: trustedPackageTool("pi-todo", "extensions/todo/index.ts"),
 	[SAVE_PLAN_TOOL]: trustedPackageTool("pi-plan", "extensions/plan/index.ts"),
 };
 const FALLBACK_PLAN_INSTRUCTIONS = `Research and design the requested change without implementing it.
@@ -64,7 +66,7 @@ function buildPlanModeInstructions(skillBody: string, templateInstructions: stri
 	return `<plan_mode>
 Plan mode is active. It is controlled by the host, not by user wording. Remain in Plan mode until the host turns it off. Follow the planning skill below for every request while this mode is active.
 
-The host enforces a default-deny main-agent tool policy. Use only the read-only tools currently exposed. Bash, general file mutation tools, subagent spawning, and unknown custom tools are unavailable.
+The host enforces a default-deny main-agent tool policy. Use only the project-read-only and companion UI/session tools currently exposed. Bash, general file mutation tools, subagent spawning, and unknown custom tools are unavailable.
 
 <plan_template_selection>
 ${templateInstructions}
@@ -124,10 +126,9 @@ export default function planExtension(pi: ExtensionAPI): void {
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
-		ctx.ui.setStatus(
-			STATUS_KEY,
-			enabled ? ctx.ui.theme.fg("warning", "Plan mode") : undefined,
-		);
+		// Publish plain text; pi-status-line owns the dedicated left-side slot and
+		// success-green presentation.
+		ctx.ui.setStatus(STATUS_KEY, enabled ? `${PLAN_STATUS_ICON} plan mode` : undefined);
 	}
 
 	function enablePlanModeTools(): void {

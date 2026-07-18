@@ -146,7 +146,8 @@ shared repository using the `Reusable Artifact Capture` rules above.
   `pi-plan` provides branch-persistent, main-agent hard read-only Plan mode via
   `/plan` and `Shift+Tab`. It automatically routes tasks to one loaded skill tagged
   `plan-template: true`, supports `/plan --skill <name> <task>` as an explicit
-  override, and exposes only approved read tools plus `save_plan`. The LLM selects
+  override, and exposes only approved project-read-only and companion UI/session
+  tools plus `save_plan`. The LLM selects
   a project-relative Markdown path, the user authorizes the exact path once per
   branch, and later revisions atomically replace it. The shared base instructions
   live in `Skills/plan/`.
