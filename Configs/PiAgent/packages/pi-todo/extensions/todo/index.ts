@@ -17,8 +17,9 @@
  * always identifiable at a glance.
  *
  * alt+d cycles the widget between expanded (full list), collapsed (title +
- * one-line summary with the active item and a done-count), and hidden. /todos
- * shows the list ("/todos clear" wipes it).
+ * one-line summary with the active item and a done-count), and hidden — the
+ * keybind is the ONLY user control; there is no slash command. Clearing is the
+ * agent's job (todo_write with an empty list).
  * On session start/resume the list is restored from the most recent
  * todo_write call in the replayed session messages, so it survives /reload
  * and resume without any extra persistence.
@@ -29,7 +30,7 @@
 
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import { Text, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	extractLatestTodos,
@@ -81,18 +82,38 @@ const NEXT_MODE: Record<ViewMode, ViewMode> = { expanded: "collapsed", collapsed
 export default function todoList(pi: ExtensionAPI) {
 	let todos: TodoItem[] = [];
 	let viewMode: ViewMode = "expanded";
+	let activeTui: TUI | undefined;
+
+	// The widget is a live FACTORY component, not a string array: pi wraps each
+	// string-array line in a pi-tui Text, which drops empty/whitespace-only lines
+	// entirely — so a trailing padding row is impossible that way. A component's
+	// render() lines pass through raw, so the "" padding line actually renders.
+	const buildLines = (theme: ExtensionContext["ui"]["theme"]): string[] => {
+		if (todos.length === 0 || viewMode === "hidden") return [];
+		const tree = viewMode === "collapsed" ? renderCollapsedLine(todos, theme, TOGGLE_KEY) : renderTodoWidgetLines(todos, theme);
+		// Trailing blank line: breathing room between the list and whatever
+		// renders below it (other widgets / the status row / the editor).
+		return [renderTitleLine(todos, theme), ...tree, ""].map((line) => (line ? ` ${line}` : line));
+	};
+
+	const mountWidget = (ctx: ExtensionContext): void => {
+		if (ctx.mode !== "tui") return;
+		ctx.ui.setWidget(WIDGET_KEY, (tui, theme) => {
+			activeTui = tui;
+			return {
+				invalidate() {},
+				render: () => buildLines(theme),
+				dispose() {
+					if (activeTui === tui) activeTui = undefined;
+				},
+			};
+		}, PLACEMENT);
+	};
 
 	const refreshWidget = (ctx: ExtensionContext): void => {
 		if (ctx.mode !== "tui") return;
-		if (todos.length === 0 || viewMode === "hidden") {
-			ctx.ui.setWidget(WIDGET_KEY, undefined, PLACEMENT);
-			return;
-		}
-		const theme = ctx.ui.theme;
-		const tree = viewMode === "collapsed" ? renderCollapsedLine(todos, theme, TOGGLE_KEY) : renderTodoWidgetLines(todos, theme);
-		// Trailing blank line: breathing room between the list and whatever renders
-		// below it (other widgets / the status row / the editor).
-		ctx.ui.setWidget(WIDGET_KEY, [renderTitleLine(todos, theme), ...tree, ""], PLACEMENT);
+		if (!activeTui) mountWidget(ctx);
+		activeTui?.requestRender();
 	};
 
 	pi.registerTool({
@@ -163,21 +184,6 @@ export default function todoList(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("todos", {
-		description: `Show the current todo list; "clear" wipes it (${TOGGLE_KEY} cycles the widget: expanded/collapsed/hidden)`,
-		getArgumentCompletions: (prefix) =>
-			"clear".startsWith(prefix.trim()) && prefix.trim().length > 0 ? [{ value: "clear", label: "clear" }] : null,
-		handler: async (args, ctx) => {
-			if (args.trim() === "clear") {
-				todos = [];
-				refreshWidget(ctx);
-				ctx.ui.notify("Todo list cleared", "info");
-				return;
-			}
-			ctx.ui.notify(summarizeTodos(todos), "info");
-		},
-	});
-
 	pi.on("session_start", (_event, ctx) => {
 		// Rebuild from the replayed session log so the list survives resume,
 		// /reload, and fork — the last todo_write call wins.
@@ -187,10 +193,12 @@ export default function todoList(pi: ExtensionAPI) {
 		}
 		todos = extractLatestTodos(messages, TOOL_NAME);
 		viewMode = "expanded";
-		refreshWidget(ctx);
+		mountWidget(ctx);
+		activeTui?.requestRender();
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
+		activeTui = undefined;
 		if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET_KEY, undefined, PLACEMENT);
 	});
 }

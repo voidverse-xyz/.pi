@@ -59,7 +59,8 @@ export function renderTodoItem(item: TodoItem, theme: TodoRenderTheme): string {
  */
 export const MAX_FULL_ITEMS = 8;
 const WINDOW_ITEMS = 6;
-const FULL_LIST_HINT = "/todos for all";
+// The view keybind — matches TOGGLE_KEY in index.ts (kept in sync by the tests).
+const TRUNCATION_HINT = "alt+d";
 
 /** Pure: the widget's lines for one render pass. [] when the list is empty. */
 export function renderTodoWidgetLines(todos: TodoItem[], theme: TodoRenderTheme): string[] {
@@ -74,9 +75,9 @@ export function renderTodoWidgetLines(todos: TodoItem[], theme: TodoRenderTheme)
 		const activeAt = inProgressAt >= 0 ? inProgressAt : pendingAt >= 0 ? pendingAt : 0;
 		const start = Math.min(Math.max(0, activeAt - 2), todos.length - WINDOW_ITEMS);
 		const end = start + WINDOW_ITEMS;
-		if (start > 0) rows.push(theme.fg("dim", `… +${start} earlier${end >= todos.length ? ` · ${FULL_LIST_HINT}` : ""}`));
+		if (start > 0) rows.push(theme.fg("dim", `… +${start} earlier${end >= todos.length ? ` · ${TRUNCATION_HINT}` : ""}`));
 		for (const item of todos.slice(start, end)) rows.push(renderTodoItem(item, theme));
-		if (end < todos.length) rows.push(theme.fg("dim", `… +${todos.length - end} more · ${FULL_LIST_HINT}`));
+		if (end < todos.length) rows.push(theme.fg("dim", `… +${todos.length - end} more · ${TRUNCATION_HINT}`));
 	}
 	return rows.map((row, i) => `${i === 0 ? theme.fg("dim", "└ ") : "  "}${row}`);
 }
@@ -111,7 +112,7 @@ export function renderTitleLine(todos: TodoItem[], theme: TodoRenderTheme): stri
 	return theme.fg("muted", `${TITLE_ICON} Todos`) + theme.fg("dim", ` · ${done}/${todos.length}`);
 }
 
-/** Plain-text list for the LLM tool result and /todos notify (no ANSI). */
+/** Plain-text list for the LLM tool result (no ANSI). */
 export function summarizeTodos(todos: TodoItem[]): string {
 	if (todos.length === 0) return "Todo list is empty.";
 	const lines = todos.map((item) => {

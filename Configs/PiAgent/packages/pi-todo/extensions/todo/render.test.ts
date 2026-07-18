@@ -77,11 +77,11 @@ test("renderTodoWidgetLines: long lists window around the active item with … m
 	assert.ok(lines[0]!.includes("… +7 earlier"), "earlier marker counts hidden rows");
 	assert.ok(lines.some((l) => l.includes("task 9")), "active item visible in the window");
 	assert.ok(lines[7]!.includes("… +1 more"), "trailing marker");
-	assert.ok(lines[7]!.includes("/todos for all"), "full-list hint on the last marker");
+	assert.ok(lines[7]!.includes("· alt+d"), "keybind hint on the last marker");
 	assert.ok(lines[0]!.startsWith("<dim>└ </dim>"), "connector still on the first row");
 	// Active at the very end: no trailing marker, hint moves to the earlier marker.
 	const tail = renderTodoWidgetLines(long.map((t, i) => ({ ...t, status: i === 13 ? "in_progress" : "completed" })), theme);
-	assert.ok(tail[0]!.includes("… +8 earlier · /todos for all"));
+	assert.ok(tail[0]!.includes("… +8 earlier · alt+d"));
 	assert.ok(tail.some((l) => l.includes("task 13")));
 });
 

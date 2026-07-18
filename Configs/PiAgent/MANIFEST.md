@@ -28,7 +28,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-show-files` | LLM-callable `show_files` curated file browser |
 | `pi-status-line` | Shared above-editor row plus dynamic two-line footer layout |
 | `pi-subagents` | **Subagents** — background fan-out workers (`/subagents`): seven `subagent_*` tools, typed or ad-hoc spawns, persistent or oneshot lifetimes, parallel under a configurable cap, join by `subagent_await` or idle auto-wake. Strict hub-and-spoke (no peer mail, no nesting); pi-safety-gated tool calls (`subagents:confirm-request`); `alt+a` stop brake. Runs alongside `pi-teams`. Plan: `~/Agents/Documents/Plans/PiAgent/pi-subagents/plan.md`. |
-| `pi-todo` | LLM-callable `todo_write` Claude Code-style task list: above-editor checklist widget under a simple always-on `󰝖 Todos · n/m` title (shown working or idle), `alt+d` expand/collapse/hide cycle, `/todos [clear]`, and restore-on-resume |
+| `pi-todo` | LLM-callable `todo_write` Claude Code-style task list: above-editor checklist widget under a simple always-on `󰝖 Todos · n/m` title (shown working or idle) with bottom padding and active-item truncation windowing, `alt+d` expand/collapse/hide cycle (the only user control — no slash command), and restore-on-resume |
 | `pi-tool-monitor` | Plain active-tool status producer and `/tools` |
 
 ## Theme and keybindings
