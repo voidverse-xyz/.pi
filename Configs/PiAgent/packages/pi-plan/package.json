@@ -1,8 +1,8 @@
 {
   "name": "pi-plan",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "type": "module",
-  "description": "Host-managed Plan mode with tagged skill-template routing and authorized plan saving.",
+  "description": "Host-managed Ask, Discuss, and Plan modes with hard read-only policies, scoped Plan subagents, and authorized plan saving.",
   "keywords": ["pi-package"],
   "pi": {
     "extensions": ["./extensions"],

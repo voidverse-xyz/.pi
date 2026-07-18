@@ -1,19 +1,32 @@
 # pi-plan
 
-Host-managed, hard read-only Plan mode for Pi, backed by the shared `plan` skill.
+Host-managed Ask, Discuss, and Plan modes for Pi. Off remains the normal unrestricted coding agent.
+
+## Modes
+
+| Mode | Response behavior | Main-agent tools |
+|---|---|---|
+| **Off** | Normal Pi behavior | The exact tool set that was active before entering a restricted mode |
+| **Ask** (`󰋗`) | Quick chat, normally 1–4 short sentences | trusted built-in `read`, `grep`, `find`, `ls` only |
+| **Discuss** (``) | Normal response length and structure | Ask tools plus trusted `ask_user` and `show_files` |
+| **Plan** (``) | Research and save a decision-complete Markdown plan | trusted read/UI/session tools, `save_plan`, and scoped read-only `subagent_*` tools |
+
+Ask's length rule is a host-injected prompt rule, not a provider-level token cap. The tool restrictions are host-enforced with both active-tool filtering and a default-deny `tool_call` guard.
 
 ## Usage
 
+- `/ask` — toggle Ask mode; `/ask <message>` enables it and sends the message.
+- `/discuss` — toggle Discuss mode; `/discuss <message>` enables it and sends the message.
 - `/plan` — toggle Plan mode.
 - `/plan <task>` — enable Plan mode, automatically select the best tagged supplemental Plan skill, and begin planning.
 - `/plan --skill <name> <task>` — force one tagged supplemental Plan skill for the task.
-- `/plan on|off|exit|toggle|status` — explicit mode control; `status` reports automatic versus forced template selection.
-- `Shift+Tab` — toggle Plan mode while Pi is idle.
-- `/skill:plan <task>` — invoke the underlying planning workflow for one task without enabling the host-enforced tool guard or `save_plan`.
+- `/ask|discuss|plan on|off|exit|toggle|status` — explicit mode control.
+- `Shift+Tab` — cycle `Off → Ask → Discuss → Plan → Off` while Pi is idle.
+- `/skill:plan <task>` — invoke the underlying planning workflow for one task without enabling the host-enforced mode guard or `save_plan`.
 
-Plan mode, an explicitly selected Plan skill, and the authorized plan path are persisted as branch-local session state. Reload, resume, fork, and `/tree` restore the state on the active branch; a new session starts with Plan mode off.
+The active mode, explicit Plan skill, authorized Plan path, and Plan-spawned subagent scope are persisted as branch-local session state. Reload, resume, fork, and `/tree` restore state from the active branch; legacy `{ enabled: boolean }` Plan entries migrate to `plan` or `off`. A new session starts Off.
 
-While active, `pi-plan` publishes ` plan mode` (`nf-oct-tasklist`) under the `plan-mode` status key. `pi-status-line` renders that dedicated segment success-green on footer line 1-left.
+While a restricted mode is active, `pi-plan` publishes its plain mode label under the legacy-compatible `plan-mode` status key. `pi-status-line` renders that dedicated footer segment.
 
 ## Plan-skill templates
 
@@ -37,14 +50,40 @@ The extension contributes only tagged skill directories from the shared `Skills/
 
 ## Tool policy
 
-Plan mode snapshots the current active tools, enables Pi's trusted core read tools, retains trusted companion UI tools that were already active, adds `save_plan`, and restores the snapshot when Plan mode ends:
+Entering the first restricted mode snapshots the current active tools. Moving between Ask, Discuss, and Plan re-filters from that same snapshot; returning Off restores it exactly, except `save_plan` remains disabled outside Plan.
 
-- always while planning: `read`, `grep`, `find`, `ls`, `save_plan`
-- when already active: `ask_user`, `show_files`, `todo_write`
+Every allowed tool must match its expected Pi built-in or local-package provenance, so a colliding custom tool cannot gain access merely by registering an approved name. A default-deny `tool_call` guard remains authoritative if another extension activates a tool after the mode begins.
 
-A default-deny `tool_call` guard also blocks every other main-agent tool, including tools activated by another extension after Plan mode starts. Allowed tools must match their expected Pi built-in or local package provenance, so a colliding custom tool cannot gain access merely by registering an approved name. `todo_write` changes only the session checklist and remains available so Plan mode can track and clear its work without granting project-file mutation. Bash, general mutation tools, subagent spawning, and unknown custom tools are therefore unavailable to the main agent.
+### Ask
 
-This is a main-agent guard, not an operating-system sandbox. It does not prevent user-entered `!` commands, manually invoked slash commands, already-running subagents, other extension background work, or external processes from changing the workspace. Static symlinks are rejected, but a concurrent external filesystem actor can still race path-based Node filesystem operations; use a read-only container/mount when that threat is in scope.
+Ask enables only Pi's trusted built-in `read`, `grep`, `find`, and `ls`. It cannot mutate, run shell commands, use companion UI tools, or delegate.
+
+### Discuss
+
+Discuss enables Ask's read-only tools plus the trusted local `ask_user` and `show_files` tools. It cannot mutate, run shell commands, save plans, or delegate.
+
+### Plan
+
+Plan enables:
+
+- always: `read`, `grep`, `find`, `ls`, `save_plan`;
+- when they were active before restriction: `ask_user`, `show_files`, `todo_write`;
+- from the trusted local `pi-subagents` package: `subagent_spawn`, `subagent_send`, `subagent_steer`, `subagent_await`, `subagent_cancel`, `subagent_retire`, `subagent_status`.
+
+Plan delegation is narrower than ordinary `pi-subagents` use:
+
+- `subagent_spawn` rejects typed agents, explicit ids, and persistent lifetime;
+- every accepted spawn is normalized to a fresh ad-hoc one-shot worker with coding tools exactly `read`, `grep`, `find`, and `ls`;
+- the worker address is added to branch-local Plan state only after a successful newly-created spawn result;
+- send, steer, cancel, retire, detailed status, and explicit await targets may reference only those Plan-created addresses;
+- `subagent_await` requires explicit targets, so it cannot consume unrelated open work;
+- teams and workflows remain blocked.
+
+One-shot workers also receive only the subagent runtime's `report` companion tool; they cannot spawn nested agents or message peers.
+
+`todo_write` changes only the session checklist and remains available so Plan mode can track and clear complex planning work without granting project-file mutation. Bash, general mutation tools, teams, workflows, and unknown custom tools remain unavailable to the main agent.
+
+These are agent-tool guards, not an operating-system sandbox. They do not prevent user-entered `!` commands, manually invoked slash commands, subagents that were already running before a restricted mode began, other extension background work, or external processes from changing the workspace. Static symlinks are rejected for plan saving, but a concurrent external filesystem actor can still race path-based Node filesystem operations; use a read-only container or mount when that threat is in scope.
 
 ## Saving a plan
 
@@ -65,7 +104,7 @@ Writes use Pi's shared per-file mutation queue and an fsynced same-directory tem
 
 ## Shortcut requirement
 
-This local setup reserves `Shift+Tab` for Plan mode by remapping Pi's built-in thinking-cycle action to `Alt+T` in `Configs/PiAgent/.pi/agent/keybindings.json`. Without that companion remap, Pi treats `Shift+Tab` as a reserved built-in shortcut and skips the extension shortcut; `/plan` remains available.
+This local setup reserves `Shift+Tab` for mode cycling by remapping Pi's built-in thinking-cycle action to `Alt+T` in `Configs/PiAgent/.pi/agent/keybindings.json`. Without that companion remap, Pi treats `Shift+Tab` as a reserved built-in shortcut and skips the extension shortcut; the slash commands remain available.
 
 ## Shared skill
 
@@ -79,3 +118,5 @@ node --test \
   Configs/PiAgent/packages/pi-plan/extensions/plan/save.test.ts \
   Configs/PiAgent/packages/pi-plan/extensions/plan/templates.test.ts
 ```
+
+An offline RPC `get_commands` smoke test should report `ask`, `discuss`, `plan`, and `skill:plan`, confirming that the package and shared skill load successfully.

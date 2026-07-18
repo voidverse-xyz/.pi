@@ -2,20 +2,25 @@ import { realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
-	BeforeAgentStartEvent,
 	ExtensionAPI,
+	ExtensionCommandContext,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
-	isTrustedPlanTool,
+	applyPlanSubagentPolicy,
+	extractSuccessfulSpawnAddress,
+	isToolAllowedInMode,
+	parseAgentModeState,
+	parseModeCommand,
 	parsePlanCommand,
-	parsePlanModeState,
-	planModeTools,
+	PLAN_SUBAGENT_TOOL_NAMES,
+	restrictedModeTools,
 	SAVE_PLAN_TOOL,
-	type PlanModeState,
+	type AgentMode,
+	type AgentModeState,
 	type TrustedCustomToolOwners,
 } from "./policy.ts";
 import { atomicWritePlan, resolvePlanTarget, validatePlanContent } from "./save.ts";
@@ -28,7 +33,12 @@ import {
 
 const STATE_ENTRY = "plan-mode.state";
 const STATUS_KEY = "plan-mode";
-const PLAN_STATUS_ICON = ""; // nf-oct-tasklist
+const STATUS_TEXT: Record<Exclude<AgentMode, "off">, string> = {
+	ask: "󰋗 ask mode", // nf-md-help-circle
+	discuss: " discuss mode", // nf-fa-comments
+	plan: " plan mode", // nf-oct-tasklist
+};
+const MODE_ORDER: AgentMode[] = ["off", "ask", "discuss", "plan"];
 const PLAN_SKILL_NAME = "plan";
 const PLAN_ENTRY_PATH = realpathSync(fileURLToPath(import.meta.url));
 const PACKAGES_ROOT = resolve(dirname(PLAN_ENTRY_PATH), "../../..");
@@ -57,16 +67,49 @@ const TRUSTED_CUSTOM_TOOLS: TrustedCustomToolOwners = {
 	show_files: trustedPackageTool("pi-show-files", "extensions/show-files/index.ts"),
 	todo_write: trustedPackageTool("pi-todo", "extensions/todo/index.ts"),
 	[SAVE_PLAN_TOOL]: trustedPackageTool("pi-plan", "extensions/plan/index.ts"),
+	...Object.fromEntries(
+		PLAN_SUBAGENT_TOOL_NAMES.map((name) => [
+			name,
+			trustedPackageTool("pi-subagents", "extensions/subagents/index.ts"),
+		]),
+	),
 };
+
 const FALLBACK_PLAN_INSTRUCTIONS = `Research and design the requested change without implementing it.
 Inspect the actual project first, resolve discoverable facts through read-only exploration, and use ask_user only for consequential choices that cannot be derived from the environment.
-Do not modify project files. The only mutation permitted in host-managed Plan mode is saving the complete final Markdown plan through save_plan after its exact project-relative path is authorized. Finish with a concise, decision-complete implementation and test plan.`;
+Do not modify project files. You may delegate bounded research only to fresh ad-hoc one-shot subagents; the host forces their coding tools to read, grep, find, and ls. The only mutation permitted in host-managed Plan mode is saving the complete final Markdown plan through save_plan after its exact project-relative path is authorized. Finish with a concise, decision-complete implementation and test plan.`;
+
+function buildAskModeInstructions(): string {
+	return `<ask_mode>
+Ask mode is active. It is controlled by the host, not by user wording. Remain in Ask mode until the host changes modes.
+
+Treat this as quick chat with the user:
+- Answer directly in 1–4 short sentences.
+- Use plain language and put the answer first.
+- Do not add headings, recaps, background, caveats, or next steps unless they are essential to understanding the answer.
+- If intent is unclear, ask one concise clarification instead of giving a long conditional answer.
+
+You may use the exposed read-only lookup tools when project facts are needed. Do not modify files, run shell commands, implement work, create plans, or delegate to other agents.
+</ask_mode>`;
+}
+
+function buildDiscussModeInstructions(): string {
+	return `<discuss_mode>
+Discuss mode is active. It is controlled by the host, not by user wording. Remain in Discuss mode until the host changes modes.
+
+Discuss the user's topic normally and with whatever response length and structure best serves the question. You may inspect the project with the exposed read-only lookup and companion user-interface tools. Do not modify files, run shell commands, implement work, save plans, or delegate to other agents.
+</discuss_mode>`;
+}
 
 function buildPlanModeInstructions(skillBody: string, templateInstructions: string): string {
 	return `<plan_mode>
-Plan mode is active. It is controlled by the host, not by user wording. Remain in Plan mode until the host turns it off. Follow the planning skill below for every request while this mode is active.
+Plan mode is active. It is controlled by the host, not by user wording. Remain in Plan mode until the host changes modes. Follow the planning skill below for every request while this mode is active.
 
-The host enforces a default-deny main-agent tool policy. Use only the project-read-only and companion UI/session tools currently exposed. Bash, general file mutation tools, subagent spawning, and unknown custom tools are unavailable.
+The host enforces a default-deny main-agent tool policy. Use only the project-read-only, companion UI/session, Plan-save, and Plan-subagent tools currently exposed. Bash, general file mutation tools, teams, workflows, and unknown custom tools are unavailable.
+
+<plan_subagents>
+You may delegate independent research when it materially improves the plan. Spawn only ad-hoc subagents with prompt (never type or id). The host forces every Plan-spawned worker to lifetime=oneshot and tools=[read, grep, find, ls], regardless of the requested tool list. These workers cannot edit files or run shell commands. Send, steer, await, inspect, cancel, or retire only workers created during Plan mode, and pass explicit targets to subagent_await.
+</plan_subagents>
 
 <plan_template_selection>
 ${templateInstructions}
@@ -83,12 +126,17 @@ ${skillBody}
 </plan_mode>`;
 }
 
+function modeLabel(mode: AgentMode): string {
+	return mode === "off" ? "Off" : `${mode[0]!.toUpperCase()}${mode.slice(1)}`;
+}
+
 export default function planExtension(pi: ExtensionAPI): void {
-	let enabled = false;
+	let mode: AgentMode = "off";
 	let authorizedPlanPath: string | undefined;
 	let authorizedProjectRoot: string | undefined;
 	let selectedPlanSkill: string | undefined;
-	let toolsBeforePlanMode: string[] | undefined;
+	let planSubagentAddresses = new Set<string>();
+	let toolsBeforeRestrictedMode: string[] | undefined;
 	let warnedMissingSkill = false;
 	let warnedMissingSelectedTemplate = "";
 	let saveTail: Promise<void> = Promise.resolve();
@@ -111,55 +159,60 @@ export default function planExtension(pi: ExtensionAPI): void {
 		skillPaths: discoverTaggedSkillDirectories(SHARED_SKILLS_ROOT),
 	}));
 
-	function currentState(): PlanModeState {
+	function currentState(): AgentModeState {
 		return {
-			enabled,
+			mode,
 			...(authorizedPlanPath && authorizedProjectRoot
 				? { authorizedPlanPath, authorizedProjectRoot }
 				: {}),
 			...(selectedPlanSkill ? { selectedPlanSkill } : {}),
+			...(planSubagentAddresses.size > 0
+				? { planSubagentAddresses: [...planSubagentAddresses] }
+				: {}),
 		};
 	}
 
 	function persistState(): void {
-		pi.appendEntry<PlanModeState>(STATE_ENTRY, currentState());
+		pi.appendEntry<AgentModeState>(STATE_ENTRY, currentState());
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
-		// Publish plain text; pi-status-line owns the dedicated left-side slot and
-		// success-green presentation.
-		ctx.ui.setStatus(STATUS_KEY, enabled ? `${PLAN_STATUS_ICON} plan mode` : undefined);
+		// Publish plain text; pi-status-line owns the dedicated left-side slot and styling.
+		ctx.ui.setStatus(STATUS_KEY, mode === "off" ? undefined : STATUS_TEXT[mode]);
 	}
 
-	function enablePlanModeTools(): void {
-		if (toolsBeforePlanMode === undefined) {
-			toolsBeforePlanMode = pi.getActiveTools().filter((name) => name !== SAVE_PLAN_TOOL);
+	function enableRestrictedModeTools(): void {
+		if (mode === "off") return;
+		if (toolsBeforeRestrictedMode === undefined) {
+			toolsBeforeRestrictedMode = pi.getActiveTools().filter((name) => name !== SAVE_PLAN_TOOL);
 		}
-		pi.setActiveTools(planModeTools(toolsBeforePlanMode, pi.getAllTools(), TRUSTED_CUSTOM_TOOLS));
+		pi.setActiveTools(
+			restrictedModeTools(mode, toolsBeforeRestrictedMode, pi.getAllTools(), TRUSTED_CUSTOM_TOOLS),
+		);
 	}
 
 	function restoreNormalTools(): void {
-		if (toolsBeforePlanMode !== undefined) {
-			pi.setActiveTools(toolsBeforePlanMode.filter((name) => name !== SAVE_PLAN_TOOL));
-			toolsBeforePlanMode = undefined;
+		if (toolsBeforeRestrictedMode !== undefined) {
+			pi.setActiveTools(toolsBeforeRestrictedMode.filter((name) => name !== SAVE_PLAN_TOOL));
+			toolsBeforeRestrictedMode = undefined;
 			return;
 		}
 		pi.setActiveTools(pi.getActiveTools().filter((name) => name !== SAVE_PLAN_TOOL));
 	}
 
 	function applyModeTools(): void {
-		if (enabled) enablePlanModeTools();
-		else restoreNormalTools();
+		if (mode === "off") restoreNormalTools();
+		else enableRestrictedModeTools();
 	}
 
 	function restore(ctx: ExtensionContext): void {
-		let restored: PlanModeState = { enabled: false };
+		let restored: AgentModeState = { mode: "off" };
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== STATE_ENTRY) continue;
-			const state = parsePlanModeState(entry.data);
+			const state = parseAgentModeState(entry.data);
 			if (state) restored = state;
 		}
-		enabled = restored.enabled;
+		mode = restored.mode;
 		let currentProjectRoot: string | undefined;
 		try {
 			currentProjectRoot = realpathSync(ctx.cwd);
@@ -172,40 +225,87 @@ export default function planExtension(pi: ExtensionAPI): void {
 		authorizedPlanPath = authorizationMatchesProject ? restored.authorizedPlanPath : undefined;
 		authorizedProjectRoot = authorizationMatchesProject ? restored.authorizedProjectRoot : undefined;
 		selectedPlanSkill = restored.selectedPlanSkill;
+		planSubagentAddresses = new Set(restored.planSubagentAddresses ?? []);
 		applyModeTools();
 		updateStatus(ctx);
 	}
 
-	function setEnabled(next: boolean, ctx: ExtensionContext, notify = true): boolean {
-		if (enabled === next) {
-			// Reassert the filtered tool set in case another extension activated a
-			// tool while Plan mode was already on. The tool_call guard is still the
-			// authoritative fallback between reapplications.
-			if (enabled) enablePlanModeTools();
-			if (notify) ctx.ui.notify(`Plan mode is already ${enabled ? "on" : "off"}.`, "info");
+	function setMode(next: AgentMode, ctx: ExtensionContext, notify = true): boolean {
+		if (mode === next) {
+			if (mode !== "off") enableRestrictedModeTools();
+			if (notify) ctx.ui.notify(`${modeLabel(mode)} mode is already active.`, "info");
 			return false;
 		}
-		enabled = next;
+		mode = next;
 		applyModeTools();
 		persistState();
 		updateStatus(ctx);
 		if (notify) {
-			ctx.ui.notify(
-				enabled
-					? "Plan mode enabled. Main-agent tools are read-only except for the authorized save_plan path."
-					: "Plan mode disabled. Previous tool access restored.",
-				enabled ? "warning" : "info",
-			);
+			const message = (() => {
+				switch (mode) {
+					case "off": return "Restricted modes disabled. Previous tool access restored.";
+					case "ask": return "Ask mode enabled. Replies are brief and tools are read-only.";
+					case "discuss": return "Discuss mode enabled. Responses are unrestricted; tools remain read-only.";
+					case "plan": return "Plan mode enabled. Main-agent and delegated research are read-only except for the authorized save_plan path.";
+				}
+			})();
+			ctx.ui.notify(message, mode === "off" ? "info" : "warning");
 		}
 		return true;
 	}
 
-	function toggle(ctx: ExtensionContext): void {
+	function toggleMode(target: Exclude<AgentMode, "off">, ctx: ExtensionContext): void {
 		if (!ctx.isIdle()) {
-			ctx.ui.notify("Plan mode can only be changed while Pi is idle.", "warning");
+			ctx.ui.notify("Agent mode can only be changed while Pi is idle.", "warning");
 			return;
 		}
-		setEnabled(!enabled, ctx);
+		setMode(mode === target ? "off" : target, ctx);
+	}
+
+	function cycleMode(ctx: ExtensionContext): void {
+		if (!ctx.isIdle()) {
+			ctx.ui.notify("Agent mode can only be changed while Pi is idle.", "warning");
+			return;
+		}
+		const index = MODE_ORDER.indexOf(mode);
+		setMode(MODE_ORDER[(index + 1) % MODE_ORDER.length]!, ctx);
+	}
+
+	function reportStatus(ctx: ExtensionContext): void {
+		ctx.ui.notify(
+			`Mode: ${modeLabel(mode)}. Plan template: ${selectedPlanSkill ?? "automatic"}.${authorizedPlanPath ? ` Authorized path: ${authorizedPlanPath}.` : ""}`,
+			"info",
+		);
+	}
+
+	async function handleConversationCommand(
+		target: "ask" | "discuss",
+		args: string,
+		ctx: ExtensionCommandContext,
+	): Promise<void> {
+		if (!ctx.isIdle()) {
+			ctx.ui.notify("Agent mode can only be changed while Pi is idle.", "warning");
+			return;
+		}
+		const command = parseModeCommand(args);
+		if (command.kind === "toggle") {
+			toggleMode(target, ctx);
+			return;
+		}
+		if (command.kind === "status") {
+			reportStatus(ctx);
+			return;
+		}
+		if (command.kind === "invalid") {
+			ctx.ui.notify(command.message, "error");
+			return;
+		}
+		if (command.kind === "set") {
+			setMode(command.enabled ? target : "off", ctx);
+			return;
+		}
+		setMode(target, ctx, false);
+		pi.sendUserMessage(command.task);
 	}
 
 	pi.registerTool({
@@ -225,7 +325,7 @@ export default function planExtension(pi: ExtensionAPI): void {
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			return serializeSave(async () => {
-				if (!enabled) throw new Error("save_plan is available only while Plan mode is active");
+				if (mode !== "plan") throw new Error("save_plan is available only while Plan mode is active");
 				if (signal?.aborted) throw new Error("Plan save cancelled");
 				const bytes = validatePlanContent(params.content);
 				const target = await resolvePlanTarget(ctx.cwd, params.path);
@@ -261,6 +361,20 @@ export default function planExtension(pi: ExtensionAPI): void {
 		},
 	});
 
+	for (const target of ["ask", "discuss"] as const) {
+		pi.registerCommand(target, {
+			description: `${target === "ask" ? "Toggle brief Ask" : "Toggle normal-response Discuss"} mode, or enable it and send a message`,
+			getArgumentCompletions: (prefix) => {
+				const options = ["on", "off", "exit", "toggle", "status"];
+				const matches = options
+					.filter((option) => option.startsWith(prefix.trim().toLowerCase()))
+					.map((option) => ({ value: option, label: option }));
+				return matches.length > 0 ? matches : null;
+			},
+			handler: (args, ctx) => handleConversationCommand(target, args, ctx),
+		});
+	}
+
 	pi.registerCommand("plan", {
 		description: "Toggle Plan mode, or enable it and plan a task",
 		getArgumentCompletions: (prefix) => {
@@ -272,20 +386,17 @@ export default function planExtension(pi: ExtensionAPI): void {
 		},
 		handler: async (args, ctx) => {
 			if (!ctx.isIdle()) {
-				ctx.ui.notify("Plan mode can only be changed while Pi is idle.", "warning");
+				ctx.ui.notify("Agent mode can only be changed while Pi is idle.", "warning");
 				return;
 			}
 
 			const command = parsePlanCommand(args);
 			if (command.kind === "toggle") {
-				toggle(ctx);
+				toggleMode("plan", ctx);
 				return;
 			}
 			if (command.kind === "status") {
-				ctx.ui.notify(
-					`Plan mode is ${enabled ? "on" : "off"}. Template: ${selectedPlanSkill ?? "automatic"}.${authorizedPlanPath ? ` Authorized path: ${authorizedPlanPath}` : ""}`,
-					"info",
-				);
+				reportStatus(ctx);
 				return;
 			}
 			if (command.kind === "invalid") {
@@ -293,7 +404,7 @@ export default function planExtension(pi: ExtensionAPI): void {
 				return;
 			}
 			if (command.kind === "set") {
-				setEnabled(command.enabled, ctx);
+				setMode(command.enabled ? "plan" : "off", ctx);
 				return;
 			}
 
@@ -313,29 +424,66 @@ export default function planExtension(pi: ExtensionAPI): void {
 			} else {
 				selectedPlanSkill = undefined;
 			}
-			const changed = setEnabled(true, ctx, false);
+			const changed = setMode("plan", ctx, false);
 			if (!changed) persistState();
 			pi.sendUserMessage(command.task);
 		},
 	});
 
 	pi.registerShortcut(Key.shift("tab"), {
-		description: "Toggle Plan mode",
-		handler: toggle,
+		description: "Cycle Off, Ask, Discuss, and Plan modes",
+		handler: cycleMode,
 	});
 
 	pi.on("tool_call", (event) => {
-		if (!enabled) return;
+		if (mode === "off") return;
 		const tool = pi.getAllTools().find((candidate) => candidate.name === event.toolName);
-		if (isTrustedPlanTool(tool, TRUSTED_CUSTOM_TOOLS)) return;
-		return {
-			block: true,
-			reason: `Plan mode blocked untrusted or non-read-only tool "${event.toolName}".`,
-		};
+		if (!isToolAllowedInMode(mode, tool, TRUSTED_CUSTOM_TOOLS)) {
+			return {
+				block: true,
+				reason: `${modeLabel(mode)} mode blocked untrusted or disallowed tool "${event.toolName}".`,
+			};
+		}
+		if (mode !== "plan") return;
+
+		const decision = applyPlanSubagentPolicy(
+			event.toolName,
+			event.input,
+			planSubagentAddresses,
+		);
+		if (!decision.allowed) return { block: true, reason: decision.reason };
+		if (decision.normalizedInput) {
+			const mutableInput = event.input as Record<string, unknown>;
+			for (const key of Object.keys(mutableInput)) delete mutableInput[key];
+			Object.assign(mutableInput, decision.normalizedInput);
+		}
+	});
+
+	pi.on("tool_result", (event) => {
+		if (mode !== "plan") return;
+		if (event.toolName === "subagent_spawn") {
+			const address = extractSuccessfulSpawnAddress(event.content, event.isError);
+			if (address && !planSubagentAddresses.has(address)) {
+				planSubagentAddresses.add(address);
+				persistState();
+			}
+			return;
+		}
+		if (event.toolName === "subagent_retire" && !event.isError) {
+			const target = (event.input as { to?: unknown }).to;
+			if (typeof target === "string" && planSubagentAddresses.delete(target)) persistState();
+		}
 	});
 
 	pi.on("before_agent_start", (event, ctx) => {
-		if (!enabled) return;
+		if (mode === "off") return;
+		if (mode === "ask") {
+			return { systemPrompt: `${event.systemPrompt}\n\n${buildAskModeInstructions()}` };
+		}
+		if (mode === "discuss") {
+			return { systemPrompt: `${event.systemPrompt}\n\n${buildDiscussModeInstructions()}` };
+		}
+
 		const skills = event.systemPromptOptions.skills ?? [];
 		const loadedSkillBody = loadSkillBody(skills.find((candidate) => candidate.name === PLAN_SKILL_NAME));
 		if (!loadedSkillBody && !warnedMissingSkill) {
@@ -382,8 +530,8 @@ export default function planExtension(pi: ExtensionAPI): void {
 	pi.on("session_tree", (_event, ctx) => restore(ctx));
 	pi.on("session_shutdown", (_event, ctx) => {
 		// Reload/session replacement inherits the current active-tool set. Restore
-		// the pre-Plan snapshot before this runtime is torn down so the next
-		// extension instance can capture the real baseline again.
+		// the pre-restricted snapshot so the next extension instance can capture
+		// the real baseline again.
 		restoreNormalTools();
 		ctx.ui.setStatus(STATUS_KEY, undefined);
 	});
