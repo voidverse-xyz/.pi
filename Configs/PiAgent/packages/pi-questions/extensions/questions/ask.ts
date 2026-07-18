@@ -634,11 +634,11 @@ export function showUserInputs(
 				closeEditor();
 				return true;
 			}
-			if (matchesKey(data, Key.up)) {
+			if (matchesKey(data, Key.up) || data === "k") {
 				movePicker(idx, -1);
 				return true;
 			}
-			if (matchesKey(data, Key.down)) {
+			if (matchesKey(data, Key.down) || data === "j") {
 				movePicker(idx, 1);
 				return true;
 			}
@@ -801,12 +801,12 @@ export function showUserInputs(
 
 			// Submit tab: navigate between the optional Notes section (0) and the Submit button (1).
 			if (currentTab === submitTab) {
-				if (matchesKey(data, Key.up)) {
+				if (matchesKey(data, Key.up) || data === "k") {
 					submitCursor = Math.max(0, submitCursor - 1);
 					refresh();
 					return;
 				}
-				if (matchesKey(data, Key.down)) {
+				if (matchesKey(data, Key.down) || data === "j") {
 					submitCursor = Math.min(1, submitCursor + 1);
 					refresh();
 					return;
@@ -828,12 +828,12 @@ export function showUserInputs(
 			const idx = currentTab;
 			const s = states[idx];
 
-			if (matchesKey(data, Key.up)) {
+			if (matchesKey(data, Key.up) || data === "k") {
 				s.cursor = Math.max(0, s.cursor - 1);
 				refresh();
 				return;
 			}
-			if (matchesKey(data, Key.down)) {
+			if (matchesKey(data, Key.down) || data === "j") {
 				s.cursor = Math.min(rowCount(idx) - 1, s.cursor + 1);
 				refresh();
 				return;

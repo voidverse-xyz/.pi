@@ -246,6 +246,9 @@ function pickBranchFromTree(ctx: ExtensionCommandContext, initialSelectedId?: st
 			initialSelectedId,
 		);
 		selector.focused = true;
+		// Label editing is disabled above, so plain j/k are free to act as arrows.
+		const forward = selector.handleInput.bind(selector);
+		selector.handleInput = (data: string) => forward(data === "j" ? "\x1b[B" : data === "k" ? "\x1b[A" : data);
 		return selector;
 	});
 }

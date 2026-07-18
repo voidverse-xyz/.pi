@@ -337,9 +337,9 @@ class ToolMonitorComponent {
 			return;
 		}
 		const items = this.currentItems();
-		if (matchesKey(data, "up")) {
+		if (matchesKey(data, "up") || data === "k") {
 			this.selectedIndex = items.length === 0 ? 0 : (this.selectedIndex - 1 + items.length) % items.length;
-		} else if (matchesKey(data, "down")) {
+		} else if (matchesKey(data, "down") || data === "j") {
 			this.selectedIndex = items.length === 0 ? 0 : (this.selectedIndex + 1) % items.length;
 		} else if (matchesKey(data, "enter") || matchesKey(data, "return")) {
 			const item = items[this.selectedIndex];
@@ -372,8 +372,8 @@ class ToolMonitorComponent {
 		}
 		const viewport = Math.max(1, this.tui.terminal.rows - OVERLAY_MARGIN * 2 - INNER_PAD_Y * 2);
 		const maxScroll = Math.max(0, this.detailLineCount - viewport);
-		if (matchesKey(data, "up")) this.detailScroll = Math.max(0, this.detailScroll - 1);
-		else if (matchesKey(data, "down")) this.detailScroll = Math.min(maxScroll, this.detailScroll + 1);
+		if (matchesKey(data, "up") || data === "k") this.detailScroll = Math.max(0, this.detailScroll - 1);
+		else if (matchesKey(data, "down") || data === "j") this.detailScroll = Math.min(maxScroll, this.detailScroll + 1);
 		else if (matchesKey(data, "pageup")) this.detailScroll = Math.max(0, this.detailScroll - viewport);
 		else if (matchesKey(data, "pagedown")) this.detailScroll = Math.min(maxScroll, this.detailScroll + viewport);
 		else if (data === "g") this.detailScroll = 0;

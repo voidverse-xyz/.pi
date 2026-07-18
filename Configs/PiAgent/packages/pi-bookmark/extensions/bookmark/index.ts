@@ -181,7 +181,7 @@ export default function (pi: ExtensionAPI) {
 						done({ type: "delete", id: selected.value });
 						return;
 					}
-					selectList.handleInput(data);
+					selectList.handleInput(data === "j" ? "\x1b[B" : data === "k" ? "\x1b[A" : data);
 					tui.requestRender();
 				},
 			};

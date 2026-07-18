@@ -238,7 +238,7 @@ export function createQueuePanel(opts: QueuePanelOptions): Component & { dispose
 			tui.requestRender();
 			return;
 		}
-		selectList.handleInput(data);
+		selectList.handleInput(data === "j" ? "\x1b[B" : data === "k" ? "\x1b[A" : data);
 		tui.requestRender();
 	}
 
