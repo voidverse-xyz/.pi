@@ -47,7 +47,13 @@
 import { open, readFile, readdir, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { copyToClipboard, DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import {
+	copyToClipboard,
+	DynamicBorder,
+	getLanguageFromPath,
+	getMarkdownTheme,
+	highlightCode,
+} from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
 	Editor,
@@ -167,6 +173,10 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 
 	// Rendered-preview state (markdown/HTML, `r` toggles rendered↔raw)
 	let fileText = "";
+	// ANSI-colored source lines for raw previews. This uses the same Pi
+	// highlighter as fenced code in chat, while fileLines stays untouched for
+	// searching, selections, yanking, and line-number accuracy.
+	let highlightedLines: string[] = [];
 	let renderableAs: RenderableKind | null = null;
 	let rendered = false;
 	let mdComp: Markdown | null = null; // lazy; caches per width internally
@@ -247,14 +257,39 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	let cachedHeight: number | undefined;
 	let cachedLines: string[] | undefined;
 
-	function invalidate() {
+	function clearRenderCache() {
 		cachedWidth = undefined;
 		cachedHeight = undefined;
 		cachedLines = undefined;
 	}
 
+	function rebuildSyntaxHighlighting() {
+		highlightedLines = [];
+		const file = previewFile;
+		if (!file || previewKind !== "file") return;
+		const lang = getLanguageFromPath(file.abs);
+		if (!lang) return;
+		try {
+			const highlighted = highlightCode(fileText.replace(/\t/g, "    "), lang);
+			// A mismatch would break the raw-line cursor, gutter, and region mapping.
+			// Fall back to the existing plain rendering rather than misaligning them.
+			if (highlighted.length === fileLines.length) highlightedLines = highlighted;
+		} catch {
+			// Syntax coloring is presentation-only; raw preview must always remain usable.
+			highlightedLines = [];
+		}
+	}
+
+	function invalidate() {
+		clearRenderCache();
+		// highlightCode and Markdown bake the current theme's ANSI colors into
+		// cached output, so rebuild those caches when the TUI invalidates us.
+		rebuildSyntaxHighlighting();
+		mdComp?.invalidate();
+	}
+
 	function rerender() {
-		invalidate();
+		clearRenderCache();
 		tui.requestRender();
 	}
 
@@ -294,6 +329,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		dirEntries = [];
 		imageInfo = null;
 		fileText = "";
+		highlightedLines = [];
 		renderableAs = null;
 		rendered = false;
 		mdComp = null;
@@ -445,6 +481,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 				fileText = buf.toString("utf8");
 				fileLines = fileText.split("\n");
 				previewKind = "file";
+				rebuildSyntaxHighlighting();
 				// Markdown/HTML render by default — but regions reference raw line
 				// numbers, so a spec with regions opens raw.
 				renderableAs = renderableKind(file.abs);
@@ -1420,15 +1457,19 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			// Search matches read like regions but keep no background, so the two stay distinguishable.
 			const inMatch = matchSet !== null && matchSet.has(idx);
 			const isCursor = idx === cursorLine && focus === "preview";
-			const numStyled = theme.fg(inSel || inRegion || inMatch ? "accent" : "muted", num);
-			const text = truncateToWidth(raw, Math.max(1, inner - gutterW - 2), "…");
+			const numStyled = theme.fg(inSel || inRegion || inMatch || isCursor ? "accent" : "muted", num);
+			const highlighted = highlightedLines[idx];
+			const text = truncateToWidth(highlighted ?? raw, Math.max(1, inner - gutterW - 2), "…");
 			let textStyled: string;
-			if (isCursor) textStyled = theme.fg("accent", text);
-			else if (inSel || inRegion || inMatch) textStyled = theme.fg("text", text);
+			if (highlighted !== undefined) {
+				// Preserve token foreground colors. Search matches use an underline;
+				// cursor, selection, and region states use row backgrounds below.
+				textStyled = inMatch ? theme.underline(text) : text;
+			} else if (isCursor || inSel || inRegion || inMatch) textStyled = theme.fg("text", text);
 			else textStyled = theme.fg("dim", text);
 			let rowStr = ` ${numStyled} ${textStyled}`;
 			rowStr = pad(rowStr, inner);
-			if (inSel) rowStr = theme.bg("selectedBg", rowStr);
+			if (inSel || isCursor) rowStr = theme.bg("selectedBg", rowStr);
 			else if (inRegion) rowStr = theme.bg("customMessageBg", rowStr);
 			lines.push(rowStr);
 		}

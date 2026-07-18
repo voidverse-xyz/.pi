@@ -26,7 +26,9 @@ errors immediately instead of showing an empty panel.
 ## What the user can do
 
 - Browse the grouped list (left) and preview with highlights (right); opened files
-  get a `·` marker.
+  get a `·` marker. Raw source previews use Pi's theme-aware syntax highlighter —
+  the same token colors as fenced code in chat — while line numbers, regions,
+  selections, search matches, and cursor navigation remain intact.
 - `/` — search: fuzzy-filters the file list when the list has focus (agent order
   preserved, group headings kept only while they have members), substring-searches
   the file content when the preview has focus (`n`/`p` jump matches while a search
