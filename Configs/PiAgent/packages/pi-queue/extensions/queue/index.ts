@@ -173,12 +173,15 @@ export default function queueExtension(pi: ExtensionAPI): void {
 			() => ({
 				invalidate() {},
 				render(width: number): string[] {
-					if (width < 4) return widgetLines(ctx.ui.theme, Math.max(1, width));
+					// Preserve one visually blank row on both sides of the queue card.
+					const withOuterPadding = (lines: string[]): string[] =>
+						lines.length === 0 ? [] : ["", ...lines, ""];
+					if (width < 4) return withOuterPadding(widgetLines(ctx.ui.theme, Math.max(1, width)));
 					const rendered = widgetLines(ctx.ui.theme, Math.max(1, width - 2));
 					if (rendered.length === 0) return [];
 					const box = new Box(1, 1, (text: string) => ctx.ui.theme.bg("userMessageBg", text));
 					box.addChild(new Text(rendered.join("\n"), 0, 0));
-					return box.render(width);
+					return withOuterPadding(box.render(width));
 				},
 			}),
 			{ placement: "aboveWorking" },
