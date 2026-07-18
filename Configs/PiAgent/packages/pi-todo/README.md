@@ -31,19 +31,19 @@ and full control over truncation — require a component.
   `pending | in_progress | completed`; at most one `in_progress`. System-prompt
   guidelines steer the agent to plan 3+-step tasks up front, keep one task in
   progress, and mark completions immediately.
-- **`alt+d`** — the only user control: cycles expanded → collapsed → hidden
+- **`alt+o`** — the only user control: cycles expanded → collapsed → hidden
   (Claude Code uses `ctrl+t`, but pi core owns that for thinking blocks). There is
   deliberately no slash command. Collapsed keeps the title plus a one-line summary
   with the expand hint:
 
   ```
   󰝖 Todos · 1/3
-  └ □ Fixing sandbox/typedefs · 1/3 done · alt+d expand
+  └ □ Fixing sandbox/typedefs · 1/3 done · alt+o expand
   ```
 
   Long lists never hit pi core's generic 10-line widget cut: past 8 items the
   expanded view windows around the active item with dim `… +n earlier` /
-  `… +n more · alt+d` marker rows.
+  `… +n more · alt+o` marker rows.
 - **Resume** — on `session_start` the list is rebuilt from the most recent
   `todo_write` call in the replayed session messages, so it survives `/reload`,
   resume, and fork with no extra persistence.

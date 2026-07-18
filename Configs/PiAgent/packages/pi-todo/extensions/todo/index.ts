@@ -16,7 +16,7 @@
  * whenever the list is non-empty — working or idle — so the checklist is
  * always identifiable at a glance.
  *
- * alt+d cycles the widget between expanded (full list), collapsed (title +
+ * alt+o cycles the widget between expanded (full list), collapsed (title +
  * one-line summary with the active item and a done-count), and hidden — the
  * keybind is the ONLY user control; there is no slash command. Clearing is the
  * agent's job (todo_write with an empty list).
@@ -47,9 +47,10 @@ const TOOL_NAME = "todo_write";
 const WIDGET_KEY = "todo-list";
 const PLACEMENT = { placement: "aboveEditor" as const };
 // Claude Code uses ctrl+t, but pi core owns that (toggle thinking blocks).
-// alt+d is free across pi core and the installed extensions (alt+s teams stop,
-// alt+a subagents stop, alt+q/alt+x queue, alt+t thinking cycle, alt+m model cycle).
-const TOGGLE_KEY = "alt+d";
+// alt+o avoids pi core's alt+d delete-word-forward binding and is free across
+// the installed extensions (alt+s teams stop, alt+a subagents stop, alt+q/alt+x
+// queue, alt+t thinking cycle, alt+m model cycle, alt+w workflow stop).
+const TOGGLE_KEY = "alt+o";
 const MAX_TODOS = 50;
 
 const TodoSchema = Type.Object(
@@ -75,7 +76,7 @@ const TodoWriteParams = Type.Object(
 	{ additionalProperties: false },
 );
 
-// The alt+d cycle: full list -> one-line summary -> gone -> full list again.
+// The alt+o cycle: full list -> one-line summary -> gone -> full list again.
 type ViewMode = "expanded" | "collapsed" | "hidden";
 const NEXT_MODE: Record<ViewMode, ViewMode> = { expanded: "collapsed", collapsed: "hidden", hidden: "expanded" };
 

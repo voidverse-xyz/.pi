@@ -60,7 +60,7 @@ export function renderTodoItem(item: TodoItem, theme: TodoRenderTheme): string {
 export const MAX_FULL_ITEMS = 8;
 const WINDOW_ITEMS = 6;
 // The view keybind — matches TOGGLE_KEY in index.ts (kept in sync by the tests).
-const TRUNCATION_HINT = "alt+d";
+const TRUNCATION_HINT = "alt+o";
 
 /** Pure: the widget's lines for one render pass. [] when the list is empty. */
 export function renderTodoWidgetLines(todos: TodoItem[], theme: TodoRenderTheme): string[] {
@@ -86,7 +86,7 @@ export function renderTodoWidgetLines(todos: TodoItem[], theme: TodoRenderTheme)
  * Collapsed one-line summary: the in-progress item (or the next pending one),
  * a done-count, and the expand-key hint — the collapsed view IS a truncation,
  * so it always says how to get the list back:
- * `└ □ Fixing sandbox/typedefs · 1/3 done · alt+d expand`.
+ * `└ □ Fixing sandbox/typedefs · 1/3 done · alt+o expand`.
  */
 export function renderCollapsedLine(todos: TodoItem[], theme: TodoRenderTheme, expandKey?: string): string[] {
 	if (todos.length === 0) return [];

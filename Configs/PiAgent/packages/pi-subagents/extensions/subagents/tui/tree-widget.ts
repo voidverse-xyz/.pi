@@ -24,7 +24,7 @@ import { AGENTS_ICON, emptySnapshot, takeSnapshot, type WidgetSnapshot, widgetSe
  * The human brake: stop every working subagent. Bound in index.ts and shown in
  * this widget's header — ONE constant so the hint can never advertise a key that
  * isn't bound. `alt+a` is free across the installed extensions (pi-teams owns
- * alt+s, pi-queue alt+q/alt+x, pi-todo alt+d, pi-plan shift+tab; user
+ * alt+s, pi-queue alt+q/alt+x, pi-todo alt+o, pi-plan shift+tab; user
  * keybindings take alt+t/alt+m); Esc stays Pi's own turn-abort.
  */
 export const STOP_KEY = "alt+a";
