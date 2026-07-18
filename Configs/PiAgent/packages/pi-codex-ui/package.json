@@ -2,7 +2,7 @@
   "name": "pi-codex-ui",
   "version": "1.0.1",
   "type": "module",
-  "description": "Codex CLI-inspired Pi presentation: prompt editor, working indicator, and tool-turn separators while preserving tool definitions, widgets, and status lines.",
+  "description": "Codex CLI-inspired Pi presentation: prompt editor, random working-loader indicators, and tool-turn separators while preserving tool definitions, widgets, and status lines.",
   "keywords": [
     "pi-package"
   ],

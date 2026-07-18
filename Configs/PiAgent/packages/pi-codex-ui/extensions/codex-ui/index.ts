@@ -1,7 +1,6 @@
 import {
 	CustomEditor,
 	type ExtensionAPI,
-	type ExtensionContext,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -18,13 +17,10 @@ const DIM = "\x1b[2m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 const TOOL_PATCH = Symbol.for("pi-codex-ui.tool-render-patch");
-const WORKING_TICK_MS = 200;
 
-const WORKING_LABELS = [
-	"working", "thinking", "processing", "building", "checking", "analyzing",
-	"running", "crafting", "investigating", "computing", "reviewing", "assembling",
-] as const;
-
+// Indicator options for the built-in working loader — one is picked at random
+// per agent run. The message next to it is core's default; only the glyph
+// animation is themed here.
 const SPINNERS = [
 	{ frames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"], intervalMs: 80 },
 	{ frames: ["▖", "▘", "▝", "▗"], intervalMs: 110 },
@@ -32,41 +28,9 @@ const SPINNERS = [
 	{ frames: ["⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"], intervalMs: 90 },
 	{ frames: ["◐", "◓", "◑", "◒"], intervalMs: 120 },
 	{ frames: ["←", "↖", "↑", "↗", "→", "↘", "↓", "↙"], intervalMs: 90 },
+	// Claude Code-style blinking star pulse.
+	{ frames: ["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"], intervalMs: 120 },
 ] as const;
-
-function formatTokenCount(count: number): string {
-	if (count < 1_000) return String(count);
-	if (count < 10_000) return `${(count / 1_000).toFixed(1)}k`;
-	return `${Math.round(count / 1_000)}k`;
-}
-
-function formatElapsed(ms: number): string {
-	const seconds = Math.max(0, ms) / 1_000;
-	if (seconds < 10) return `${seconds.toFixed(1)}s`;
-	if (seconds < 60) return `${Math.floor(seconds)}s`;
-	const minutes = Math.floor(seconds / 60);
-	return `${minutes}m ${String(Math.floor(seconds % 60)).padStart(2, "0")}s`;
-}
-
-function estimateMessageTokens(message: unknown): number {
-	const content = (message as { content?: unknown })?.content;
-	if (!Array.isArray(content)) return 0;
-	let characters = 0;
-	for (const part of content) {
-		const item = part as { type?: unknown; text?: unknown; thinking?: unknown; arguments?: unknown };
-		if (item.type === "text" && typeof item.text === "string") characters += item.text.length;
-		else if (item.type === "thinking" && typeof item.thinking === "string") characters += item.thinking.length;
-		else if (item.type === "toolCall" && item.arguments !== undefined) {
-			try { characters += JSON.stringify(item.arguments).length; } catch { /* best-effort estimate */ }
-		}
-	}
-	return Math.ceil(characters / 4);
-}
-
-function exactOutputTokens(message: unknown): number | undefined {
-	const output = (message as { usage?: { output?: unknown } })?.usage?.output;
-	return typeof output === "number" && output > 0 ? output : undefined;
-}
 
 function stripAnsi(value: string): string {
 	return value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "");
@@ -182,85 +146,20 @@ async function installToolSeparatorPatch(): Promise<(() => void) | undefined> {
 
 export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 	const restoreToolRenderer = await installToolSeparatorPatch();
-	let activeCtx: ExtensionContext | undefined;
-	let workingStartedAt: number | undefined;
-	let workingTimer: ReturnType<typeof setInterval> | undefined;
-	let turnOutputTokens = 0;
-	let tokenCountIsExact = false;
-	let workingLabel = "working";
 
-	const renderWorkingMessage = (ctx: ExtensionContext): void => {
-		if (workingStartedAt === undefined || ctx.mode !== "tui") return;
-		const theme = ctx.ui.theme;
-		const capitalizedLabel = `${workingLabel.charAt(0).toUpperCase()}${workingLabel.slice(1)}`;
-		const label = theme.fg("muted", capitalizedLabel);
-		const separator = theme.fg("borderMuted", "·");
-		const elapsed = theme.fg("dim", formatElapsed(Date.now() - workingStartedAt));
-		let tokenSuffix = "";
-		if (turnOutputTokens >= 1) {
-			const estimateMark = tokenCountIsExact ? "" : "~";
-			const tokens = theme.fg("thinkingText", `${estimateMark}${formatTokenCount(turnOutputTokens)} token`);
-			tokenSuffix = ` ${separator} ${tokens}`;
-		}
-		ctx.ui.setWorkingMessage(`${label} ${separator} ${elapsed}${tokenSuffix}`);
-	};
-
-	const stopWorkingTimer = (): void => {
-		if (workingTimer) clearInterval(workingTimer);
-		workingTimer = undefined;
-		workingStartedAt = undefined;
-		workingLabel = "working";
-	};
-
+	// The working message is core's default (pi-todo renders its own dynamic
+	// header inside the todo widget); this extension only themes the loader's
+	// glyph animation, picking a random indicator per agent run.
 	pi.on("agent_start", (_event, ctx) => {
-		activeCtx = ctx;
-		if (ctx.mode !== "tui" || workingStartedAt !== undefined) return;
-		workingStartedAt = Date.now();
-		turnOutputTokens = 0;
-		tokenCountIsExact = false;
-		workingLabel = WORKING_LABELS[Math.floor(Math.random() * WORKING_LABELS.length)]!;
+		if (ctx.mode !== "tui") return;
 		const spinner = SPINNERS[Math.floor(Math.random() * SPINNERS.length)]!;
 		ctx.ui.setWorkingIndicator({
 			frames: spinner.frames.map((frame) => ctx.ui.theme.fg("muted", frame)),
 			intervalMs: spinner.intervalMs,
 		});
-		renderWorkingMessage(ctx);
-		workingTimer = setInterval(() => {
-			if (activeCtx) renderWorkingMessage(activeCtx);
-		}, WORKING_TICK_MS);
-		workingTimer.unref?.();
-	});
-
-	pi.on("turn_start", (_event, ctx) => {
-		turnOutputTokens = 0;
-		tokenCountIsExact = false;
-		renderWorkingMessage(ctx);
-	});
-
-	pi.on("message_update", (event, ctx) => {
-		const exact = exactOutputTokens(event.message);
-		turnOutputTokens = exact ?? estimateMessageTokens(event.message);
-		tokenCountIsExact = exact !== undefined;
-		renderWorkingMessage(ctx);
-	});
-
-	pi.on("message_end", (event, ctx) => {
-		if (event.message.role !== "assistant") return;
-		const exact = exactOutputTokens(event.message);
-		if (exact !== undefined) {
-			turnOutputTokens = exact;
-			tokenCountIsExact = true;
-			renderWorkingMessage(ctx);
-		}
-	});
-
-	pi.on("agent_settled", (_event, ctx) => {
-		stopWorkingTimer();
-		if (ctx.mode === "tui") ctx.ui.setWorkingMessage();
 	});
 
 	pi.on("session_start", (_event, ctx) => {
-		activeCtx = ctx;
 		if (ctx.mode !== "tui") return;
 
 		if (!restoreToolRenderer) {
@@ -274,11 +173,8 @@ export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		stopWorkingTimer();
-		activeCtx = undefined;
 		restoreToolRenderer?.();
 		if (ctx.mode !== "tui") return;
-		ctx.ui.setWorkingMessage();
 		ctx.ui.setWorkingIndicator();
 		ctx.ui.setEditorComponent(undefined);
 		ctx.ui.setHeader(undefined);

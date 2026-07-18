@@ -1,0 +1,19 @@
+{
+	"name": "pi-todo",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Claude Code-style todo list: an LLM-callable todo_write tool with a live checklist widget above the editor (green strikethrough for done, dim boxes for pending) whose first line is a dynamic working header with an LLM-set phrase (✻ header… (elapsed · ↓ tokens), activeForm fallback), alt+d to cycle expanded/collapsed/hidden, /todos to inspect or clear, and restore on session resume.",
+	"keywords": [
+		"pi-package"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	}
+}

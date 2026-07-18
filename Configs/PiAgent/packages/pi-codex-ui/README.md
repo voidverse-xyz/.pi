@@ -7,7 +7,7 @@ shells, safety/sandbox wrappers, mutation previews, diffs, and expansion behavio
 ## UI changes
 
 - borderless, full-width `#373739` prompt field with a bold `›` prompt and one outer row of breathing room above and below
-- a randomly selected animated spinner and capitalized work-related label per agent run, formatted as `Working · 2.8s · 40 token` (the token segment is hidden until at least one token is available)
+- a randomly selected animated indicator per agent run for the built-in working loader (braille, blocks, quadrants, orbit, arrows, and a Claude Code-style blinking star pulse `· ✢ ✳ ✶ ✻ ✽`); the message next to it stays core's default
 - one dim, full-width separator after each completed tool row
 - transparent tool result backgrounds instead of colored cards
 - hidden Pi startup header
@@ -16,7 +16,10 @@ shells, safety/sandbox wrappers, mutation previews, diffs, and expansion behavio
 Tool calls and output use Pi's original renderers, including its normal expansion
 keybinding. A presentation-only runtime patch adds a divider to the existing tool-row
 component after it renders; it does not replace tool execution or tool definitions.
-The patch is restored during session shutdown and reinstalled after reload. Working-token counts use the provider's exact output usage when available and a `~`-prefixed text-length estimate while streaming.
+The patch is restored during session shutdown and reinstalled after reload. The
+working/spinner row is not touched here: `pi-todo` renders its own dynamic
+header as the first line of its todo widget
+(`✻ Fixing sandbox/typedefs… (21m 29s · ↓ 62.3k tokens)`).
 
 ## Install
 

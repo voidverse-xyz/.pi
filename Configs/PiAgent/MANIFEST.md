@@ -12,7 +12,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-changes` | `/changes` session edit review/undo and read-only `/git-changes` repository diff browser |
 | `pi-clear` | `/clear` alias |
 | `pi-codex-usage` | Codex five-hour usage status and `/codex-usage` |
-| `pi-codex-ui` | Codex-style theme, prompt field, working indicator, and tool-turn separators without replacing tool definitions, status lines, or widgets |
+| `pi-codex-ui` | Codex-style theme, prompt field, random working-loader indicators (incl. blinking star pulse), and tool-turn separators without replacing tool definitions, status lines, or widgets |
 | `pi-commit` | `/commit [--dry-run]` grouped Git review, lazy model-generated descriptions, and path-scoped commits |
 | `pi-git-status` | CWD and rich Git status producer for the shared status row |
 | `pi-groovebox-cycle` | `/groovebox-cycle [on\|off]` animated theme colors |
@@ -28,6 +28,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-show-files` | LLM-callable `show_files` curated file browser |
 | `pi-status-line` | Shared above-editor row plus dynamic two-line footer layout |
 | `pi-subagents` | **Subagents** — background fan-out workers (`/subagents`): seven `subagent_*` tools, typed or ad-hoc spawns, persistent or oneshot lifetimes, parallel under a configurable cap, join by `subagent_await` or idle auto-wake. Strict hub-and-spoke (no peer mail, no nesting); pi-safety-gated tool calls (`subagents:confirm-request`); `alt+a` stop brake. Runs alongside `pi-teams`. Plan: `~/Agents/Documents/Plans/PiAgent/pi-subagents/plan.md`. |
+| `pi-todo` | LLM-callable `todo_write` Claude Code-style task list: above-editor checklist widget whose first line is a dynamic working header with an LLM-set phrase (`✻ header… (elapsed · ↓ tokens)`, activeForm fallback), `alt+d` expand/collapse/hide cycle, `/todos [clear]`, and restore-on-resume |
 | `pi-tool-monitor` | Plain active-tool status producer and `/tools` |
 
 ## Theme and keybindings
