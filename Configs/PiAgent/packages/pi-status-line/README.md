@@ -3,7 +3,9 @@
 Owns Pi's shared status layout:
 
 - **Above-editor row** — CWD/Git from `pi-git-status` on the left; model and
-  thinking level from `pi-model-thinking` on the right.
+  thinking level from `pi-model-thinking` on the right. This status row stays
+  below content widgets; late-mounted widgets may emit `status-line:pin-header`
+  to request an immediate re-pin.
 - **Footer line 1** — the active `pi-plan` restricted mode (`󰋗 ask mode`,
   `󰍩 discuss mode`, or ` plan mode`) appears on the left in mode-specific blue,
   yellow, or green, followed by subagent activity when present; otherwise

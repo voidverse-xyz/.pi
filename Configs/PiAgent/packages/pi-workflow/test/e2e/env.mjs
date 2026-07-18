@@ -45,6 +45,7 @@ export const jiti = createJiti(import.meta.url, {
 	interopDefault: true,
 	moduleCache: true,
 	alias: {
+		"@earendil-works/pi-ai": join(PI_PKG, "node_modules/@earendil-works/pi-ai/dist/index.js"),
 		"@earendil-works/pi-coding-agent": join(PI_PKG, "dist/index.js"),
 		"@earendil-works/pi-tui": join(PI_PKG, "node_modules/@earendil-works/pi-tui/dist/index.js"),
 		typebox: join(PI_PKG, "node_modules/typebox/build/index.mjs"),

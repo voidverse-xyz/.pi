@@ -392,7 +392,10 @@ function footerFits(sides: FooterSides, width: number): boolean {
 export default function (pi: ExtensionAPI) {
 	let activeTui: TUI | undefined;
 	let getExtensionStatuses: (() => ReadonlyMap<string, string>) | undefined;
+	let pinHeader: (() => void) | undefined;
 	let headerPinTimer: ReturnType<typeof setInterval> | undefined;
+
+	pi.events.on("status-line:pin-header", () => pinHeader?.());
 
 	const requestRender = () => {
 		activeTui?.requestRender();
@@ -408,6 +411,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", (_event, ctx) => {
 		activeTui = undefined;
 		getExtensionStatuses = undefined;
+		pinHeader = undefined;
 		if (headerPinTimer) {
 			clearInterval(headerPinTimer);
 			headerPinTimer = undefined;
@@ -508,6 +512,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => {
 		// Reload from disk in case the file changed between sessions in this process.
 		currentConfig = loadConfig();
+		pinHeader = undefined;
 
 		if (ctx.mode !== "tui") return;
 
@@ -559,9 +564,9 @@ export default function (pi: ExtensionAPI) {
 		// keeps aboveEditor widgets in a Map where every setWidget call moves that
 		// key to the END (= rendered bottom-most), so any widget that refreshes its
 		// content would otherwise hop BELOW this static row. Pin the row to the
-		// bottom by re-asserting it on a slow tick — cheap (a tiny factory object),
-		// and a no-op visually whenever it is already last.
-		const mountHeader = (): void => {
+		// bottom on a slow safety tick; late-mounted content widgets can also emit
+		// `status-line:pin-header` for an immediate, deterministic re-pin.
+		pinHeader = (): void => {
 			ctx.ui.setWidget(
 				HEADER_WIDGET_KEY,
 				(_tui, theme) => ({
@@ -574,9 +579,9 @@ export default function (pi: ExtensionAPI) {
 				{ placement: "aboveEditor" },
 			);
 		};
-		mountHeader();
+		pinHeader();
 		if (headerPinTimer) clearInterval(headerPinTimer);
-		headerPinTimer = setInterval(mountHeader, 1000);
+		headerPinTimer = setInterval(() => pinHeader?.(), 1000);
 		headerPinTimer.unref?.();
 	});
 }

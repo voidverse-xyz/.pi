@@ -49,9 +49,14 @@ return { verified }
   `/workflows <name>` shows meta; `/workflows stop` = the brake.
 - **`alt+w`** — stop brake: aborts every running subagent; the tool returns
   `status: "stopped"` with partial results (resumable).
+- **`alt+e`** — expand or collapse a long workflow widget. The compact view
+  preserves whole agent rows, advertises the key in both its header and tail,
+  and retains a visually blank bottom-padding row instead of falling through
+  Pi's generic 10-line widget truncation.
 - **Widget** — live progress tree above the editor (phases, per-agent state,
-  current tool, log tail); hidden when idle. It does not publish a footer status,
-  so the shared directory/Git status line remains stable.
+  current tool, log tail); hidden when idle. It requests an immediate status-row
+  re-pin when mounted, keeping the workflow above the project/Git row. It does
+  not publish a footer status, so the shared footer remains stable.
 - **Safety** — subagent edit/write/bash go through the ported pi-subagents
   sandbox: hard deny on the run store and workflow library dirs, then human
   confirmation via pi-safety over the `workflow:confirm-request` bus channel
@@ -64,7 +69,8 @@ return { verified }
   `script/` (meta, vm compile, combinators), `runner/` (agent sessions,
   structured output, scheduler), `journal/` (layout, journal, replay cache),
   `library/` (saved workflows), `sandbox/` (system-deny, tools filter, safety
-  bridge), `schema/` (validator, from pi-teams collect.ts), `tui/` (tree widget).
+  bridge), `schema/` (validator, from pi-teams collect.ts), `tui/` (pure tree
+  renderer + live component controller).
 
 ## Verify
 

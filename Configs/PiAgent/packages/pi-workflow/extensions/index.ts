@@ -9,7 +9,7 @@
  * resumeFromRunId (unchanged agent() calls replay from the journal).
  *
  * Surfaces: `workflow` tool · /workflows [name|stop] · alt+w stop brake ·
- * live progress tree above the editor.
+ * alt+e expand/collapse · live progress tree above the editor.
  *
  * Install as a package: packages/pi-workflow. Reload: /reload
  */
@@ -28,7 +28,7 @@ import { extractMeta } from "./workflow/script/meta.ts";
 import { AgentFailure } from "./workflow/script/semantics.ts";
 import { WorkflowRun } from "./workflow/run.ts";
 import { createWorkflowTool, type WorkflowToolHost } from "./workflow/tool.ts";
-import { createTreeWidget, STOP_KEY, type TreeWidgetController } from "./workflow/tui/tree-widget.ts";
+import { createTreeWidget, EXPAND_KEY, STOP_KEY, type TreeWidgetController } from "./workflow/tui/tree-widget.ts";
 
 export function readMaxConcurrent(settingsFile: string): number {
 	try {
@@ -60,6 +60,7 @@ function resolveModelRef(ctx: ExtensionContext, ref: string) {
 }
 
 const COMMAND_ENTRY_TYPE = "workflow-command-output";
+const STATUS_LINE_PIN_CHANNEL = "status-line:pin-header";
 
 type CommandOutputLevel = "info" | "warning" | "error";
 
@@ -144,6 +145,13 @@ export default function workflow(pi: ExtensionAPI) {
 		handler: (ctx) => stopActive(ctx),
 	});
 
+	pi.registerShortcut(EXPAND_KEY, {
+		description: "Expand or collapse a truncated workflow widget",
+		handler: (ctx) => {
+			if (!widget?.toggleExpanded()) ctx.ui.notify("No truncated workflow widget to expand.", "info");
+		},
+	});
+
 	pi.registerCommand("workflows", {
 		description: `List saved workflows and the active run; "stop" halts it (${STOP_KEY})`,
 		getArgumentCompletions: (prefix) => {
@@ -201,7 +209,9 @@ export default function workflow(pi: ExtensionAPI) {
 		widget?.dispose();
 		widget = null;
 		if (ctx.mode === "tui") {
-			widget = createTreeWidget(() => (active.run ? active.run.snapshot() : null), ctx.ui);
+			widget = createTreeWidget(() => (active.run ? active.run.snapshot() : null), ctx.ui, {
+				onMounted: () => pi.events.emit(STATUS_LINE_PIN_CHANNEL, {}),
+			});
 		}
 	});
 
