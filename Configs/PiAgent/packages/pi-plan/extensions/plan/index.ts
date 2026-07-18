@@ -35,7 +35,7 @@ const STATE_ENTRY = "plan-mode.state";
 const STATUS_KEY = "plan-mode";
 const STATUS_TEXT: Record<Exclude<AgentMode, "off">, string> = {
 	ask: "󰋗 ask mode", // nf-md-help-circle
-	discuss: " discuss mode", // nf-fa-comments
+	discuss: "󰍩 discuss mode", // nf-md-forum
 	plan: " plan mode", // nf-oct-tasklist
 };
 const MODE_ORDER: AgentMode[] = ["off", "ask", "discuss", "plan"];
@@ -230,27 +230,15 @@ export default function planExtension(pi: ExtensionAPI): void {
 		updateStatus(ctx);
 	}
 
-	function setMode(next: AgentMode, ctx: ExtensionContext, notify = true): boolean {
+	function setMode(next: AgentMode, ctx: ExtensionContext): boolean {
 		if (mode === next) {
 			if (mode !== "off") enableRestrictedModeTools();
-			if (notify) ctx.ui.notify(`${modeLabel(mode)} mode is already active.`, "info");
 			return false;
 		}
 		mode = next;
 		applyModeTools();
 		persistState();
 		updateStatus(ctx);
-		if (notify) {
-			const message = (() => {
-				switch (mode) {
-					case "off": return "Restricted modes disabled. Previous tool access restored.";
-					case "ask": return "Ask mode enabled. Replies are brief and tools are read-only.";
-					case "discuss": return "Discuss mode enabled. Responses are unrestricted; tools remain read-only.";
-					case "plan": return "Plan mode enabled. Main-agent and delegated research are read-only except for the authorized save_plan path.";
-				}
-			})();
-			ctx.ui.notify(message, mode === "off" ? "info" : "warning");
-		}
 		return true;
 	}
 
@@ -304,7 +292,7 @@ export default function planExtension(pi: ExtensionAPI): void {
 			setMode(command.enabled ? target : "off", ctx);
 			return;
 		}
-		setMode(target, ctx, false);
+		setMode(target, ctx);
 		pi.sendUserMessage(command.task);
 	}
 
@@ -424,7 +412,7 @@ export default function planExtension(pi: ExtensionAPI): void {
 			} else {
 				selectedPlanSkill = undefined;
 			}
-			const changed = setMode("plan", ctx, false);
+			const changed = setMode("plan", ctx);
 			if (!changed) persistState();
 			pi.sendUserMessage(command.task);
 		},

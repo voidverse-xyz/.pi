@@ -136,6 +136,19 @@ const PLAN_MODE_STATUS_KEY = "plan-mode";
 // Subagent status takes line 1-left whenever it is visible.
 const SUBAGENT_STATUS_KEY = "subagents";
 
+function renderPlanModeStatus(
+	value: string,
+	theme: ExtensionContext["ui"]["theme"],
+): string {
+	if (!value) return "";
+	const color = value.endsWith(" ask mode")
+		? "thinkingMinimal"
+		: value.endsWith(" discuss mode")
+			? "warning"
+			: "success";
+	return theme.fg(color, value);
+}
+
 // `left ...gap... right` across the full width, ANSI-aware. When both don't fit,
 // truncates the left side first so the right side (context/safety/codex) survives.
 // With the segment-dropping fallback in render() this is a last-resort safety net;
@@ -329,7 +342,7 @@ function buildSegmentTexts(
 	const toolMonitor = extensionStatuses.get(TOOL_MONITOR_STATUS_KEY) ?? "";
 
 	return {
-		"plan-mode": planMode ? theme.fg("success", planMode) : "",
+		"plan-mode": renderPlanModeStatus(planMode, theme),
 		subagents: subagents ? theme.fg("dim", subagents) : "",
 		context: formatContext(ctx, theme, mode),
 		"extension-statuses": joinSegments(otherStatuses, separator),

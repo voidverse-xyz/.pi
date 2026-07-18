@@ -8,7 +8,7 @@ Host-managed Ask, Discuss, and Plan modes for Pi. Off remains the normal unrestr
 |---|---|---|
 | **Off** | Normal Pi behavior | The exact tool set that was active before entering a restricted mode |
 | **Ask** (`󰋗`) | Quick chat, normally 1–4 short sentences | trusted built-in `read`, `grep`, `find`, `ls` only |
-| **Discuss** (``) | Normal response length and structure | Ask tools plus trusted `ask_user` and `show_files` |
+| **Discuss** (`󰍩`) | Normal response length and structure | Ask tools plus trusted `ask_user` and `show_files` |
 | **Plan** (``) | Research and save a decision-complete Markdown plan | trusted read/UI/session tools, `save_plan`, and scoped read-only `subagent_*` tools |
 
 Ask's length rule is a host-injected prompt rule, not a provider-level token cap. The tool restrictions are host-enforced with both active-tool filtering and a default-deny `tool_call` guard.
@@ -23,6 +23,8 @@ Ask's length rule is a host-injected prompt rule, not a provider-level token cap
 - `/ask|discuss|plan on|off|exit|toggle|status` — explicit mode control.
 - `Shift+Tab` — cycle `Off → Ask → Discuss → Plan → Off` while Pi is idle.
 - `/skill:plan <task>` — invoke the underlying planning workflow for one task without enabling the host-enforced mode guard or `save_plan`.
+
+Routine mode transitions are silent because the footer already shows the active state. Busy-state warnings, invalid-command errors, fallback warnings, and explicit `status` responses remain visible.
 
 The active mode, explicit Plan skill, authorized Plan path, and Plan-spawned subagent scope are persisted as branch-local session state. Reload, resume, fork, and `/tree` restore state from the active branch; legacy `{ enabled: boolean }` Plan entries migrate to `plan` or `off`. A new session starts Off.
 

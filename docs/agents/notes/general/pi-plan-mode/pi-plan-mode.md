@@ -9,13 +9,15 @@
 3. **Discuss** — normal response length with trusted read-only lookup plus `ask_user` and `show_files`.
 4. **Plan** — project research, optional read-only delegated research, and authorized Markdown plan saving.
 
-`/ask`, `/discuss`, and `/plan` toggle their mode or enable it and submit a task. `Shift+Tab` cycles `Off → Ask → Discuss → Plan → Off`. Mode changes are idle-only.
+`/ask`, `/discuss`, and `/plan` toggle their mode or enable it and submit a task. `Shift+Tab` cycles `Off → Ask → Discuss → Plan → Off`. Mode changes are idle-only. Routine transitions do not emit notifications because the footer already shows the active mode; busy-state warnings, errors, fallback warnings, and explicit status responses remain visible.
 
 ## State and lifecycle
 
 The extension persists one `plan-mode.state` custom entry containing the active mode, Plan template override, authorized plan root/path, and addresses of read-only subagents created in Plan mode. State follows the active branch across reload, resume, fork, and `/tree`. The parser accepts the former `{ enabled: boolean }` shape and migrates it to `plan` or `off`.
 
 Entering the first restricted mode snapshots the current active tools. Transitions among Ask, Discuss, and Plan filter from the same snapshot. Returning Off restores the snapshot. `session_shutdown` restores it before runtime replacement so the next extension instance does not accidentally snapshot an already-filtered set.
+
+The `plan-mode` status producer uses `󰋗 ask mode`, `󰍩 discuss mode`, and ` plan mode`. `pi-status-line` renders them blue, yellow, and green respectively; the Material Design forum glyph avoids the Font Awesome comments glyph's visual overlap in the configured terminal font.
 
 ## Prompt behavior
 
@@ -86,5 +88,5 @@ node --test \
 Offline RPC smoke coverage should verify:
 
 1. `get_commands` includes `ask`, `discuss`, `plan`, and `skill:plan` with no `extension_error`.
-2. `/ask on`, `/discuss on`, `/plan on`, and `/plan off` publish the expected status/notification sequence.
+2. `/ask on`, `/discuss on`, `/plan on`, and `/plan off` publish the expected status sequence without routine notifications.
 3. `get_entries` contains branch-local mode states in that same sequence.
