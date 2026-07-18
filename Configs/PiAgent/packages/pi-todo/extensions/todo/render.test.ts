@@ -110,7 +110,7 @@ test("renderTitleLine: static muted title + dim progress count — nothing dynam
 
 test("summarizeTodos: plain text with progress count", () => {
 	const text = summarizeTodos(list);
-	assert.ok(text.includes(`[${MARK_DONE}] Fix store layer`));
+	assert.ok(text.includes("[x] Fix store layer"));
 	assert.ok(text.includes("[~] Fix sandbox/typedefs"));
 	assert.ok(text.includes("[ ] Fix mail"));
 	assert.ok(text.endsWith("(1/3 completed)"));

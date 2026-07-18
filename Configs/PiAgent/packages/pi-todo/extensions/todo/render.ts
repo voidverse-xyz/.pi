@@ -35,8 +35,8 @@ export interface TodoRenderTheme {
 	strikethrough(text: string): string;
 }
 
-export const MARK_DONE = "✓";
-export const MARK_OPEN = "□";
+export const MARK_DONE = "";
+export const MARK_OPEN = "󰄱";
 
 /** One styled row, without tree indentation — shared by the widget and the tool-result view. */
 export function renderTodoItem(item: TodoItem, theme: TodoRenderTheme): string {
@@ -116,7 +116,7 @@ export function renderTitleLine(todos: TodoItem[], theme: TodoRenderTheme): stri
 export function summarizeTodos(todos: TodoItem[]): string {
 	if (todos.length === 0) return "Todo list is empty.";
 	const lines = todos.map((item) => {
-		const mark = item.status === "completed" ? `[${MARK_DONE}]` : item.status === "in_progress" ? "[~]" : "[ ]";
+		const mark = item.status === "completed" ? "[x]" : item.status === "in_progress" ? "[~]" : "[ ]";
 		return `${mark} ${item.content}`;
 	});
 	const done = todos.filter((t) => t.status === "completed").length;

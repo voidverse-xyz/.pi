@@ -1547,7 +1547,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			footer.push(pad(theme.fg("accent", ` ${searchLabel}`) + theme.fg("dim", "  (Enter keep, Esc cancel)"), innerW));
 			for (const l of searchEditor.render(Math.max(10, innerW - 2))) footer.push(pad(` ${l}`, innerW));
 		} else {
-			const noteInfo = note ? ` · note ${ICON_SUCCESS}` : "";
+			const noteInfo = note ? ` · ${ICON_SUCCESS} note` : "";
 			const hasSel = previewKind === "file" && !rendered && selAnchor !== null;
 			// What `a` will add at the cursor's current spot, so the hint isn't a lie.
 			const inRegion = previewKind === "file" && !rendered && regionAt(cursorLine) !== null;
