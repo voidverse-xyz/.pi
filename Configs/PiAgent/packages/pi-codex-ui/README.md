@@ -25,6 +25,13 @@ otherwise. (`pi-todo` renders its own separate status line — `✻ <LLM-set
 phrase>…` — as the first line of its todo widget; that one carries no time or
 token stats.)
 
+## Commands
+
+- `/matrix [on|off|status]` independently controls Matrix rain while leaving the animated background block intact.
+- `/working-animation [on|off|status]` is the master switch for the three-line background block and Matrix layer. Turning it off restores Pi's standard single-row loader while keeping the custom spinner and status text.
+
+Calling either command without an argument toggles its setting. Both settings persist across reloads and restarts.
+
 ## Verify
 
 - Live preview: `node test/preview-working-sweep.mjs`

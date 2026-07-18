@@ -30,7 +30,9 @@ rows and repaint the built-in working indicator after it renders. The working-ro
 removes only Pi's render-added trailing spaces before measuring the status text, which
 preserves the per-column animation across the remaining runway. Deterministic one-cell
 Matrix glyphs animate over the padding rows and the middle-row runway while leaving the
-status label unobscured. Configured shells,
+status label unobscured. `/matrix` independently controls the rain, while
+`/working-animation` is the persistent master switch for the three-line block and
+restores Pi's standard single-row loader when off. Configured shells,
 safety/sandbox wrappers, mutation queues, previews, diffs, prompt metadata, and tool
 expansion therefore remain canonical. The internal component patches are
 version-sensitive and are restored during session shutdown; the custom editor, header,

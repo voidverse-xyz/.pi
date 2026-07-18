@@ -2,6 +2,7 @@ import {
 	CustomEditor,
 	type ExtensionAPI,
 	type ExtensionContext,
+	getAgentDir,
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -10,7 +11,7 @@ import {
 	type TUI,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -20,6 +21,37 @@ const RESET = "\x1b[0m";
 const RESET_FG = "\x1b[39m";
 const TOOL_PATCH = Symbol.for("pi-codex-ui.tool-render-patch");
 const WORKING_TICK_MS = 200;
+const ANIMATION_CONFIG_PATH = join(getAgentDir(), "codex-ui.json");
+
+interface AnimationConfig {
+	workingAnimation: boolean;
+	matrix: boolean;
+}
+
+function loadAnimationConfig(): AnimationConfig {
+	try {
+		const raw = JSON.parse(readFileSync(ANIMATION_CONFIG_PATH, "utf8")) as Record<string, unknown>;
+		return {
+			workingAnimation: typeof raw.workingAnimation === "boolean" ? raw.workingAnimation : true,
+			matrix: typeof raw.matrix === "boolean" ? raw.matrix : true,
+		};
+	} catch {
+		return { workingAnimation: true, matrix: true };
+	}
+}
+
+function saveAnimationConfig(config: AnimationConfig): boolean {
+	const temporary = `${ANIMATION_CONFIG_PATH}.tmp-${process.pid}`;
+	try {
+		mkdirSync(dirname(ANIMATION_CONFIG_PATH), { recursive: true });
+		writeFileSync(temporary, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
+		renameSync(temporary, ANIMATION_CONFIG_PATH);
+		return true;
+	} catch {
+		try { unlinkSync(temporary); } catch { /* best-effort cleanup */ }
+		return false;
+	}
+}
 
 const WORKING_LABELS = [
 	"working", "thinking", "processing", "building", "checking", "analyzing",
@@ -172,7 +204,7 @@ interface LineBgStyle {
  * the full range from black to the theme's prompt-field gray (`userMessageBg`).
  * If that background is unavailable, use a darkened accent as a safe fallback.
  */
-function makeLineBgStyle(theme: Theme): LineBgStyle | undefined {
+function makeLineBgStyle(theme: Theme, matrixEnabled: boolean): LineBgStyle | undefined {
 	// 256-color themes cannot render smooth per-column blends.
 	if (theme.getColorMode() !== "truecolor") return undefined;
 	const themeAccent = parseAnsiRgb(theme.getFgAnsi("accent"));
@@ -222,7 +254,7 @@ function makeLineBgStyle(theme: Theme): LineBgStyle | undefined {
 	})();
 
 	const styles = [breathe, aurora, comet, shimmer];
-	const matrix = makeMatrixRain(theme);
+	const matrix = matrixEnabled ? makeMatrixRain(theme) : undefined;
 	return { ...styles[Math.floor(Math.random() * styles.length)]!, matrix };
 }
 
@@ -456,6 +488,9 @@ async function installToolSeparatorPatch(): Promise<(() => void) | undefined> {
 export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 	const restoreToolRenderer = await installToolSeparatorPatch();
 	const restoreWorkingBg = await installWorkingBgPatch();
+	const animationConfig = loadAnimationConfig();
+	let workingAnimationEnabled = animationConfig.workingAnimation;
+	let matrixEnabled = animationConfig.matrix;
 	let activeCtx: ExtensionContext | undefined;
 	let workingStartedAt: number | undefined;
 	let workingTimer: ReturnType<typeof setInterval> | undefined;
@@ -486,6 +521,23 @@ export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 		workingLabel = "working";
 	};
 
+	const refreshWorkingAnimation = (ctx: ExtensionContext): void => {
+		if (workingStartedAt === undefined) return;
+		if (!workingAnimationEnabled || !restoreWorkingBg) {
+			activeLineBg = undefined;
+			activeLineBgStartedAt = 0;
+		} else {
+			activeLineBgStartedAt = Date.now();
+			activeLineBg = makeLineBgStyle(ctx.ui.theme, matrixEnabled);
+		}
+		renderWorkingMessage(ctx);
+	};
+
+	const refreshMatrix = (ctx: ExtensionContext): void => {
+		if (activeLineBg) activeLineBg.matrix = matrixEnabled ? makeMatrixRain(ctx.ui.theme) : undefined;
+		renderWorkingMessage(ctx);
+	};
+
 	pi.on("agent_start", (_event, ctx) => {
 		activeCtx = ctx;
 		if (ctx.mode !== "tui" || workingStartedAt !== undefined) return;
@@ -494,7 +546,9 @@ export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 		doneTokens = 0;
 		streamingTokens = 0;
 		workingLabel = WORKING_LABELS[Math.floor(Math.random() * WORKING_LABELS.length)]!;
-		activeLineBg = restoreWorkingBg ? makeLineBgStyle(ctx.ui.theme) : undefined;
+		activeLineBg = restoreWorkingBg && workingAnimationEnabled
+			? makeLineBgStyle(ctx.ui.theme, matrixEnabled)
+			: undefined;
 		const spinner = SPINNERS[Math.floor(Math.random() * SPINNERS.length)]!;
 		ctx.ui.setWorkingIndicator({
 			frames: spinner.frames.map((frame) => ctx.ui.theme.fg("accent", frame)),
@@ -524,6 +578,80 @@ export default async function codexUi(pi: ExtensionAPI): Promise<void> {
 		activeLineBg = undefined;
 		activeLineBgStartedAt = 0;
 		if (ctx.mode === "tui") ctx.ui.setWorkingMessage();
+	});
+
+	const toggleCompletions = (prefix: string) => ["on", "off", "status"]
+		.filter((value) => value.startsWith(prefix.trim().toLowerCase()))
+		.map((value) => ({ value, label: value }));
+	const toggleValue = (args: string, current: boolean): boolean | "status" | undefined => {
+		const arg = args.trim().toLowerCase();
+		if (!arg) return !current;
+		if (arg === "status") return "status";
+		if (arg === "on" || arg === "off") return arg === "on";
+		return undefined;
+	};
+
+	pi.registerCommand("matrix", {
+		description: "Toggle Codex working-indicator Matrix rain: /matrix [on|off|status]",
+		getArgumentCompletions: toggleCompletions,
+		handler: async (args, ctx) => {
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("Matrix rain requires interactive TUI mode", "error");
+				return;
+			}
+			const next = toggleValue(args, matrixEnabled);
+			if (next === undefined) {
+				ctx.ui.notify("Usage: /matrix [on|off|status]", "error");
+				return;
+			}
+			if (next === "status") {
+				const master = workingAnimationEnabled ? "" : " (waiting for /working-animation on)";
+				ctx.ui.notify(`Matrix rain is ${matrixEnabled ? "on" : "off"}${master}`, "info");
+				return;
+			}
+			matrixEnabled = next;
+			const persisted = saveAnimationConfig({ workingAnimation: workingAnimationEnabled, matrix: matrixEnabled });
+			refreshMatrix(ctx);
+			const master = workingAnimationEnabled ? "" : "; working animation remains off";
+			const message = `Matrix rain ${matrixEnabled ? "enabled" : "disabled"}${master}`;
+			ctx.ui.notify(
+				persisted ? message : `${message} for this session, but the setting could not be saved`,
+				persisted ? "info" : "warning",
+			);
+		},
+	});
+
+	pi.registerCommand("working-animation", {
+		description: "Toggle the Codex animated working block: /working-animation [on|off|status]",
+		getArgumentCompletions: toggleCompletions,
+		handler: async (args, ctx) => {
+			if (ctx.mode !== "tui") {
+				ctx.ui.notify("Working animation requires interactive TUI mode", "error");
+				return;
+			}
+			const next = toggleValue(args, workingAnimationEnabled);
+			if (next === undefined) {
+				ctx.ui.notify("Usage: /working-animation [on|off|status]", "error");
+				return;
+			}
+			if (next === "status") {
+				ctx.ui.notify(
+					`Working animation is ${workingAnimationEnabled ? "on" : "off"}; Matrix rain is ${matrixEnabled ? "on" : "off"}`,
+					"info",
+				);
+				return;
+			}
+			workingAnimationEnabled = next;
+			const persisted = saveAnimationConfig({ workingAnimation: workingAnimationEnabled, matrix: matrixEnabled });
+			refreshWorkingAnimation(ctx);
+			const message = workingAnimationEnabled
+				? `Working animation enabled; Matrix rain is ${matrixEnabled ? "on" : "off"}`
+				: "Working animation disabled; using the standard single-row loader";
+			ctx.ui.notify(
+				persisted ? message : `${message} for this session, but the setting could not be saved`,
+				persisted ? "info" : "warning",
+			);
+		},
 	});
 
 	pi.on("session_start", (_event, ctx) => {

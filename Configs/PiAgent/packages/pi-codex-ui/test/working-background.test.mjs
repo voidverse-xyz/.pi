@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { strict as assert } from "node:assert";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +29,9 @@ const scratch = mkdtempSync(join(tmpdir(), "pi-codex-ui-"));
 const originalArgv1 = process.argv[1];
 const originalRandom = Math.random;
 const originalNow = Date.now;
+const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 
+let commands;
 let ctx;
 let handlers;
 let indicator;
@@ -38,6 +40,7 @@ try {
 	// The extension locates Pi's private presentation components relative to the
 	// real CLI entry point, exactly as it does in a live process.
 	process.argv[1] = join(PI_PACKAGE, "dist", "cli.js");
+	process.env.PI_CODING_AGENT_DIR = scratch;
 	const { loadExtensions } = await import(join(PI_PACKAGE, "dist", "core", "extensions", "loader.js"));
 	const { loadThemeFromPath, setThemeInstance } = await import(
 		join(PI_PACKAGE, "dist", "modes", "interactive", "theme", "theme.js")
@@ -56,9 +59,17 @@ try {
 	assert.deepEqual(loaded.errors, [], `extension load errors: ${JSON.stringify(loaded.errors)}`);
 	assert.equal(loaded.extensions.length, 1, "exactly one extension loads");
 	handlers = loaded.extensions[0].handlers;
+	commands = loaded.extensions[0].commands;
+	assert.deepEqual([...commands.keys()], ["matrix", "working-animation"], "both animation commands register");
+	assert.deepEqual(
+		commands.get("matrix").getArgumentCompletions("o").map((item) => item.value),
+		["on", "off"],
+		"animation command completions expose on/off",
+	);
 
 	let workingMessage = "Working...";
 	let workingIndicator;
+	const notifications = [];
 	const ui = {
 		theme,
 		setWorkingMessage(message) {
@@ -69,12 +80,17 @@ try {
 		setTheme() { return { success: true }; },
 		setHeader() {},
 		setEditorComponent() {},
-		notify() {},
+		notify(message, type = "info") { notifications.push({ message, type }); },
 	};
 	ctx = { mode: "tui", ui };
 
 	const call = async (name, event = {}) => {
 		for (const handler of handlers.get(name) ?? []) await handler(event, ctx);
+	};
+	const runCommand = async (name, args) => {
+		const command = commands.get(name);
+		assert.ok(command, `/${name} command exists`);
+		await command.handler(args, ctx);
 	};
 	const startStyle = async (stylePick) => {
 		// label, four style timings, comet direction, two shimmer timings,
@@ -130,11 +146,60 @@ try {
 	lines = indicator.render(30);
 	assert.equal(lines.length, 4, "narrow status keeps one spacer plus a three-line block");
 	assert.ok(lines.slice(1).every((line) => visibleWidth(line) === 30), "narrow painted rows fit the width");
+
+	// The independent Matrix switch removes only character rain. The master
+	// working-animation switch restores Pi's standard single-row loader and can
+	// rebuild the animated block immediately when re-enabled.
+	await runCommand("matrix", "off");
+	lines = indicator.render(60);
+	assert.equal(lines.length, 4, "/matrix off keeps the animated background block");
+	assert.ok(!lines.join("\n").includes("\x1b[38;2;171;223;167m"), "/matrix off removes bright rain glyphs");
+	await runCommand("working-animation", "off");
+	lines = indicator.render(60);
+	assert.equal(lines.length, 2, "/working-animation off restores the standard loader geometry");
+	await runCommand("working-animation", "on");
+	lines = indicator.render(60);
+	assert.equal(lines.length, 4, "/working-animation on restores the three-line animated block");
+	await runCommand("matrix", "on");
+	const restoredMatrixFrames = [];
+	for (let t = 0; t <= 1_800; t += 200) {
+		Date.now = () => 1_000 + t;
+		restoredMatrixFrames.push(indicator.render(60).join("\n"));
+	}
+	assert.ok(
+		restoredMatrixFrames.some((frame) => frame.includes("\x1b[38;2;171;223;167m")),
+		"/matrix on restores green rain glyphs",
+	);
+
+	await runCommand("matrix", "status");
+	await runCommand("working-animation", "status");
+	assert.deepEqual(
+		notifications.slice(-2).map((item) => item.message),
+		["Matrix rain is on", "Working animation is on; Matrix rain is on"],
+		"status commands report both settings",
+	);
+	await runCommand("matrix", "");
+	assert.equal(
+		JSON.parse(readFileSync(join(scratch, "codex-ui.json"), "utf8")).matrix,
+		false,
+		"/matrix with no argument toggles rain off",
+	);
+	await runCommand("matrix", "");
+	await runCommand("working-animation", "");
+	assert.equal(indicator.render(60).length, 2, "/working-animation with no argument toggles the block off");
+	await runCommand("working-animation", "");
+	assert.equal(indicator.render(60).length, 4, "a second no-argument toggle restores the block");
+	assert.deepEqual(
+		JSON.parse(readFileSync(join(scratch, "codex-ui.json"), "utf8")),
+		{ workingAnimation: true, matrix: true },
+		"animation command settings persist",
+	);
+
 	indicator.dispose();
 	await call("agent_settled", { type: "agent_settled" });
 	await call("session_shutdown", { type: "session_shutdown" });
 
-	console.log("working background ok — black ↔ #373739, Matrix rain, padded runway, and narrow layout");
+	console.log("working background ok — animation commands, persistence, Matrix rain, colors, and layout");
 } finally {
 	indicator?.dispose();
 	if (ctx && handlers) {
@@ -145,5 +210,7 @@ try {
 	process.argv[1] = originalArgv1;
 	Math.random = originalRandom;
 	Date.now = originalNow;
+	if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
 	rmSync(scratch, { recursive: true, force: true });
 }
