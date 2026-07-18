@@ -15,7 +15,6 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-codex-ui` | Codex-style theme, prompt field, working indicator (random accent spinners incl. blinking star pulse, `label… (elapsed · ↓ tokens)` with run-cumulative counts, three-line full-width black↔prompt-gray background block with theme-green Matrix rain and a random per-run animation: breathe/aurora/comet/shimmer; persistent `/matrix` and `/working-animation` controls), and tool-turn separators without replacing tool definitions, status lines, or widgets |
 | `pi-commit` | `/commit [--dry-run]` grouped Git review, lazy model-generated descriptions, and path-scoped commits |
 | `pi-git-status` | CWD and rich Git status producer for the shared status row |
-| `pi-groovebox-cycle` | `/groovebox-cycle [on\|off]` animated theme colors |
 | `pi-merge` | `/merge` current-session branch synthesis |
 | `pi-model-thinking` | Model/thinking producer for the shared status row |
 | `pi-notify-user` | LLM-callable `notify_user` notices |
@@ -33,7 +32,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 
 ## Theme and keybindings
 
-The active theme is `codex`, stored at `.pi/agent/themes/codex.json`. The `pi-groovebox-cycle` package remains installed but is disabled in its local runtime config so it does not replace the selected theme.
+The active theme is `codex`, stored at `.pi/agent/themes/codex.json`.
 
 Keybindings are stored at `.pi/agent/keybindings.json`. `Shift+Tab` is reserved for Plan mode, thinking-level cycling uses `Alt+T`, and forward model cycling uses `Alt+M`.
 

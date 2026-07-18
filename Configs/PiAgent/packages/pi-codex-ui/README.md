@@ -42,6 +42,4 @@ Calling either command without an argument toggles its setting. Both settings pe
 
 1. Add this package path to Pi's `packages` setting.
 2. Set `"theme": "codex"`.
-3. Disable `pi-groovebox-cycle` if installed, because it deliberately replaces the
-   active theme with an animated Groovebox palette.
-4. Run `/reload` or restart Pi.
+3. Run `/reload` or restart Pi.
