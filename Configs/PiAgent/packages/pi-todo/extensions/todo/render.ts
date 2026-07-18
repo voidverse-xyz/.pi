@@ -50,28 +50,53 @@ export function renderTodoItem(item: TodoItem, theme: TodoRenderTheme): string {
 	}
 }
 
+/**
+ * pi core hard-caps string widgets at 10 lines (with a generic "(widget
+ * truncated)" suffix). Budget: 1 title + 8 items + 1 padding = 10, so lists up
+ * to MAX_FULL_ITEMS render whole; longer ones show a WINDOW_ITEMS-item window
+ * around the active item plus dim `… +n` marker lines, the last carrying a
+ * hint to see the full list.
+ */
+export const MAX_FULL_ITEMS = 8;
+const WINDOW_ITEMS = 6;
+const FULL_LIST_HINT = "/todos for all";
+
 /** Pure: the widget's lines for one render pass. [] when the list is empty. */
 export function renderTodoWidgetLines(todos: TodoItem[], theme: TodoRenderTheme): string[] {
-	return todos.map((item, i) => {
-		const connector = i === 0 ? theme.fg("dim", "└ ") : "  ";
-		return `${connector}${renderTodoItem(item, theme)}`;
-	});
+	const rows: string[] = [];
+	if (todos.length <= MAX_FULL_ITEMS) {
+		for (const item of todos) rows.push(renderTodoItem(item, theme));
+	} else {
+		// Window around the active item (fallback: first pending) so the thing
+		// being worked on is always visible.
+		const inProgressAt = todos.findIndex((t) => t.status === "in_progress");
+		const pendingAt = todos.findIndex((t) => t.status === "pending");
+		const activeAt = inProgressAt >= 0 ? inProgressAt : pendingAt >= 0 ? pendingAt : 0;
+		const start = Math.min(Math.max(0, activeAt - 2), todos.length - WINDOW_ITEMS);
+		const end = start + WINDOW_ITEMS;
+		if (start > 0) rows.push(theme.fg("dim", `… +${start} earlier${end >= todos.length ? ` · ${FULL_LIST_HINT}` : ""}`));
+		for (const item of todos.slice(start, end)) rows.push(renderTodoItem(item, theme));
+		if (end < todos.length) rows.push(theme.fg("dim", `… +${todos.length - end} more · ${FULL_LIST_HINT}`));
+	}
+	return rows.map((row, i) => `${i === 0 ? theme.fg("dim", "└ ") : "  "}${row}`);
 }
 
 /**
  * Collapsed one-line summary: the in-progress item (or the next pending one),
- * plus a done-count — `└ □ Fixing sandbox/typedefs · 1/3 done`. Used when the
- * widget is collapsed instead of fully expanded or hidden.
+ * a done-count, and the expand-key hint — the collapsed view IS a truncation,
+ * so it always says how to get the list back:
+ * `└ □ Fixing sandbox/typedefs · 1/3 done · alt+d expand`.
  */
-export function renderCollapsedLine(todos: TodoItem[], theme: TodoRenderTheme): string[] {
+export function renderCollapsedLine(todos: TodoItem[], theme: TodoRenderTheme, expandKey?: string): string[] {
 	if (todos.length === 0) return [];
 	const done = todos.filter((t) => t.status === "completed").length;
 	const count = theme.fg("dim", ` · ${done}/${todos.length} done`);
+	const hint = expandKey ? theme.fg("dim", ` · ${expandKey} expand`) : "";
 	const active = todos.find((t) => t.status === "in_progress") ?? todos.find((t) => t.status === "pending");
 	const head = active
 		? renderTodoItem(active, theme)
 		: `${theme.fg("success", MARK_DONE)} ${theme.fg("dim", "all done")}`;
-	return [`${theme.fg("dim", "└ ")}${head}${count}`];
+	return [`${theme.fg("dim", "└ ")}${head}${count}${hint}`];
 }
 
 /** Static title glyph: a checklist (nf-md-format_list_checks) — reads as "todo list". */

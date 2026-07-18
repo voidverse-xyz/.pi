@@ -89,8 +89,10 @@ export default function todoList(pi: ExtensionAPI) {
 			return;
 		}
 		const theme = ctx.ui.theme;
-		const tree = viewMode === "collapsed" ? renderCollapsedLine(todos, theme) : renderTodoWidgetLines(todos, theme);
-		ctx.ui.setWidget(WIDGET_KEY, [renderTitleLine(todos, theme), ...tree], PLACEMENT);
+		const tree = viewMode === "collapsed" ? renderCollapsedLine(todos, theme, TOGGLE_KEY) : renderTodoWidgetLines(todos, theme);
+		// Trailing blank line: breathing room between the list and whatever renders
+		// below it (other widgets / the status row / the editor).
+		ctx.ui.setWidget(WIDGET_KEY, [renderTitleLine(todos, theme), ...tree, ""], PLACEMENT);
 	};
 
 	pi.registerTool({

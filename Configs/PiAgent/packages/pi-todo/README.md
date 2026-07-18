@@ -28,13 +28,18 @@ non-empty, **working or idle**, so the checklist always reads as what it is.
 - **Widget** — a plain `aboveEditor` widget (renders with the other widget rows under
   the working indicator), hidden only when the list is empty or the user hid it.
   `alt+d` cycles expanded → collapsed → hidden (Claude Code uses `ctrl+t`, but pi
-  core owns that for thinking blocks). Collapsed keeps the title plus a one-line
-  summary:
+  core owns that for thinking blocks). A trailing blank line pads the block from
+  whatever renders below it. Collapsed keeps the title plus a one-line summary
+  with the expand hint:
 
   ```
   󰝖 Todos · 1/3
-  └ □ Fixing sandbox/typedefs · 1/3 done
+  └ □ Fixing sandbox/typedefs · 1/3 done · alt+d expand
   ```
+
+  Long lists never hit pi core's generic 10-line widget cut: past 8 items the
+  expanded view windows around the active item with dim `… +n earlier` /
+  `… +n more · /todos for all` marker rows.
 - **`/todos`** — prints the list as a notification; `/todos clear` wipes it.
 - **Resume** — on `session_start` the list is rebuilt from the most recent
   `todo_write` call in the replayed session messages, so it survives `/reload`,

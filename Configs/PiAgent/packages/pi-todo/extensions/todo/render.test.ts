@@ -57,12 +57,32 @@ test("renderTodoWidgetLines: empty list renders nothing", () => {
 	assert.deepEqual(renderTodoWidgetLines([], theme), []);
 });
 
-test("renderCollapsedLine: in-progress item + done-count on one line", () => {
-	const lines = renderCollapsedLine(list, theme);
+test("renderCollapsedLine: in-progress item + done-count + expand hint on one line", () => {
+	const lines = renderCollapsedLine(list, theme, "alt+d");
 	assert.equal(lines.length, 1);
 	assert.ok(lines[0]!.startsWith("<dim>└ </dim>"));
 	assert.ok(lines[0]!.includes("Fixing sandbox/typedefs"));
 	assert.ok(lines[0]!.includes("<dim> · 1/3 done</dim>"));
+	assert.ok(lines[0]!.includes("<dim> · alt+d expand</dim>"));
+	assert.ok(!renderCollapsedLine(list, theme)[0]!.includes("expand"), "no hint without a key");
+});
+
+test("renderTodoWidgetLines: long lists window around the active item with … markers + hint", () => {
+	const long: TodoItem[] = Array.from({ length: 14 }, (_, i) => ({
+		content: `task ${i}`,
+		status: i < 9 ? "completed" : i === 9 ? "in_progress" : "pending",
+	}));
+	const lines = renderTodoWidgetLines(long, theme);
+	assert.equal(lines.length, 8, "6 items + 2 markers");
+	assert.ok(lines[0]!.includes("… +7 earlier"), "earlier marker counts hidden rows");
+	assert.ok(lines.some((l) => l.includes("task 9")), "active item visible in the window");
+	assert.ok(lines[7]!.includes("… +1 more"), "trailing marker");
+	assert.ok(lines[7]!.includes("/todos for all"), "full-list hint on the last marker");
+	assert.ok(lines[0]!.startsWith("<dim>└ </dim>"), "connector still on the first row");
+	// Active at the very end: no trailing marker, hint moves to the earlier marker.
+	const tail = renderTodoWidgetLines(long.map((t, i) => ({ ...t, status: i === 13 ? "in_progress" : "completed" })), theme);
+	assert.ok(tail[0]!.includes("… +8 earlier · /todos for all"));
+	assert.ok(tail.some((l) => l.includes("task 13")));
 });
 
 test("renderCollapsedLine: falls back to next pending, then all-done; empty renders nothing", () => {
@@ -72,14 +92,15 @@ test("renderCollapsedLine: falls back to next pending, then all-done; empty rend
 			{ content: "b", status: "pending" },
 		],
 		theme,
+		"alt+d",
 	);
 	assert.ok(pendingOnly[0]!.includes("<text>b</text>"));
 
-	const allDone = renderCollapsedLine([{ content: "a", status: "completed" }], theme);
+	const allDone = renderCollapsedLine([{ content: "a", status: "completed" }], theme, "alt+d");
 	assert.ok(allDone[0]!.includes("<dim>all done</dim>"));
 	assert.ok(allDone[0]!.includes("<dim> · 1/1 done</dim>"));
 
-	assert.deepEqual(renderCollapsedLine([], theme), []);
+	assert.deepEqual(renderCollapsedLine([], theme, "alt+d"), []);
 });
 
 test("renderTitleLine: static muted title + dim progress count — nothing dynamic", () => {
