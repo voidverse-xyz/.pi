@@ -20,7 +20,7 @@ const { makeSafetyConfirm, denyAllConfirm, CONFIRM_CHANNEL } = await jiti.import
 const { createSubagentTools } = await jiti.import(join(EXT, "tools/sub-agent.ts"));
 import { realpathSync } from "node:fs";
 
-const world = makeWorld("phase8");
+const world = await makeWorld("phase8");
 const layout = world.makeLayout("sess-8");
 
 console.log("allowlist:");

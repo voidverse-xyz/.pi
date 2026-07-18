@@ -58,7 +58,7 @@ await test("index.ts injects with followUp + triggerTurn (the idle auto-wake)", 
 });
 
 console.log("per-finish wake through a real core:");
-const world = makeWorld("phase5");
+const world = await makeWorld("phase5");
 world.writeDef("worker", "You are WORKER.");
 const layout = world.makeLayout("sess-5");
 const core = world.makeCore(layout, { maxConcurrent: 4 });
@@ -88,8 +88,8 @@ await test("each finishing agent fires the wake signal; digest carries its repor
 
 await test("digest commit closes open tasks for final reports and fatal errors", async () => {
 	// Manufacture a pending final report + error and matching open tasks.
-	const report = makeEnvelope({ from: "worker/w1", to: "main", type: "report", text: "late final", final: true, correlationId: "msg_00000000000000000000000001" });
-	const error = makeEnvelope({ from: "worker/w2", to: "main", type: "error", text: "Turn failed: x" });
+	const report = makeEnvelope({ from: "worker/w1", to: "main", type: "report", text: "late final", final: true, correlationId: "msg_00000000000000000000000001", terminalAnchors: ["msg_00000000000000000000000001"] });
+	const error = makeEnvelope({ from: "worker/w2", to: "main", type: "error", text: "Turn failed: x", terminalAnchors: ["msg_00000000000000000000000002"] });
 	writeEnvelope(layout.mainMailboxDir, report);
 	writeEnvelope(layout.mainMailboxDir, error);
 	recordOpenTask(layout.openTasksFile, "msg_00000000000000000000000001", { to: "worker/w1", snippet: "s", openedAt: new Date().toISOString() });

@@ -4,11 +4,11 @@
  * runtime/types.ts.
  */
 
-import type { AuthStorage, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
+import type { CreateAgentSessionServicesOptions, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
-import { parseAddress } from "./mail/envelope.ts";
+import { type Envelope, parseAddress } from "./mail/envelope.ts";
 import { markDone, pendingCount, readPending } from "./mail/mailbox.ts";
-import { closeAllFor } from "./store/open-tasks.ts";
+import { closeAllFor, closeOpenTask } from "./store/open-tasks.ts";
 import type { ConfirmFn } from "./sandbox/safety-bridge.ts";
 import { InProcessRuntime } from "./runtime/in-process.ts";
 import type {
@@ -91,12 +91,14 @@ export interface SubagentsCore {
 	readonly runtime: SubagentRuntime;
 }
 
+type ModelRuntime = NonNullable<CreateAgentSessionServicesOptions["modelRuntime"]>;
+
 export interface CoreOptions {
 	layout: Layout;
 	maxConcurrent?: number;
+	modelRuntime?: ModelRuntime;
 	modelRegistry?: ModelRegistry;
 	settingsManager?: SettingsManager;
-	authStorage?: AuthStorage;
 	projectTrusted?: () => boolean;
 	/** Human confirmation for guarded tool calls; default fail-closed deny. */
 	confirm?: ConfirmFn;
@@ -106,9 +108,9 @@ export function createCore(options: CoreOptions): SubagentsCore {
 	const runtime = new InProcessRuntime({
 		layout: options.layout,
 		...(options.maxConcurrent !== undefined ? { maxConcurrent: options.maxConcurrent } : {}),
+		...(options.modelRuntime ? { modelRuntime: options.modelRuntime } : {}),
 		...(options.modelRegistry ? { modelRegistry: options.modelRegistry } : {}),
 		...(options.settingsManager ? { settingsManager: options.settingsManager } : {}),
-		...(options.authStorage ? { authStorage: options.authStorage } : {}),
 		...(options.projectTrusted ? { projectTrusted: options.projectTrusted } : {}),
 		...(options.confirm ? { confirm: options.confirm } : {}),
 	});
@@ -145,13 +147,19 @@ export function createCore(options: CoreOptions): SubagentsCore {
 			const commit = (): void => {
 				for (const p of pending) {
 					markDone(box, p.envelope.id);
-					// A consumed FINAL report / fatal error closes the sender's open
-					// tasks — final means "everything drained is finished".
+					// A consumed final report/error closes only the exact task snapshot
+					// persisted on that terminal envelope.
 					const from = parseAddress(p.envelope.from);
 					if (from?.kind !== "agent") continue;
 					const terminal =
 						(p.envelope.type === "report" && p.envelope.payload.final === true) || p.envelope.type === "error";
-					if (terminal) closeAllFor(options.layout.openTasksFile, p.envelope.from);
+					if (!terminal) continue;
+					const anchors = terminalTaskAnchors(p.envelope);
+					if (anchors !== null) {
+						for (const anchorId of anchors) closeOpenTask(options.layout.openTasksFile, anchorId);
+					} else {
+						closeAllFor(options.layout.openTasksFile, p.envelope.from); // legacy unscoped error
+					}
 				}
 			};
 			return { digest, commit };
@@ -179,4 +187,11 @@ export function createCore(options: CoreOptions): SubagentsCore {
 			});
 		},
 	};
+}
+
+/** null means a legacy unscoped error whose historical behavior closed all tasks. */
+function terminalTaskAnchors(envelope: Envelope): string[] | null {
+	if (envelope.payload.terminalAnchors !== undefined) return envelope.payload.terminalAnchors;
+	if (envelope.type === "report" && envelope.payload.final === true && envelope.correlationId !== null) return [envelope.correlationId];
+	return envelope.type === "error" ? null : [];
 }

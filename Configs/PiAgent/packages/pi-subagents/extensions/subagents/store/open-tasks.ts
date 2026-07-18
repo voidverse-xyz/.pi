@@ -3,10 +3,10 @@
  *
  * Every task-bearing envelope from main (a spawn `task` or a subagent_send)
  * records an entry here, keyed by the envelope id (= the await anchor). An
- * entry is closed when a FINAL report from its agent is consumed — a final
- * report means the agent finished everything drained into that turn, so
- * consuming one closes ALL open tasks addressed to that agent. Retirement and
- * fatal turn errors also close an agent's tasks (the caller decides).
+ * entry is closed when a terminal envelope explicitly names its anchor. The
+ * runtime stamps each final report/error with the exact task snapshot drained
+ * into that turn, so mail held for a later turn cannot be closed early.
+ * Retirement still closes every task for the retired address.
  *
  * Self-healing: entries are pruned on read when their anchor id is malformed.
  * Entries for retired agents are closed by the runtime's retire path; a crash
@@ -88,7 +88,7 @@ export function closeOpenTask(path: string, anchorId: string): void {
 	}
 }
 
-/** Close every open task addressed to `to` (a final report / retire / fatal error). */
+/** Close every open task addressed to `to` (retirement and legacy recovery). */
 export function closeAllFor(path: string, to: string): string[] {
 	const map = readOpenTasks(path);
 	const closed = Object.entries(map)

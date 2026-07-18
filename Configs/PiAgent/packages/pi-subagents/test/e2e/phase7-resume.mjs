@@ -13,7 +13,7 @@ import { makeWorld, test, summary } from "./harness.mjs";
 
 const { claimHostScope, HostScopeLockedError } = await jiti.import(join(EXT, "store/host-lease.ts"));
 
-const world = makeWorld("phase7");
+const world = await makeWorld("phase7");
 world.writeDef("keeper", "You are KEEPER. Remember everything.");
 const layout = world.makeLayout("sess-7");
 

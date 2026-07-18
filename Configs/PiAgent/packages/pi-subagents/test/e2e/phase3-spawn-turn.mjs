@@ -15,7 +15,7 @@ import { makeWorld, test, summary, until } from "./harness.mjs";
 const { readPending } = await jiti.import(join(EXT, "mail/mailbox.ts"));
 const { readOpenTasks } = await jiti.import(join(EXT, "store/open-tasks.ts"));
 
-const world = makeWorld("phase3");
+const world = await makeWorld("phase3");
 world.writeDef("scout", "You are SCOUT.");
 const layout = world.makeLayout("sess-3");
 const core = world.makeCore(layout, { maxConcurrent: 2 });

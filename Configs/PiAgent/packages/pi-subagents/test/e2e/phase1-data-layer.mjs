@@ -58,6 +58,13 @@ await test("final is report-only", () => {
 	const report = makeEnvelope({ from: "scout/a", to: "main", type: "report", text: "done", final: true });
 	assert.equal(report.payload.final, true);
 });
+await test("terminalAnchors are valid only on final reports/errors", () => {
+	const anchor = makeEnvelope({ from: "main", to: "scout/a", type: "message", text: "task" }).id;
+	const report = makeEnvelope({ from: "scout/a", to: "main", type: "report", text: "done", final: true, terminalAnchors: [anchor] });
+	assert.deepEqual(report.payload.terminalAnchors, [anchor]);
+	assert.throws(() => makeEnvelope({ from: "main", to: "scout/a", type: "message", text: "x", terminalAnchors: [anchor] }));
+	assert.throws(() => makeEnvelope({ from: "scout/a", to: "main", type: "report", text: "progress", terminalAnchors: [anchor] }));
+});
 await test("ulid clock never moves backward after seeding", () => {
 	const a = ulid();
 	seedUlidClock(`msg_${a}`);

@@ -1,20 +1,20 @@
 /**
  * Phase-4 await e2e: single/multi-target joins, any/all modes, timeout with
  * partial results, error + retired terminal outcomes, the
- * one-final-report-closes-all-anchors rule, and open-task hygiene.
+ * exact per-turn terminal-anchor accounting, and open-task hygiene.
  *
  * Run: node phase4-await.mjs
  */
 import { strict as assert } from "node:assert";
 import { join } from "node:path";
 import { EXT, jiti } from "./env.mjs";
-import { makeWorld, test, summary } from "./harness.mjs";
+import { makeWorld, test, summary, until } from "./harness.mjs";
 
 const { readPending, writeEnvelope } = await jiti.import(join(EXT, "mail/mailbox.ts"));
 const { makeEnvelope } = await jiti.import(join(EXT, "mail/envelope.ts"));
-const { readOpenTasks } = await jiti.import(join(EXT, "store/open-tasks.ts"));
+const { readOpenTasks, recordOpenTask } = await jiti.import(join(EXT, "store/open-tasks.ts"));
 
-const world = makeWorld("phase4");
+const world = await makeWorld("phase4");
 world.writeDef("worker", "You are WORKER.");
 const layout = world.makeLayout("sess-4");
 const core = world.makeCore(layout, { maxConcurrent: 4 });
@@ -90,28 +90,49 @@ await test("a retired target resolves as retired (unmatched anchor)", async () =
 	assert.equal(result.outcomes[0].status, "retired");
 });
 
-console.log("one final closes all anchors:");
-await test("two tasks drained into one turn: the single final report resolves both targets", async () => {
-	await core.cancel("worker/c"); // no-op guard; ensure clean
-	// Park two messages while the agent has no handle yet: spawn without task,
-	// then send twice before the first wake can drain (sends are sync writes; the
-	// wake turn drains both).
-	world.scripts.push({ match: (c) => c.address === "worker/c", reply: () => ({ tools: [{ name: "report", args: { text: "both handled", final: true } }] }) });
+console.log("one final closes its drained snapshot:");
+await test("multiple tasks drained into one turn: the single final report resolves exactly that snapshot", async () => {
+	world.scripts.push({ match: (c) => c.address === "worker/c", reply: () => ({ tools: [{ name: "report", args: { text: "batch handled", final: true } }] }) });
 	await core.spawn({ type: "worker", id: "c" });
-	const s1 = await core.send({ to: "worker/c", text: "Task one." });
-	const s2 = await core.send({ to: "worker/c", text: "Task two." });
+	// Park two tasks without waking, then use a normal third send as the wake. The
+	// mail-turn snapshot deterministically contains all three anchors.
+	const e1 = makeEnvelope({ from: "main", to: "worker/c", type: "message", text: "Task one." });
+	const e2 = makeEnvelope({ from: "main", to: "worker/c", type: "message", text: "Task two." });
+	for (const envelope of [e1, e2]) {
+		writeEnvelope(layout.mailboxDir("worker", "c"), envelope);
+		recordOpenTask(layout.openTasksFile, envelope.id, { to: "worker/c", snippet: envelope.payload.text, openedAt: new Date().toISOString() });
+	}
+	const s3 = await core.send({ to: "worker/c", text: "Task three." });
+	const targets = [e1.id, e2.id, s3.envelopeId].map((anchorId) => ({ to: "worker/c", anchorId }));
+	const result = await core.awaitResults({ targets, mode: "all", timeoutSeconds: 10 });
+	assert.equal(result.status, "completed");
+	assert.equal(result.outcomes.length, 3, "all snapshot anchors resolved by the one final report");
+	assert.ok(result.outcomes.every((o) => o.status === "completed"));
+	assert.equal(new Set(result.outcomes.map((o) => o.report.id)).size, 1, "one report resolved the whole drained batch");
+	assert.deepEqual(readOpenTasks(layout.openTasksFile), {}, "all snapshot anchors closed");
+});
+
+console.log("held mail is not completed early:");
+await test("a final report resolves only tasks drained into its turn, not mail held for the next turn", async () => {
+	await core.spawn({ type: "worker", id: "held" });
+	world.scripts.push({ match: (c) => c.address === "worker/held" && c.lastUserText.includes("Task A"), reply: () => ({ delayMs: 150, tools: [{ name: "report", args: { text: "A done", final: true } }] }) });
+	world.scripts.push({ match: (c) => c.address === "worker/held" && c.lastUserText.includes("Task B"), reply: () => ({ tools: [{ name: "report", args: { text: "B done", final: true } }] }) });
+	const a = await core.send({ to: "worker/held", text: "Task A." });
+	assert.ok(await until(async () => (await core.status()).find((r) => r.address === "worker/held")?.state === "running", 2000));
+	const b = await core.send({ to: "worker/held", text: "Task B." });
+	assert.equal(b.disposition, "held", "B arrived during A and was held for the next turn");
 	const result = await core.awaitResults({
 		targets: [
-			{ to: "worker/c", anchorId: s1.envelopeId },
-			{ to: "worker/c", anchorId: s2.envelopeId },
+			{ to: "worker/held", anchorId: a.envelopeId },
+			{ to: "worker/held", anchorId: b.envelopeId },
 		],
 		mode: "all",
 		timeoutSeconds: 10,
 	});
-	assert.equal(result.status, "completed");
-	assert.equal(result.outcomes.length, 2, "both targets resolved by the one final report");
-	assert.ok(result.outcomes.every((o) => o.status === "completed"));
-	assert.deepEqual(readOpenTasks(layout.openTasksFile), {}, "all anchors closed");
+	const byAnchor = new Map(result.outcomes.map((outcome) => [outcome.anchorId, outcome]));
+	assert.ok(byAnchor.get(a.envelopeId)?.report?.text.includes("A done"));
+	assert.ok(byAnchor.get(b.envelopeId)?.report?.text.includes("B done"));
+	assert.notEqual(byAnchor.get(a.envelopeId)?.report?.id, byAnchor.get(b.envelopeId)?.report?.id, "each turn produced its own terminal report");
 });
 
 console.log("empty + openTasks default:");

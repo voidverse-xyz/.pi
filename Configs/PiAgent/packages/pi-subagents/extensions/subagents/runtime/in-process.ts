@@ -21,10 +21,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
 	type AgentSession,
-	type AuthStorage,
-	createAgentSession,
-	type CreateAgentSessionOptions,
-	DefaultResourceLoader,
+	createAgentSessionFromServices,
+	createAgentSessionServices,
+	type CreateAgentSessionFromServicesOptions,
+	type CreateAgentSessionServicesOptions,
 	type ModelRegistry,
 	parseSessionEntries,
 	resolveCliModel,
@@ -52,7 +52,7 @@ import {
 	readPending,
 } from "../mail/mailbox.ts";
 import { archiveAgentDir, type ArchivedInfo, readArchived } from "../store/archive.ts";
-import { closeAllFor, readOpenTasks, recordOpenTask } from "../store/open-tasks.ts";
+import { closeAllFor, closeOpenTask, readOpenTasks, recordOpenTask } from "../store/open-tasks.ts";
 import {
 	type AgentRecord,
 	type AgentState,
@@ -104,12 +104,16 @@ const TMP_ID_BYTES = 4;
 const AWAIT_POLL_MS = 40;
 const DEFAULT_AWAIT_TIMEOUT_S = 300;
 
+type ModelRuntime = NonNullable<CreateAgentSessionServicesOptions["modelRuntime"]>;
+
 export interface RuntimeOptions {
 	layout: Layout;
 	maxConcurrent?: number;
+	/** Canonical model runtime for subagent sessions. Created lazily when omitted. */
+	modelRuntime?: ModelRuntime;
+	/** Main-session compatibility facade, used to mirror extension-registered providers. */
 	modelRegistry?: ModelRegistry;
 	settingsManager?: SettingsManager;
-	authStorage?: AuthStorage;
 	projectTrusted?: () => boolean;
 	/** Human confirmation for guarded tool calls; default fail-closed deny. */
 	confirm?: ConfirmFn;
@@ -145,6 +149,8 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	private handles = new Map<string, Handle>();
 	private buildLocks = new Map<string, Promise<Handle>>();
 	private chains = new Map<string, Promise<void>>();
+	/** Shared across handles so model/provider/auth state stays coherent. */
+	private modelRuntime: ModelRuntime | undefined;
 	private retiring = new Set<string>();
 	/** Addresses with a mail turn currently in flight (per-address await liveness). */
 	private runningAddresses = new Set<string>();
@@ -163,6 +169,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	constructor(private readonly options: RuntimeOptions) {
 		this.layout = options.layout;
 		this.scheduler = new Scheduler(options.maxConcurrent);
+		this.modelRuntime = options.modelRuntime;
 		this.registry = readRegistry(this.layout.registryFile);
 		this.confirm = options.confirm ?? denyAllConfirm;
 		const protectedDirs = [this.layout.projectSubagentsRoot, this.layout.globalTypeDefsDir, this.layout.projectTypeDefsDir];
@@ -281,8 +288,10 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		// A final report is correlated to the current assignment so an await on the
 		// task anchor can match it. A oneshot auto-retires after its final report.
 		let correlationId: string | null = null;
+		let terminalAnchors: string[] | undefined;
 		if (opts.final && handle?.assignment) correlationId = handle.assignment;
 		if (opts.final && handle) {
+			terminalAnchors = taskAnchors(handle.trigger);
 			const record = getAgent(this.registry, from);
 			if (record?.lifetime === "oneshot") handle.retireAfterTurn = true;
 		}
@@ -293,6 +302,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			text: opts.text,
 			...(opts.data !== undefined ? { data: opts.data } : {}),
 			...(opts.final !== undefined ? { final: opts.final } : {}),
+			...(terminalAnchors !== undefined ? { terminalAnchors } : {}),
 			correlationId,
 			causedBy,
 		});
@@ -412,10 +422,10 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 	/**
 	 * Explicit in-run join: block until every target (mode "all") or the first
-	 * target (mode "any") reaches a terminal outcome — a FINAL report correlated
-	 * to its anchor (a final report from agent X also resolves every other
-	 * target/open task for X: final means "everything drained is finished"), a
-	 * fatal error envelope from the agent, or retirement — or the timeout
+	 * target (mode "any") reaches a terminal outcome — a FINAL report whose
+	 * persisted terminalAnchors includes the target (so mail held for the next
+	 * turn is never completed early), a fatal error envelope for that target, or
+	 * retirement — or the timeout
 	 * elapses. Matched envelopes are consumed; unmatched mail is untouched.
 	 */
 	async awaitResults(options: AwaitOptions): Promise<AwaitResult> {
@@ -427,11 +437,12 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		const outcomes: TargetOutcome[] = [];
 		const mainbox = this.layout.mainMailboxDir;
 
-		const resolveAllFor = (to: string, make: (target: AwaitTarget) => TargetOutcome): void => {
+		const resolveAnchorsFor = (to: string, anchors: ReadonlySet<string> | null, make: (target: AwaitTarget) => TargetOutcome): void => {
 			for (const [key, target] of [...remaining.entries()]) {
-				if (target.to !== to) continue;
+				if (target.to !== to || (anchors !== null && !anchors.has(target.anchorId))) continue;
 				outcomes.push(make(target));
 				remaining.delete(key);
+				closeOpenTask(this.layout.openTasksFile, target.anchorId);
 			}
 		};
 
@@ -441,26 +452,27 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 			for (const target of [...remaining.values()]) {
 				if (!remaining.has(`${target.to} ${target.anchorId}`)) continue; // resolved by an earlier sibling this pass
-				const finalReport = pending.find(
-					(p) =>
-						p.envelope.type === "report" &&
-						p.envelope.from === target.to &&
-						p.envelope.payload.final === true &&
-						p.envelope.correlationId === target.anchorId,
-				);
+				const finalReport = pending.find((p) => {
+					if (p.envelope.type !== "report" || p.envelope.from !== target.to || p.envelope.payload.final !== true) return false;
+					return terminalTaskAnchors(p.envelope).includes(target.anchorId);
+				});
 				if (finalReport) {
 					markDone(mainbox, finalReport.envelope.id);
-					closeAllFor(this.layout.openTasksFile, target.to);
+					const anchors = new Set(terminalTaskAnchors(finalReport.envelope));
 					const view = envView(finalReport.envelope);
-					resolveAllFor(target.to, (t) => ({ to: t.to, anchorId: t.anchorId, status: "completed", report: view }));
+					resolveAnchorsFor(target.to, anchors, (t) => ({ to: t.to, anchorId: t.anchorId, status: "completed", report: view }));
 					continue;
 				}
-				const fatal = pending.find((p) => p.envelope.type === "error" && p.envelope.from === target.to);
+				const fatal = pending.find((p) => {
+					if (p.envelope.type !== "error" || p.envelope.from !== target.to) return false;
+					const anchors = terminalTaskAnchors(p.envelope);
+					return anchors.length === 0 || anchors.includes(target.anchorId); // empty = legacy unscoped error
+				});
 				if (fatal) {
 					markDone(mainbox, fatal.envelope.id);
-					closeAllFor(this.layout.openTasksFile, target.to);
+					const anchors = terminalTaskAnchors(fatal.envelope);
 					const view = envView(fatal.envelope);
-					resolveAllFor(target.to, (t) => ({ to: t.to, anchorId: t.anchorId, status: "error", error: view }));
+					resolveAnchorsFor(target.to, anchors.length > 0 ? new Set(anchors) : null, (t) => ({ to: t.to, anchorId: t.anchorId, status: "error", error: view }));
 					continue;
 				}
 				// Retired detection keys on the TARGET's own liveness, not the fleet-wide
@@ -468,7 +480,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				// force this await to spin to timeout.
 				if (!getAgent(this.registry, target.to) && !this.runningAddresses.has(target.to)) {
 					closeAllFor(this.layout.openTasksFile, target.to);
-					resolveAllFor(target.to, (t) => ({ to: t.to, anchorId: t.anchorId, status: "retired" }));
+					resolveAnchorsFor(target.to, null, (t) => ({ to: t.to, anchorId: t.anchorId, status: "retired" }));
 				}
 			}
 
@@ -713,10 +725,16 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 			if (failure && (failure as { stopReason: string }).stopReason === "error") {
 				this.emit({ type: "turn-error", address, error: (failure as { message: string }).message });
-				// Surface a fatal error to main and close the agent's open tasks — the
-				// turn's mail was consumed, so nothing will complete those anchors.
-				this.deliverer.send({ from: { kind: "agent", type: record.type, id: record.id }, to: MAIN_ADDRESS, type: "error", text: `Turn failed: ${(failure as { message: string }).message}` });
-				closeAllFor(this.layout.openTasksFile, address);
+				// Persist exactly the task anchors consumed by this failed turn. Mail that
+				// arrived while it ran remains pending for the next turn and must not be
+				// completed by this error.
+				this.deliverer.send({
+					from: { kind: "agent", type: record.type, id: record.id },
+					to: MAIN_ADDRESS,
+					type: "error",
+					text: `Turn failed: ${(failure as { message: string }).message}`,
+					terminalAnchors: taskAnchors(pending.map((p) => p.envelope)),
+				});
 			}
 			this.activity.delete(address);
 			this.emit({ type: "state-changed", address, state: "dormant" });
@@ -776,27 +794,36 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 		const purview = record.type === ADHOC_TYPE ? def.config.description : record.id;
 		const composed = composeContext(def, { address, purview, lifetime: record.lifetime });
-		const loader = new DefaultResourceLoader({
+		const services = await createAgentSessionServices({
 			cwd: layout.cwd,
 			agentDir: layout.agentDir,
 			...(this.options.settingsManager ? { settingsManager: this.options.settingsManager } : {}),
-			noExtensions: true,
-			noSkills: true,
-			noPromptTemplates: true,
-			noThemes: true,
-			noContextFiles: !def.config.projectContext,
-			appendSystemPrompt: composed.appendSystemPrompt,
+			...(this.modelRuntime ? { modelRuntime: this.modelRuntime } : {}),
+			resourceLoaderOptions: {
+				noExtensions: true,
+				noSkills: true,
+				noPromptTemplates: true,
+				noThemes: true,
+				noContextFiles: !def.config.projectContext,
+				appendSystemPrompt: composed.appendSystemPrompt,
+			},
 		});
-		await loader.reload();
+		this.modelRuntime = services.modelRuntime;
 
-		const sessionOptions: CreateAgentSessionOptions = {
-			cwd: layout.cwd,
-			agentDir: layout.agentDir,
+		// Extension-registered providers live on the main session's compatibility
+		// facade. Mirror their public configs into the subagent runtime so custom
+		// providers keep working without reaching into ModelRegistry internals.
+		const registry = this.options.modelRegistry;
+		if (registry) {
+			for (const providerId of registry.getRegisteredProviderIds()) {
+				const config = registry.getRegisteredProviderConfig(providerId);
+				if (config) services.modelRuntime.registerProvider(providerId, config);
+			}
+		}
+
+		const sessionOptions: CreateAgentSessionFromServicesOptions = {
+			services,
 			sessionManager,
-			resourceLoader: loader,
-			...(this.options.modelRegistry ? { modelRegistry: this.options.modelRegistry } : {}),
-			...(this.options.settingsManager ? { settingsManager: this.options.settingsManager } : {}),
-			...(this.options.authStorage ? { authStorage: this.options.authStorage } : {}),
 			noTools: "builtin",
 			customTools: [
 				...createSubagentTools(address, this),
@@ -816,21 +843,23 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				}),
 			],
 		};
-		const model = this.resolveModel(def, inherit);
+		const model = this.resolveModel(def, inherit, services.modelRuntime);
 		if (model) sessionOptions.model = model;
 		const thinkingLevel = def.config.thinking ?? inherit?.thinkingLevel;
 		if (thinkingLevel !== undefined) sessionOptions.thinkingLevel = thinkingLevel;
 
-		const { session } = await createAgentSession(sessionOptions);
+		const { session } = await createAgentSessionFromServices(sessionOptions);
 		return { session, aborted: false, trigger: null, assignment: null, retireAfterTurn: false };
 	}
 
-	private resolveModel(def: TypeDefinition, inherit?: InheritedDefaults): CreateAgentSessionOptions["model"] | undefined {
-		const registry = this.options.modelRegistry;
-		if (!registry) return undefined;
+	private resolveModel(
+		def: TypeDefinition,
+		inherit: InheritedDefaults | undefined,
+		modelRuntime: ModelRuntime,
+	): CreateAgentSessionFromServicesOptions["model"] | undefined {
 		const ref = def.config.model ?? inherit?.modelRef;
 		if (ref === undefined) return undefined;
-		const resolved = resolveCliModel({ cliModel: ref, modelRegistry: registry });
+		const resolved = resolveCliModel({ cliModel: ref, modelRuntime });
 		if (!resolved.model) {
 			if (def.config.model !== undefined) throw new Error(resolved.error ?? `Type "${def.config.name}": unknown model "${ref}".`);
 			return undefined;
@@ -867,6 +896,21 @@ function toolSummary(tool: string, args: unknown): string {
 		typeof a.command === "string" ? a.command : typeof a.path === "string" ? a.path : typeof a.pattern === "string" ? a.pattern : typeof a.to === "string" ? String(a.to) : "";
 	const flat = detail.replace(/\s+/g, " ").trim();
 	return flat ? `${label}: ${flat.length > 48 ? `${flat.slice(0, 47)}…` : flat}` : label;
+}
+
+/** Task anchors consumed by one mail-turn snapshot (never includes held future mail). */
+function taskAnchors(trigger: Envelope[] | null): string[] {
+	if (!trigger) return [];
+	return [...new Set(trigger
+		.filter((envelope) => envelope.type === "message" && envelope.from === MAIN_ADDRESS && envelope.correlationId === null)
+		.map((envelope) => envelope.id))];
+}
+
+/** Persisted terminal anchors, with correlationId fallback for pre-migration reports. */
+function terminalTaskAnchors(envelope: Envelope): string[] {
+	if (envelope.payload.terminalAnchors !== undefined) return envelope.payload.terminalAnchors;
+	if (envelope.type === "report" && envelope.payload.final === true && envelope.correlationId !== null) return [envelope.correlationId];
+	return [];
 }
 
 function envView(envelope: Envelope): EnvelopeView {

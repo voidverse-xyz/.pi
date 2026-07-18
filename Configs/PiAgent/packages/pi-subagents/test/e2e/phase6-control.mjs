@@ -12,7 +12,7 @@ import { makeWorld, test, summary, until } from "./harness.mjs";
 
 const { readPending } = await jiti.import(join(EXT, "mail/mailbox.ts"));
 
-const world = makeWorld("phase6");
+const world = await makeWorld("phase6");
 world.writeDef("worker", "You are WORKER.");
 const layout = world.makeLayout("sess-6");
 const core = world.makeCore(layout, { maxConcurrent: 1 }); // cap 1 makes queueing deterministic

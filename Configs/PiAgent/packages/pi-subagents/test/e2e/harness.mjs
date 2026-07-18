@@ -12,7 +12,7 @@
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
+import { createTestModelRuntime, EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
 
 export const piSdk = await jiti.import(join(PI_PKG, "dist/index.js"));
 export const piAi = await jiti.import(join(PI_PKG, "node_modules/@earendil-works/pi-ai/dist/index.js"));
@@ -20,7 +20,7 @@ export const piAi = await jiti.import(join(PI_PKG, "node_modules/@earendil-works
 const { createLayout } = await jiti.import(join(EXT, "store/layout.ts"));
 const { createCore } = await jiti.import(join(EXT, "core.ts"));
 
-export function makeWorld(name) {
+export async function makeWorld(name) {
 	const scratch = join(WORLDS, `${name}-world`);
 	rmSync(scratch, { recursive: true, force: true });
 	const home = join(scratch, "home");
@@ -98,18 +98,23 @@ export function makeWorld(name) {
 		return stream;
 	}
 
-	const authStorage = piSdk.AuthStorage.create(join(home, ".pi", "agent", "auth.json"));
-	const modelRegistry = piSdk.ModelRegistry.inMemory(authStorage);
-	modelRegistry.registerProvider("mock", {
-		baseUrl: "http://mock.invalid", apiKey: "k", api: "mock-api", streamSimple: mockStream,
-		models: [{ id: "mock-1", name: "Mock", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 4096 }],
-	});
 	const settingsManager = piSdk.SettingsManager.create(project, join(home, ".pi", "agent"));
+	const { modelRuntime, modelRegistry } = await createTestModelRuntime(piSdk, {
+		cwd: project,
+		agentDir: join(home, ".pi", "agent"),
+		settingsManager,
+		providers: {
+			mock: {
+				baseUrl: "http://mock.invalid", apiKey: "k", api: "mock-api", streamSimple: mockStream,
+				models: [{ id: "mock-1", name: "Mock", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 4096 }],
+			},
+		},
+	});
 
 	const makeLayout = (sessionId) => createLayout(project, { home, sessionId });
-	const makeCore = (layout, extra = {}) => createCore({ layout, modelRegistry, settingsManager, authStorage, ...extra });
+	const makeCore = (layout, extra = {}) => createCore({ layout, modelRuntime, modelRegistry, settingsManager, ...extra });
 
-	return { scratch, home, project, globalDefs, projectDefs, writeDef, llmCalls, scripts, authStorage, modelRegistry, settingsManager, makeLayout, makeCore };
+	return { scratch, home, project, globalDefs, projectDefs, writeDef, llmCalls, scripts, modelRuntime, modelRegistry, settingsManager, makeLayout, makeCore };
 }
 
 let passed = 0;

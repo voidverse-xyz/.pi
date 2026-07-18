@@ -161,6 +161,8 @@ export interface EnvelopePayload {
 	data?: unknown;
 	/** Persisted completion signal; valid only on report envelopes. */
 	final?: boolean;
+	/** Task anchors made terminal by this final report or runtime error. */
+	terminalAnchors?: string[];
 }
 
 export interface Envelope {
@@ -197,6 +199,8 @@ export interface MakeEnvelopeOptions {
 	data?: unknown;
 	/** Persisted completion signal; valid only on report envelopes. */
 	final?: boolean;
+	/** Task anchors made terminal by this final report or runtime error. */
+	terminalAnchors?: string[];
 	correlationId?: string | null;
 	hops?: number;
 	/** Clock override (tests). */
@@ -222,6 +226,7 @@ export function makeEnvelope(options: MakeEnvelopeOptions): Envelope {
 			text: options.text,
 			...(options.data !== undefined ? { data: options.data } : {}),
 			...(options.final !== undefined ? { final: options.final } : {}),
+			...(options.terminalAnchors !== undefined ? { terminalAnchors: options.terminalAnchors } : {}),
 		},
 		sentAt: now.toISOString(),
 	};
@@ -280,6 +285,14 @@ export function validateEnvelope(value: unknown): string[] {
 		}
 		if (p.final !== undefined && env.type !== "report") {
 			errors.push("payload.final is valid only on report envelopes");
+		}
+		if (p.terminalAnchors !== undefined) {
+			if (!Array.isArray(p.terminalAnchors) || !p.terminalAnchors.every((anchor) => typeof anchor === "string" && ENVELOPE_ID_RE.test(anchor))) {
+				errors.push("payload.terminalAnchors must be an array of task envelope ids when present");
+			}
+			if (env.type !== "error" && !(env.type === "report" && p.final === true)) {
+				errors.push("payload.terminalAnchors is valid only on final reports or error envelopes");
+			}
 		}
 	}
 	if (typeof env.sentAt !== "string" || Number.isNaN(Date.parse(env.sentAt))) {

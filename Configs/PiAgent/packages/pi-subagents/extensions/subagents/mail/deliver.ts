@@ -53,6 +53,7 @@ export interface SendParams {
 	text: string;
 	data?: unknown;
 	final?: boolean;
+	terminalAnchors?: string[];
 	correlationId?: string | null;
 	/** The envelope whose processing caused this send (for hops accounting). */
 	causedBy?: Envelope | null;
@@ -78,6 +79,7 @@ export class Deliverer {
 			text: params.text,
 			...(params.data !== undefined ? { data: params.data } : {}),
 			...(params.final !== undefined ? { final: params.final } : {}),
+			...(params.terminalAnchors !== undefined ? { terminalAnchors: params.terminalAnchors } : {}),
 			correlationId: params.correlationId ?? null,
 			hops,
 			...(fromGen !== undefined ? { fromGenerationId: fromGen } : {}),
