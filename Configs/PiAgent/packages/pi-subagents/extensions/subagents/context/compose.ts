@@ -46,7 +46,7 @@ export function composeIdentityBlock(options: IdentityOptions): string {
 	lines.push("## Communication");
 	lines.push("");
 	lines.push(
-		"- Your ONLY channel is the `report` tool, to the main agent: progress reports along the way, " +
+		"- Your ONLY channel is the `report` tool, to the main agent: actionable progress or blocker reports along the way, " +
 			"and exactly one FINAL report (final:true) when your assigned task is complete.",
 	);
 	lines.push(
@@ -61,7 +61,8 @@ export function composeIdentityBlock(options: IdentityOptions): string {
 	lines.push(
 		"- The main agent only learns what you tell it — never finish silently. When your assigned " +
 			"task is complete, send a FINAL report (the `report` tool with final:true); send progress " +
-			"reports at meaningful milestones along the way.",
+			"reports only for actionable milestones or blockers. Never send a report merely to announce " +
+			"that you are starting or to restate the assignment.",
 	);
 	lines.push(
 		"- Surface blocking ambiguity EARLY: sanity-check the assignment before deep work. If something " +

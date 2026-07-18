@@ -32,6 +32,32 @@ await test("await blocks until the final report and consumes exactly it", async 
 	assert.deepEqual(readOpenTasks(layout.openTasksFile), {}, "open task closed");
 });
 
+await test("await coalesces superseded progress so no stale wake follows the final", async () => {
+	world.scripts.push({
+		match: (c) => c.address === "worker/progress",
+		reply: () => ({
+			tools: [
+				{ name: "report", args: { text: "Starting review; next: inspect files." } },
+				{ name: "report", args: { text: "Review complete.", final: true } },
+			],
+		}),
+	});
+	const spawn = await core.spawn({ type: "worker", id: "progress", task: "Review this change." });
+	assert.ok(await until(() => readPending(layout.mainMailboxDir).some((p) => p.envelope.payload.final === true), 2000));
+	const before = readPending(layout.mainMailboxDir);
+	const progress = before.find((p) => p.envelope.payload.final !== true);
+	assert.equal(progress?.envelope.correlationId, spawn.taskEnvelopeId, "progress carries its task correlation");
+	const result = await core.awaitResults({
+		targets: [{ to: "worker/progress", anchorId: spawn.taskEnvelopeId }],
+		mode: "all",
+		timeoutSeconds: 10,
+	});
+	assert.equal(result.outcomes[0].status, "completed");
+	assert.ok(result.outcomes[0].report.text.includes("Review complete"), "await returns only the terminal report");
+	assert.equal(readPending(layout.mainMailboxDir).length, 0, "progress and final consumed together");
+	assert.equal(core.takeMainMailDigest(), null, "idle wake has no stale progress left to deliver");
+});
+
 console.log("await any/all:");
 await test("mode any returns the fast agent; slow one stays pending, then all completes", async () => {
 	world.scripts.push({ match: (c) => c.address === "worker/fast", reply: () => ({ delayMs: 50, tools: [{ name: "report", args: { text: "fast done", final: true } }] }) });
@@ -73,12 +99,28 @@ await test("a fatal error envelope resolves the target as error and closes its t
 	await core.spawn({ type: "worker", id: "b" }); // dormant, no task yet
 	const send = await core.send({ to: "worker/b", text: "Doomed task." });
 	// Manufacture the runtime's fatal-error envelope shape directly (the mock LLM
-	// can't crash a turn): error from the agent's address into the main mailbox.
-	writeEnvelope(layout.mainMailboxDir, makeEnvelope({ from: "worker/b", to: "main", type: "error", text: "Turn failed: boom" }));
+	// can't crash a turn): correlated progress followed by a task-scoped error.
+	writeEnvelope(layout.mainMailboxDir, makeEnvelope({
+		from: "worker/b",
+		to: "main",
+		type: "report",
+		text: "Partial work before failure.",
+		correlationId: send.envelopeId,
+		hops: 1,
+	}));
+	writeEnvelope(layout.mainMailboxDir, makeEnvelope({
+		from: "worker/b",
+		to: "main",
+		type: "error",
+		text: "Turn failed: boom",
+		terminalAnchors: [send.envelopeId],
+		hops: 1,
+	}));
 	const result = await core.awaitResults({ targets: [{ to: "worker/b", anchorId: send.envelopeId }], mode: "all", timeoutSeconds: 5 });
 	assert.equal(result.outcomes[0].status, "error");
 	assert.ok(result.outcomes[0].error.text.includes("boom"));
 	assert.ok(!readOpenTasks(layout.openTasksFile)[send.envelopeId], "task closed on error");
+	assert.equal(readPending(layout.mainMailboxDir).length, 0, "superseded progress consumed with the fatal outcome");
 	await core.whenIdle();
 });
 await test("a retired target resolves as retired (unmatched anchor)", async () => {

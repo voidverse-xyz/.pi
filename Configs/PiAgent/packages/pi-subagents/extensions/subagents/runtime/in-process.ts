@@ -285,11 +285,11 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		if (!fromAddress || fromAddress.kind !== "agent") throw new Error(`invalid agent sender ${JSON.stringify(from)}`);
 		const handle = this.handles.get(from);
 		const causedBy = handle?.trigger && handle.trigger.length > 0 ? handle.trigger.reduce((a, b) => (b.hops > a.hops ? b : a)) : null;
-		// A final report is correlated to the current assignment so an await on the
-		// task anchor can match it. A oneshot auto-retires after its final report.
-		let correlationId: string | null = null;
+		// Correlate every report to the current assignment. Await returns only the
+		// final report, but this link lets it consume earlier progress reports from
+		// the same task so they cannot arrive later as stale wake digests.
+		let correlationId: string | null = handle?.assignment ?? null;
 		let terminalAnchors: string[] | undefined;
-		if (opts.final && handle?.assignment) correlationId = handle.assignment;
 		if (opts.final && handle) {
 			terminalAnchors = taskAnchors(handle.trigger);
 			const record = getAgent(this.registry, from);
@@ -425,8 +425,8 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	 * target (mode "any") reaches a terminal outcome — a FINAL report whose
 	 * persisted terminalAnchors includes the target (so mail held for the next
 	 * turn is never completed early), a fatal error envelope for that target, or
-	 * retirement — or the timeout
-	 * elapses. Matched envelopes are consumed; unmatched mail is untouched.
+	 * retirement — or the timeout elapses. Matched terminal envelopes and their
+	 * correlated, superseded progress are consumed; unrelated mail is untouched.
 	 */
 	async awaitResults(options: AwaitOptions): Promise<AwaitResult> {
 		const timeoutSeconds = options.timeoutSeconds ?? DEFAULT_AWAIT_TIMEOUT_S;
@@ -457,8 +457,9 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 					return terminalTaskAnchors(p.envelope).includes(target.anchorId);
 				});
 				if (finalReport) {
-					markDone(mainbox, finalReport.envelope.id);
 					const anchors = new Set(terminalTaskAnchors(finalReport.envelope));
+					consumeSupersededProgress(mainbox, pending, finalReport.envelope, anchors);
+					markDone(mainbox, finalReport.envelope.id);
 					const view = envView(finalReport.envelope);
 					resolveAnchorsFor(target.to, anchors, (t) => ({ to: t.to, anchorId: t.anchorId, status: "completed", report: view }));
 					continue;
@@ -469,8 +470,9 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 					return anchors.length === 0 || anchors.includes(target.anchorId); // empty = legacy unscoped error
 				});
 				if (fatal) {
-					markDone(mainbox, fatal.envelope.id);
 					const anchors = terminalTaskAnchors(fatal.envelope);
+					if (anchors.length > 0) consumeSupersededProgress(mainbox, pending, fatal.envelope, new Set(anchors));
+					markDone(mainbox, fatal.envelope.id);
 					const view = envView(fatal.envelope);
 					resolveAnchorsFor(target.to, anchors.length > 0 ? new Set(anchors) : null, (t) => ({ to: t.to, anchorId: t.anchorId, status: "error", error: view }));
 					continue;
@@ -911,6 +913,33 @@ function terminalTaskAnchors(envelope: Envelope): string[] {
 	if (envelope.payload.terminalAnchors !== undefined) return envelope.payload.terminalAnchors;
 	if (envelope.type === "report" && envelope.payload.final === true && envelope.correlationId !== null) return [envelope.correlationId];
 	return [];
+}
+
+/**
+ * A joined terminal outcome supersedes progress from the same assignment. Move
+ * those progress envelopes to `.done` with the final/error so the idle wake pump
+ * cannot deliver an already-obsolete checkpoint after `subagent_await` returns.
+ * Only explicitly correlated reports are coalesced. Older uncorrelated mail is
+ * left untouched because it cannot be attributed to an assignment safely.
+ */
+function consumeSupersededProgress(
+	mailboxDir: string,
+	pending: ReturnType<typeof readPending>,
+	terminal: Envelope,
+	anchors: ReadonlySet<string>,
+): void {
+	for (const candidate of pending) {
+		const envelope = candidate.envelope;
+		if (envelope.type !== "report" || envelope.payload.final === true || envelope.from !== terminal.from) continue;
+		if (
+			envelope.fromGenerationId !== undefined &&
+			terminal.fromGenerationId !== undefined &&
+			envelope.fromGenerationId !== terminal.fromGenerationId
+		) continue;
+		if (envelope.correlationId !== null && anchors.has(envelope.correlationId)) {
+			markDone(mailboxDir, envelope.id);
+		}
+	}
 }
 
 function envView(envelope: Envelope): EnvelopeView {

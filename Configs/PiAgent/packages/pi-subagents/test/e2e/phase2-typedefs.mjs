@@ -16,6 +16,7 @@ const { parseTypeFile } = await jiti.import(join(EXT, "typedefs/parse.ts"));
 const { listTypeDefs, resolveTypeDef, resolveAdhocDef, composeAdhocDef, ADHOC_TYPE } = await jiti.import(join(EXT, "typedefs/discover.ts"));
 const { createLayout } = await jiti.import(join(EXT, "store/layout.ts"));
 const { atomicWriteText } = await jiti.import(join(EXT, "store/atomic.ts"));
+const { composeIdentityBlock } = await jiti.import(join(EXT, "context/compose.ts"));
 
 const scratch = join(WORLDS, "phase2-world");
 rmSync(scratch, { recursive: true, force: true });
@@ -45,6 +46,13 @@ await test("malformed KNOWN fields stay hard errors", () => {
 	assert.equal(parseTypeFile(["---", "name: y", "description: d", "---", ""].join("\n"), "x").ok, false, "name↔filename mismatch");
 	assert.equal(parseTypeFile(["---", "name: x", "description: d", "tools: [read, 3]", "---", ""].join("\n"), "x").ok, false);
 	assert.equal(parseTypeFile("no frontmatter", "x").ok, false);
+});
+
+console.log("subagent communication contract:");
+await test("identity guidance forbids non-actionable starting reports", () => {
+	const identity = composeIdentityBlock({ address: "scout/a", purview: "review", lifetime: "oneshot" });
+	assert.ok(identity.includes("actionable progress or blocker reports"));
+	assert.ok(identity.includes("Never send a report merely to announce that you are starting"));
 });
 
 console.log("reserved adhoc name:");
