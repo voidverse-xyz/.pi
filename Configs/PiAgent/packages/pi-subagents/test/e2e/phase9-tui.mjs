@@ -58,6 +58,19 @@ await test("compact token formatting matches Pi-style thresholds", () => {
 	assert.equal(widget.formatTokens(8_100), "8.1k");
 	assert.equal(widget.formatTokens(12_400), "12k");
 });
+await test("an 80-character label is truncated before required metrics at ordinary width", () => {
+	const lines = tree.renderTreeLines(
+		[{ address: "adhoc/tmp-long", label: `${"descriptive ".repeat(6)}longname`, tool: "bash", summary: "Bash: npm test", toolUses: 4, tokens: 22_000, ctxPercent: 67 }],
+		{ running: 1, waiting: 0, unread: 0 },
+		plainTheme,
+		80,
+	);
+	const metrics = lines.find((line) => line.includes(tree.TOOL_ICON));
+	assert.ok(metrics.includes(`${tree.TOOL_ICON} 4 tools`));
+	assert.ok(metrics.includes(`${tree.TOKEN_ICON} 22k tokens`));
+	assert.ok(metrics.includes(`${tree.CONTEXT_ICON} 67%`));
+	assert.ok(visibleWidth(metrics) <= 80);
+});
 
 console.log("component-backed padding:");
 await test("controller mounts a raw component whose render preserves the trailing blank line", async () => {
@@ -91,7 +104,11 @@ await test("controller mounts a raw component whose render preserves the trailin
 	assert.equal(rendered.at(-1), "", "component returns the raw padding row");
 	const narrow = component.render(32);
 	assert.ok(narrow.every((line) => visibleWidth(line) <= 32), "narrow rows are clipped to the widget width");
-	assert.ok(narrow.some((line) => line.includes("test runner")), "the human label survives before right-side metrics are truncated");
+	assert.ok(narrow.some((line) => line.includes("test runner")), "the human label survives on its narrow row");
+	assert.ok(
+		narrow.some((line) => line.includes(`${tree.TOOL_ICON} 1`) && line.includes(`${tree.TOKEN_ICON} 12k`) && line.includes(`${tree.CONTEXT_ICON} 18%`)),
+		"a separate compact row preserves all metrics at narrow width",
+	);
 	unread = 2;
 	listener({ type: "state-changed" });
 	assert.ok(await until(() => renderRequests > 0, 1000), "runtime changes request a rerender");

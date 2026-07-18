@@ -85,7 +85,7 @@ export function upsertAgent(registry: Registry, input: UpsertInput): { record: A
 	if (existing) {
 		existing.typeFileHash = input.typeFileHash;
 		existing.lastActiveAt = input.now;
-		if (input.label !== undefined) existing.label = input.label;
+		if (existing.label === undefined && input.label !== undefined) existing.label = input.label;
 		return { record: existing, created: false };
 	}
 	const record: AgentRecord = {

@@ -15,6 +15,7 @@ const { createLayout, cwdSlug } = await jiti.import(join(EXT, "store/layout.ts")
 const { makeEnvelope, validateEnvelope, seedUlidClock, ulid } = await jiti.import(join(EXT, "mail/envelope.ts"));
 const { writeEnvelope, readPending, pendingCount, beginDelivery, markDone, maxEnvelopeId } = await jiti.import(join(EXT, "mail/mailbox.ts"));
 const { readRegistry, writeRegistry, emptyRegistry, upsertAgent } = await jiti.import(join(EXT, "store/registry.ts"));
+const { archiveAgentDir, readArchived } = await jiti.import(join(EXT, "store/archive.ts"));
 const { loadSettings, DEFAULT_SETTINGS } = await jiti.import(join(EXT, "store/settings.ts"));
 const { readOpenTasks, recordOpenTask, closeOpenTask, closeAllFor } = await jiti.import(join(EXT, "store/open-tasks.ts"));
 
@@ -107,16 +108,28 @@ console.log("registry:");
 await test("corrupt vitals are repaired, broken identity dropped", () => {
 	const registry = emptyRegistry();
 	upsertAgent(registry, { type: "scout", id: "a", lifetime: "persistent", label: "source scout", typeFileHash: "h", now: new Date().toISOString() });
+	upsertAgent(registry, { type: "scout", id: "a", lifetime: "persistent", label: "attempted rename", typeFileHash: "h2", now: new Date().toISOString() });
+	upsertAgent(registry, { type: "scout", id: "legacy", lifetime: "persistent", typeFileHash: "h", now: new Date().toISOString() });
 	writeRegistry(layout.registryFile, registry);
 	const raw = JSON.parse(readFileSync(layout.registryFile, "utf8"));
 	raw.agents["scout/a"].vitals = "garbage";
+	raw.agents["scout/legacy"].label = 42;
 	raw.agents["broken/x"] = { type: "broken" };
 	writeFileSync(layout.registryFile, JSON.stringify(raw));
 	const read = readRegistry(layout.registryFile);
 	assert.ok(read.agents["scout/a"], "record with valid identity survives");
-	assert.equal(read.agents["scout/a"].label, "source scout", "display label survives registry round-trip");
+	assert.equal(read.agents["scout/a"].label, "source scout", "display label survives round-trip and repeated upsert cannot rename it");
 	assert.equal(read.agents["scout/a"].vitals.state, "dormant", "vitals repaired to dormant defaults");
+	assert.ok(read.agents["scout/legacy"], "pre-label record survives");
+	assert.equal(read.agents["scout/legacy"].label, undefined, "invalid optional label is dropped without losing the record");
 	assert.equal(read.agents["broken/x"], undefined, "unusable identity dropped");
+});
+await test("a pre-label archive marker remains readable without a display label", () => {
+	mkdirSync(layout.agentInstanceDir("legacy", "tmp-old"), { recursive: true });
+	archiveAgentDir(layout, "legacy", "tmp-old", new Date().toISOString());
+	const archived = readArchived(layout).find((entry) => entry.address === "legacy/tmp-old");
+	assert.ok(archived);
+	assert.equal(archived.label, undefined);
 });
 
 console.log("settings:");

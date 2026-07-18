@@ -7,7 +7,7 @@
  * Run: node phase3-spawn-turn.mjs
  */
 import { strict as assert } from "node:assert";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { EXT, jiti } from "./env.mjs";
 import { makeWorld, test, summary, until } from "./harness.mjs";
@@ -37,10 +37,10 @@ await test("spawn+task returns immediately with the anchor; final report correla
 	assert.equal(report.payload.final, true);
 	assert.equal(report.correlationId, scoutAnchor, "final report anchored to the task envelope");
 });
-await test("get-or-create: respawn wakes with memory intact (created:false)", async () => {
-	const again = await core.spawn({ type: "scout" });
+await test("get-or-create: respawn wakes with memory and its established label intact", async () => {
+	const again = await core.spawn({ type: "scout", label: "attempted rename" });
 	assert.equal(again.created, false);
-	assert.equal(again.label, "repo mapper", "respawn without a label preserves the existing display name");
+	assert.equal(again.label, "repo mapper", "a later required tool label does not silently rename the existing agent");
 });
 await test("identity block is hub-and-spoke (no peer prose)", async () => {
 	const call = world.llmCalls.find((c) => c.address === "scout/main");
@@ -48,28 +48,46 @@ await test("identity block is hub-and-spoke (no peer prose)", async () => {
 	assert.ok(!call.systemPrompt.includes("peer"), "no peer wording");
 	assert.ok(call.systemPrompt.includes("Surface blocking ambiguity EARLY"));
 });
-await test("live activity carries the human label, cumulative tokens, context, and exact tool-call count", async () => {
-	writeFileSync(join(world.project, "probe.txt"), "probe\n");
+await test("live activity tracks starts, finishes, exact tool uses, human label, tokens, and context", async () => {
+	const activityLayout = world.makeLayout("sess-3-activity");
+	let releaseTools = () => {};
+	const toolGate = new Promise((resolve) => { releaseTools = resolve; });
+	const activityCore = world.makeCore(activityLayout, {
+		maxConcurrent: 2,
+		confirm: async () => {
+			await toolGate;
+			return true;
+		},
+	});
 	world.scripts.push({
-		match: (c) => c.address === "scout/activity" && c.lastUserText.includes("Inspect the probe"),
+		match: (c) => c.address === "scout/activity" && c.lastUserText.includes("Exercise activity"),
 		reply: () => ({ tools: [
-			{ name: "read", args: { path: "probe.txt" } },
-			{ name: "read", args: { path: "probe.txt" } },
+			{ name: "write", args: { path: "activity-a.txt", content: "a" } },
+			{ name: "write", args: { path: "activity-b.txt", content: "b" } },
 		] }),
 	});
 	world.scripts.push({
-		match: (c) => c.address === "scout/activity" && c.lastUserText.includes("Inspect the probe"),
-		reply: () => ({ delayMs: 250, text: "Probe inspected." }),
+		match: (c) => c.address === "scout/activity" && c.lastUserText.includes("Exercise activity"),
+		reply: () => ({ delayMs: 250, text: "Activity exercised." }),
 	});
-	await core.spawn({ type: "scout", id: "activity", label: "probe inspector", task: "Inspect the probe file." });
-	const row = await until(() => {
-		const candidate = core.activitySnapshot().find((entry) => entry.address === "scout/activity");
-		return candidate?.toolUses === 2 && candidate.tokens > 0 && candidate.ctxPercent !== null ? candidate : null;
+	await activityCore.spawn({ type: "scout", id: "activity", label: "activity probe", task: "Exercise activity tracking." });
+	const running = await until(() => {
+		const candidate = activityCore.activitySnapshot().find((entry) => entry.address === "scout/activity");
+		return candidate?.toolUses === 2 && candidate.tool === "write" && candidate.tokens > 0 && candidate.ctxPercent !== null
+			? candidate
+			: null;
 	}, 2000);
-	assert.ok(row, "observed finalized usage while the second model response was pending");
-	assert.equal(row.label, "probe inspector");
-	assert.equal(row.tool, "read");
-	await core.whenIdle();
+	assert.ok(running, "both started tool calls counted while execution is waiting");
+	assert.equal(running.label, "activity probe");
+
+	releaseTools();
+	const thinking = await until(() => {
+		const candidate = activityCore.activitySnapshot().find((entry) => entry.address === "scout/activity");
+		return candidate?.toolUses === 2 && candidate.tool === "" && candidate.summary === "thinking…" ? candidate : null;
+	}, 2000);
+	assert.ok(thinking, "completed tools clear the current-tool label during the next model response");
+	await activityCore.whenIdle();
+	await activityCore.dispose();
 });
 
 console.log("ad-hoc spawn:");

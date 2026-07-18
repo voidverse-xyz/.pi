@@ -15,7 +15,7 @@
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { truncateToWidth, type Component, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import type { SubagentsCore } from "../core.ts";
 import type { AgentActivityRow } from "../runtime/types.ts";
 import { AGENTS_ICON, emptySnapshot, formatTokens, takeSnapshot, type WidgetSnapshot, widgetSegments } from "./widget.ts";
@@ -39,7 +39,12 @@ export interface TreeTheme {
 }
 
 /** Pure: the widget's lines for one render pass, including bottom padding. */
-export function renderTreeLines(rows: AgentActivityRow[], snapshot: WidgetSnapshot, theme: TreeTheme): string[] {
+export function renderTreeLines(
+	rows: AgentActivityRow[],
+	snapshot: WidgetSnapshot,
+	theme: TreeTheme,
+	width = Number.POSITIVE_INFINITY,
+): string[] {
 	const segments = widgetSegments(snapshot);
 	// Activity is the freshest source during a turn. Fall back to it if the async
 	// roster snapshot briefly lags the runtime event that created the rows.
@@ -56,12 +61,26 @@ export function renderTreeLines(rows: AgentActivityRow[], snapshot: WidgetSnapsh
 		const branch = last ? "└─" : "├─";
 		const cont = last ? "   " : "│  ";
 		const context = row.ctxPercent === null ? "?" : `${Math.round(row.ctxPercent)}%`;
-		const metrics = [
+		const verboseMetrics = [
 			`${TOOL_ICON} ${row.toolUses} tool${row.toolUses === 1 ? "" : "s"}`,
 			`${TOKEN_ICON} ${formatTokens(row.tokens)} tokens`,
 			`${CONTEXT_ICON} ${context}`,
-		];
-		lines.push(theme.fg("text", `${branch} ${row.label || row.address} · ${metrics.join(" · ")}`));
+		].join(" · ");
+		const compactMetrics = `${TOOL_ICON} ${row.toolUses} · ${TOKEN_ICON} ${formatTokens(row.tokens)} · ${CONTEXT_ICON} ${context}`;
+		const prefix = `${branch} `;
+		const suffix = ` · ${verboseMetrics}`;
+		const name = row.label || row.address;
+		const labelBudget = Number.isFinite(width) ? width - visibleWidth(prefix) - visibleWidth(suffix) : Number.POSITIVE_INFINITY;
+
+		if (!Number.isFinite(width) || labelBudget >= 8) {
+			const fittedName = Number.isFinite(labelBudget) ? truncateToWidth(name, Math.max(1, labelBudget), "…") : name;
+			lines.push(theme.fg("text", `${prefix}${fittedName}${suffix}`));
+		} else {
+			// At narrow widths, protect all three metrics on their own compact row;
+			// truncate the human label and tool summary instead of dropping telemetry.
+			lines.push(theme.fg("text", truncateToWidth(`${prefix}${name}`, Math.max(1, width), "…")));
+			lines.push(theme.fg("muted", truncateToWidth(`${cont}├ ${compactMetrics}`, Math.max(1, width), "…")));
+		}
 		lines.push(theme.fg("dim", `${cont}└ ${row.summary || "thinking…"}`));
 	});
 	lines.push("");
@@ -101,7 +120,7 @@ export function createTreeWidget(core: SubagentsCore, ui: TreeWidgetHost): TreeW
 				return {
 					invalidate() {},
 					render(width: number): string[] {
-						return renderTreeLines(rows, snapshot, theme).map((line) =>
+						return renderTreeLines(rows, snapshot, theme, Math.max(1, width)).map((line) =>
 							line ? truncateToWidth(line, Math.max(1, width), "…") : line,
 						);
 					},

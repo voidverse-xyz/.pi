@@ -138,9 +138,9 @@ shared repository using the `Reusable Artifact Capture` rules above.
 
 ## PiAgent Layout
 
-- `Configs/Archive/PiAgent/packages/`: archive for the 19 Pi extension packages
-  moved on 2026-07-09. Pi no longer loads them; `~/.pi/agent/settings.json`
-  has an empty `packages` list. The extension descriptions below are historical.
+- `Configs/PiAgent/packages/`: source of truth for the active package-backed Pi
+  extensions enabled from `~/.pi/agent/settings.json`. `Configs/Archive/PiAgent/`
+  contains older snapshots that Pi does not load.
 - `Configs/PiAgent/.pi/agent/skills/`: source of truth for the `plan-commit`
   skill.
   `pi-plan` provides branch-persistent, main-agent hard read-only Plan mode via
@@ -170,13 +170,17 @@ shared repository using the `Reusable Artifact Capture` rules above.
   counts only when relevant. The active Void Agent theme grades thinking levels
   from gray (off) through blue and purple to red (max).
   `pi-tool-monitor` tracks tool calls via `tool_execution_start/update/end` and
-  publishes plain running-tool text under a reserved status key. `pi-agents`
-  likewise publishes plain subagent activity. `pi-status-line` styles and places
-  both: tool activity uses footer line 1-left when subagent status is absent and
-  moves to line 2-left when subagent status occupies line 1. `/tools` opens a
-  full-screen overlay (inset via `overlayOptions.margin`) to browse running/recent
-  calls, inspect live output, and abort the whole turn with `ctx.abort()` (Pi has
-  no per-tool-call cancel).
+  publishes plain running-tool text under a reserved status key.
+  `pi-status-line` places that activity on footer line 1-left and keeps usage on
+  line 2-right. `/tools` opens a full-screen overlay (inset via
+  `overlayOptions.margin`) to browse running/recent calls, inspect live output,
+  and abort the whole turn with `ctx.abort()` (Pi has no per-tool-call cancel).
+  `pi-subagents` provides the separate above-editor subagent tree. Its spawn tool
+  requires an LLM-authored display label, persisted across restart/archive, so
+  anonymous `adhoc/tmp-*` addresses stay internal. Each working row shows exact
+  current-turn tool starts, cumulative session tokens, context fill, and current
+  tool; long labels yield to metrics and narrow layouts move metrics to their own
+  compact row.
   `session-merge` (added 2026-07-05) provides `/merge`, a synthesis merge for
   selected session branches: it summarizes the shared base plus branch deltas
   into a visible custom message in a new session, optionally drafts or runs a
@@ -188,6 +192,10 @@ shared repository using the `Reusable Artifact Capture` rules above.
   inferred when omitted), plus an optional `urgent` immediate toast. There is no
   `summary` field (removed 2026-07-07, no back-compat) and no demo command. The
   bands have top/bottom padding and muted backgrounds.
+  `pi-run-summary` emits one muted TUI info line after a truly idle
+  `agent_settled`: elapsed wall time, Pi-style uncached input/output counters for
+  that run, and a Markdown-stripped first sentence from the final assistant
+  response. It makes no extra model call and suppresses output outside TUI mode.
   `changes` (added 2026-07-05) tracks the *main agent's own* `edit`/`write`
   file changes this session via `tool_call`/`tool_execution_end`, persisting
   first-touch pre-image baselines as `changes.baseline`/`changes.touch` session

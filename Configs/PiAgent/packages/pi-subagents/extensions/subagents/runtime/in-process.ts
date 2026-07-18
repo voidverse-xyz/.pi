@@ -235,7 +235,9 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 		const address = formatAgentAddress(type, id);
 		const existing = getAgent(this.registry, address);
-		const label = explicitLabel ?? existing?.label ?? fallbackLabel(options, type, id);
+		// Get-or-create keeps the established human identity. A required label on a
+		// later spawn fills old unlabeled records but never silently renames one.
+		const label = existing?.label ?? explicitLabel ?? fallbackLabel(options, type, id);
 		const now = new Date().toISOString();
 		const { record, created } = upsertAgent(this.registry, { type, id, lifetime, label, typeFileHash: hash, now });
 		mkdirSync(this.layout.agentInstanceDir(type, id), { recursive: true });
@@ -704,27 +706,40 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				ctxPercent: startingVitals.ctxPercent,
 			});
 			let failure: { stopReason: string; message: string } | null = null;
+			const activeTools = new Map<string, { tool: string; summary: string }>();
+			const publishActivity = (next: AgentActivity): void => {
+				this.activity.set(address, next);
+				this.emit({ type: "state-changed", address, state: "running" });
+			};
 			const unsubscribe = handle.session.subscribe((event) => {
+				if (event.type === "tool_execution_start") {
+					const prev = this.activity.get(address);
+					if (!prev) return;
+					const tool = event.toolName;
+					const current = { tool, summary: toolSummary(tool, event.args) };
+					activeTools.set(event.toolCallId, current);
+					publishActivity({ ...prev, ...current, toolUses: prev.toolUses + 1 });
+					return;
+				}
+				if (event.type === "tool_execution_end") {
+					const prev = this.activity.get(address);
+					if (!prev) return;
+					activeTools.delete(event.toolCallId);
+					const current = [...activeTools.values()].at(-1);
+					publishActivity(current
+						? { ...prev, ...current }
+						: { ...prev, tool: "", summary: "thinking…" });
+					return;
+				}
 				// message_end is emitted just before SessionManager persistence. Defer one
 				// microtask so getSessionStats() includes that finalized message, then
 				// refresh cumulative tokens/context and any tool calls it introduced.
 				if (event.type === "message_end") {
-					const activity = event.message.role === "assistant"
-						? extractToolActivity({ type: "message", message: event.message })
-						: null;
 					queueMicrotask(() => {
 						const prev = this.activity.get(address);
 						if (!prev) return;
 						const live = vitalsFrom(handle.session, "running");
-						this.activity.set(address, activity
-							? {
-								...activity,
-								toolUses: prev.toolUses + activity.toolUses,
-								tokens: live.tokens,
-								ctxPercent: live.ctxPercent,
-							}
-							: { ...prev, tokens: live.tokens, ctxPercent: live.ctxPercent });
-						this.emit({ type: "state-changed", address, state: "running" });
+						publishActivity({ ...prev, tokens: live.tokens, ctxPercent: live.ctxPercent });
 					});
 					return;
 				}
@@ -923,27 +938,6 @@ function fallbackLabel(options: SpawnOptions, type: string, id: string): string 
 function adhocDescription(prompt: string): string {
 	const flat = prompt.replace(/\s+/g, " ").trim();
 	return flat.length <= 100 ? flat : `${flat.slice(0, 99)}…`;
-}
-
-/** Extract the latest tool call from an appended session entry, or null. */
-function extractToolActivity(entry: unknown): AgentActivity | null {
-	const e = entry as { type?: string; message?: { role?: string; content?: unknown } };
-	if (e?.type !== "message" || e.message?.role !== "assistant" || !Array.isArray(e.message.content)) return null;
-	const calls = e.message.content.filter((part) => (part as { type?: string })?.type === "toolCall") as Array<{
-		type?: string;
-		name?: unknown;
-		arguments?: unknown;
-	}>;
-	const part = calls.at(-1);
-	if (!part) return null;
-	const tool = String(part.name ?? "?");
-	return {
-		tool,
-		summary: toolSummary(tool, part.arguments),
-		toolUses: calls.length,
-		tokens: 0,
-		ctxPercent: null,
-	};
 }
 
 /** A short one-line summary of a tool call for the tree widget. */
