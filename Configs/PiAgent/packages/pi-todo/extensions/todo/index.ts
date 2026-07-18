@@ -4,27 +4,21 @@
  * The *agent* calls the todo_write tool (modeled on Claude Code's TodoWrite)
  * with the complete list each time: statuses are pending / in_progress /
  * completed, at most one item in_progress. The live checklist renders in a
- * widget directly above the editor whose first line is a dynamic working
- * header while the agent streams (ref IMG_5781):
+ * plain aboveEditor widget with a simple, static title line:
  *
- *   ✻ Fixing sandbox/typedefs… (21m 29s · ↓ 62.3k tokens)
+ *   󰝖 Todos · 1/3
  *   └ ✓ Fix store layer          <- green check, dim strikethrough
  *     □ Fix sandbox/typedefs     <- in progress: accent, bold
  *     □ Fix mail
  *
- * The header lives INSIDE the widget (not pi's working row) so nothing can
- * render between it and the tree — other aboveEditor widgets like
- * pi-status-line's shared row sit above the whole block. It is not a clone of
- * the working indicator: the label is custom text the LLM sets via
- * todo_write's optional `header` param (falling back to the active todo's
- * activeForm, then "Working"), dressed with a static ✻, elapsed time, and the
- * output tokens streamed this run. pi's built-in working loader row is left
- * untouched and keeps rendering above everything. The header disappears when
- * the agent settles; the tree stays.
+ * The title is a list header, not a working indicator: no spinner, elapsed
+ * time, token count, or dynamic label (pi's loader row owns those). It shows
+ * whenever the list is non-empty — working or idle — so the checklist is
+ * always identifiable at a glance.
  *
- * alt+d cycles the widget between expanded (full list), collapsed (one-line
- * summary with the active item and a done-count), and hidden. /todos shows
- * the list ("/todos clear" wipes it).
+ * alt+d cycles the widget between expanded (full list), collapsed (title +
+ * one-line summary with the active item and a done-count), and hidden. /todos
+ * shows the list ("/todos clear" wipes it).
  * On session start/resume the list is restored from the most recent
  * todo_write call in the replayed session messages, so it survives /reload
  * and resume without any extra persistence.
@@ -38,12 +32,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
-	activeTodoLabel,
-	estimateMessageTokens,
-	exactOutputTokens,
-	extractLatestTodoState,
+	extractLatestTodos,
 	renderCollapsedLine,
-	renderHeaderLine,
+	renderTitleLine,
 	renderTodoItem,
 	renderTodoWidgetLines,
 	summarizeTodos,
@@ -56,13 +47,9 @@ const WIDGET_KEY = "todo-list";
 const PLACEMENT = { placement: "aboveEditor" as const };
 // Claude Code uses ctrl+t, but pi core owns that (toggle thinking blocks).
 // alt+d is free across pi core and the installed extensions (alt+s teams stop,
-// alt+q/alt+x queue, alt+t thinking cycle, alt+m model cycle).
+// alt+a subagents stop, alt+q/alt+x queue, alt+t thinking cycle, alt+m model cycle).
 const TOGGLE_KEY = "alt+d";
 const MAX_TODOS = 50;
-// Widget re-render cadence while the agent works — drives the elapsed clock
-// and picks up token-count changes (the ✻ glyph is static, so 1s is enough).
-const HEADER_TICK_MS = 1_000;
-const HEADER_FALLBACK_LABEL = "Working";
 
 const TodoSchema = Type.Object(
 	{
@@ -83,13 +70,6 @@ const TodoWriteParams = Type.Object(
 			maxItems: MAX_TODOS,
 			description: "The complete todo list. This REPLACES the previous list, so always send every item, not just the changed one.",
 		}),
-		header: Type.Optional(
-			Type.String({
-				description:
-					"Short present-continuous phrase shown as the status header above the list, e.g. 'Building pure core modules'. " +
-					"Describe the overall work, not one todo — update it as the work shifts. Omit to fall back to the in-progress todo's activeForm.",
-			}),
-		),
 	},
 	{ additionalProperties: false },
 );
@@ -101,44 +81,16 @@ const NEXT_MODE: Record<ViewMode, ViewMode> = { expanded: "collapsed", collapsed
 export default function todoList(pi: ExtensionAPI) {
 	let todos: TodoItem[] = [];
 	let viewMode: ViewMode = "expanded";
-	let activeCtx: ExtensionContext | undefined;
-	// LLM-set header phrase from the latest todo_write call (undefined -> activeForm fallback).
-	let headerLabel: string | undefined;
-	let headerStartedAt: number | undefined;
-	let headerTimer: ReturnType<typeof setInterval> | undefined;
-	// Output tokens this agent run: finalized assistant messages + the streaming one.
-	let doneTokens = 0;
-	let streamingTokens = 0;
 
 	const refreshWidget = (ctx: ExtensionContext): void => {
 		if (ctx.mode !== "tui") return;
+		if (todos.length === 0 || viewMode === "hidden") {
+			ctx.ui.setWidget(WIDGET_KEY, undefined, PLACEMENT);
+			return;
+		}
 		const theme = ctx.ui.theme;
-		const header =
-			headerStartedAt === undefined
-				? []
-				: [
-						renderHeaderLine(
-							headerLabel ?? activeTodoLabel(todos) ?? HEADER_FALLBACK_LABEL,
-							Date.now() - headerStartedAt,
-							doneTokens + streamingTokens,
-							theme,
-						),
-					];
-		const tree =
-			todos.length === 0 || viewMode === "hidden"
-				? []
-				: viewMode === "collapsed"
-					? renderCollapsedLine(todos, theme)
-					: renderTodoWidgetLines(todos, theme);
-		const lines = [...header, ...tree];
-		ctx.ui.setWidget(WIDGET_KEY, lines.length > 0 ? lines : undefined, PLACEMENT);
-	};
-
-	const stopHeader = (ctx: ExtensionContext): void => {
-		if (headerTimer) clearInterval(headerTimer);
-		headerTimer = undefined;
-		headerStartedAt = undefined;
-		refreshWidget(ctx);
+		const tree = viewMode === "collapsed" ? renderCollapsedLine(todos, theme) : renderTodoWidgetLines(todos, theme);
+		ctx.ui.setWidget(WIDGET_KEY, [renderTitleLine(todos, theme), ...tree], PLACEMENT);
 	};
 
 	pi.registerTool({
@@ -155,7 +107,6 @@ export default function todoList(pi: ExtensionAPI) {
 			"todo_write replaces the entire list: resend every item each call, changing only the statuses/content that moved.",
 			"Keep exactly one todo in_progress at a time; mark it completed as soon as it is actually done (tests pass, verified), never in advance.",
 			"Give each todo an imperative `content` ('Fix store layer') and an `activeForm` ('Fixing store layer') for the in-progress display.",
-			"Optionally set `header` — a short present-continuous phrase for the status line above the list describing the overall work ('Building pure core modules'); keep it fresh as the work shifts.",
 			"If new work surfaces mid-task, add it to the list rather than silently expanding scope.",
 		],
 		parameters: TodoWriteParams,
@@ -164,7 +115,6 @@ export default function todoList(pi: ExtensionAPI) {
 			const err = validateTodos(params.todos as TodoItem[]);
 			if (err) throw new Error(err);
 			todos = params.todos as TodoItem[];
-			headerLabel = typeof params.header === "string" && params.header.trim() ? params.header.trim() : undefined;
 			refreshWidget(ctx);
 			return {
 				content: [
@@ -218,7 +168,6 @@ export default function todoList(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			if (args.trim() === "clear") {
 				todos = [];
-				headerLabel = undefined;
 				refreshWidget(ctx);
 				ctx.ui.notify("Todo list cleared", "info");
 				return;
@@ -227,54 +176,19 @@ export default function todoList(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("agent_start", (_event, ctx) => {
-		activeCtx = ctx;
-		if (ctx.mode !== "tui" || headerStartedAt !== undefined) return;
-		headerStartedAt = Date.now();
-		doneTokens = 0;
-		streamingTokens = 0;
-		refreshWidget(ctx);
-		headerTimer = setInterval(() => {
-			if (activeCtx) refreshWidget(activeCtx);
-		}, HEADER_TICK_MS);
-		headerTimer.unref?.();
-	});
-
-	// Token counts render on the next header tick (≤120ms), so no eager refresh.
-	pi.on("message_update", (event) => {
-		streamingTokens = exactOutputTokens(event.message) ?? estimateMessageTokens(event.message);
-	});
-
-	pi.on("message_end", (event) => {
-		if (event.message.role !== "assistant") return;
-		doneTokens += exactOutputTokens(event.message) ?? estimateMessageTokens(event.message);
-		streamingTokens = 0;
-	});
-
-	pi.on("agent_settled", (_event, ctx) => {
-		stopHeader(ctx);
-	});
-
 	pi.on("session_start", (_event, ctx) => {
-		activeCtx = ctx;
 		// Rebuild from the replayed session log so the list survives resume,
 		// /reload, and fork — the last todo_write call wins.
 		const messages: unknown[] = [];
 		for (const entry of ctx.sessionManager.getEntries()) {
 			if (entry.type === "message") messages.push(entry.message);
 		}
-		const restored = extractLatestTodoState(messages, TOOL_NAME);
-		todos = restored.todos;
-		headerLabel = restored.header;
+		todos = extractLatestTodos(messages, TOOL_NAME);
 		viewMode = "expanded";
 		refreshWidget(ctx);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
-		if (headerTimer) clearInterval(headerTimer);
-		headerTimer = undefined;
-		headerStartedAt = undefined;
-		activeCtx = undefined;
 		if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET_KEY, undefined, PLACEMENT);
 	});
 }

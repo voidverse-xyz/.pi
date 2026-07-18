@@ -1,20 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-	activeTodoLabel,
 	coerceTodos,
-	estimateMessageTokens,
-	exactOutputTokens,
-	extractLatestTodoState,
-	formatElapsed,
-	formatTokenCount,
-	HEADER_MARK,
+	extractLatestTodos,
 	MARK_DONE,
 	MARK_OPEN,
 	renderCollapsedLine,
-	renderHeaderLine,
+	renderTitleLine,
 	renderTodoWidgetLines,
 	summarizeTodos,
+	TITLE_ICON,
 	type TodoItem,
 	validateTodos,
 } from "./render.ts";
@@ -87,55 +82,9 @@ test("renderCollapsedLine: falls back to next pending, then all-done; empty rend
 	assert.deepEqual(renderCollapsedLine([], theme), []);
 });
 
-test("formatElapsed: seconds, minutes, hours", () => {
-	assert.equal(formatElapsed(0), "0s");
-	assert.equal(formatElapsed(29_000), "29s");
-	assert.equal(formatElapsed((21 * 60 + 29) * 1_000), "21m 29s");
-	assert.equal(formatElapsed((3_600 + 2 * 60 + 3) * 1_000), "1h 2m 3s");
-	assert.equal(formatElapsed(-5_000), "0s");
-});
-
-test("formatTokenCount: raw under 1k, one-decimal k, one-decimal M", () => {
-	assert.equal(formatTokenCount(999), "999");
-	assert.equal(formatTokenCount(62_300), "62.3k");
-	assert.equal(formatTokenCount(1_500), "1.5k");
-	assert.equal(formatTokenCount(2_400_000), "2.4M");
-});
-
-test("activeTodoLabel: activeForm of the in-progress item, content fallback, undefined when none", () => {
-	assert.equal(activeTodoLabel(list), "Fixing sandbox/typedefs");
-	assert.equal(activeTodoLabel([{ content: "Build core", status: "in_progress" }]), "Build core");
-	assert.equal(activeTodoLabel([{ content: "a", status: "pending" }]), undefined);
-	assert.equal(activeTodoLabel([]), undefined);
-});
-
-test("renderHeaderLine: ✻ label… (elapsed · ↓ tokens), token segment only when > 0", () => {
-	const withTokens = renderHeaderLine("Building pure core modules", (21 * 60 + 29) * 1_000, 62_300, theme);
-	assert.equal(
-		withTokens,
-		`<accent>${HEADER_MARK}</accent> <text>Building pure core modules…</text> <dim>(21m 29s · ↓ 62.3k tokens)</dim>`,
-	);
-
-	const noTokens = renderHeaderLine("Working", 5_000, 0, theme);
-	assert.equal(noTokens, `<accent>${HEADER_MARK}</accent> <text>Working…</text> <dim>(5s)</dim>`);
-});
-
-test("exactOutputTokens / estimateMessageTokens", () => {
-	assert.equal(exactOutputTokens({ usage: { output: 42 } }), 42);
-	assert.equal(exactOutputTokens({ usage: { output: 0 } }), undefined);
-	assert.equal(exactOutputTokens({}), undefined);
-
-	assert.equal(estimateMessageTokens({ content: [{ type: "text", text: "abcdefgh" }] }), 2);
-	assert.equal(
-		estimateMessageTokens({
-			content: [
-				{ type: "thinking", thinking: "abcd" },
-				{ type: "toolCall", arguments: { a: 1 } },
-			],
-		}),
-		Math.ceil((4 + JSON.stringify({ a: 1 }).length) / 4),
-	);
-	assert.equal(estimateMessageTokens({ content: "not-an-array" }), 0);
+test("renderTitleLine: static muted title + dim progress count — nothing dynamic", () => {
+	assert.equal(renderTitleLine(list, theme), `<muted>${TITLE_ICON} Todos</muted><dim> · 1/3</dim>`);
+	assert.equal(renderTitleLine([{ content: "a", status: "completed" }], theme), `<muted>${TITLE_ICON} Todos</muted><dim> · 1/1</dim>`);
 });
 
 test("summarizeTodos: plain text with progress count", () => {
@@ -174,25 +123,18 @@ test("coerceTodos: accepts valid shapes, rejects garbage", () => {
 	);
 });
 
-test("extractLatestTodoState: last todo_write call wins, bad shapes skipped, header captured", () => {
-	const call = (todos: unknown, header?: unknown) => ({
+test("extractLatestTodos: last todo_write call wins, bad shapes skipped", () => {
+	const call = (todos: unknown) => ({
 		role: "assistant",
-		content: [{ type: "toolCall", id: "x", name: "todo_write", arguments: { todos, header } }],
+		content: [{ type: "toolCall", id: "x", name: "todo_write", arguments: { todos } }],
 	});
 	const messages = [
 		{ role: "user", content: "hi" },
-		call([{ content: "old", status: "pending" }], "Old phase"),
+		call([{ content: "old", status: "pending" }]),
 		{ role: "assistant", content: [{ type: "text", text: "ok" }] },
-		call([{ content: "new", status: "completed" }], "Building pure core modules"),
-		call("garbage", "ignored"), // ignored — earlier valid call is kept
+		call([{ content: "new", status: "completed" }]),
+		call("garbage"), // ignored — earlier valid call is kept
 	];
-	assert.deepEqual(extractLatestTodoState(messages, "todo_write"), {
-		todos: [{ content: "new", status: "completed" }],
-		header: "Building pure core modules",
-	});
-	// header omitted or blank -> absent, so the live fallback (activeForm) applies
-	assert.deepEqual(extractLatestTodoState([call([{ content: "a", status: "pending" }], "  ")], "todo_write"), {
-		todos: [{ content: "a", status: "pending" }],
-	});
-	assert.deepEqual(extractLatestTodoState([], "todo_write"), { todos: [] });
+	assert.deepEqual(extractLatestTodos(messages, "todo_write"), [{ content: "new", status: "completed" }]);
+	assert.deepEqual(extractLatestTodos([], "todo_write"), []);
 });
