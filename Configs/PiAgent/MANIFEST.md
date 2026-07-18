@@ -12,7 +12,7 @@ Pi packages live under `packages/pi-<name>/` and are enabled through absolute pa
 | `pi-changes` | `/changes` session edit review/undo and read-only `/git-changes` repository diff browser |
 | `pi-clear` | `/clear` alias |
 | `pi-codex-usage` | Codex five-hour usage status and `/codex-usage` |
-| `pi-codex-ui` | Codex-style theme, prompt field, random working-loader indicators (incl. blinking star pulse), and tool-turn separators without replacing tool definitions, status lines, or widgets |
+| `pi-codex-ui` | Codex-style theme, prompt field, working indicator (random accent spinners incl. blinking star pulse, `label… (elapsed · ↓ tokens)` with run-cumulative counts, three-line full-width black↔prompt-gray background block with theme-green Matrix rain and a random per-run animation: breathe/aurora/comet/shimmer), and tool-turn separators without replacing tool definitions, status lines, or widgets |
 | `pi-commit` | `/commit [--dry-run]` grouped Git review, lazy model-generated descriptions, and path-scoped commits |
 | `pi-git-status` | CWD and rich Git status producer for the shared status row |
 | `pi-groovebox-cycle` | `/groovebox-cycle [on\|off]` animated theme colors |
