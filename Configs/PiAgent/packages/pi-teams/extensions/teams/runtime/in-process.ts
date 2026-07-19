@@ -75,6 +75,8 @@ import type { Layout } from "../store/layout.ts";
 import { resolveTypeDef } from "../typedefs/discover.ts";
 import type { TypeDefinition } from "../typedefs/parse.ts";
 import { createSubagentTools, type SubagentMailPort } from "../tools/sub-agent.ts";
+import { collapseWhitespace, flattenMessageContent } from "../text.ts";
+import { extractToolActivity } from "../tui/activity.ts";
 import { buildSandboxedTools } from "../sandbox/tools-filter.ts";
 import { makeCommandDenyCheck, makeSystemDenyCheck } from "../sandbox/system-deny.ts";
 import { type ConfirmFn, denyAllConfirm } from "../sandbox/safety-bridge.ts";
@@ -224,7 +226,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		const address = formatAgentAddress(type, id);
 		const now = new Date().toISOString();
 		// The label is display-only: trim, collapse whitespace, cap — never trusted as a path/key.
-		const label = options.label?.trim().replace(/\s+/g, " ").slice(0, 80);
+		const label = options.label !== undefined ? collapseWhitespace(options.label).slice(0, 80) : undefined;
 		const { record, created } = upsertAgent(this.registry, {
 			type,
 			id,
@@ -777,7 +779,10 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				unsubscribe();
 			}
 
-			if (this.disposed || handle.aborted || (failure && (failure as { stopReason: string }).stopReason === "aborted")) {
+			// Re-read `failure` through a const: it is assigned inside the subscribe
+			// callback, so TS's flow analysis still sees the `null` initializer here.
+			const turnFailure = failure as { stopReason: string; message: string } | null;
+			if (this.disposed || handle.aborted || turnFailure?.stopReason === "aborted") {
 				// interrupt/shutdown: leave the triggering mail pending, don't auto-retry (v1 finding #1)
 				leavePending = true;
 			} else {
@@ -792,10 +797,10 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			this.persist();
 			handle.trigger = null;
 
-			if (failure && (failure as { stopReason: string }).stopReason === "error") {
-				this.emit({ type: "turn-error", address, error: (failure as { message: string }).message });
+			if (turnFailure?.stopReason === "error") {
+				this.emit({ type: "turn-error", address, error: turnFailure.message });
 				// surface a fatal error to main
-				this.deliverer.send({ from: { kind: "agent", type: record.type, id: record.id }, to: MAIN_ADDRESS, type: "error", text: `Turn failed: ${(failure as { message: string }).message}` });
+				this.deliverer.send({ from: { kind: "agent", type: record.type, id: record.id }, to: MAIN_ADDRESS, type: "error", text: `Turn failed: ${turnFailure.message}` });
 			}
 			this.activity.delete(address);
 			this.emit({ type: "state-changed", address, state: "dormant" });
@@ -930,30 +935,6 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	}
 }
 
-/** Extract the latest tool call from an appended session entry, or null. */
-function extractToolActivity(entry: unknown): AgentActivity | null {
-	const e = entry as { type?: string; message?: { role?: string; content?: unknown } };
-	if (e?.type !== "message" || e.message?.role !== "assistant" || !Array.isArray(e.message.content)) return null;
-	for (let i = e.message.content.length - 1; i >= 0; i--) {
-		const part = e.message.content[i] as { type?: string; name?: unknown; arguments?: unknown };
-		if (part?.type === "toolCall") {
-			const tool = String(part.name ?? "?");
-			return { tool, summary: toolSummary(tool, part.arguments), toolUses: 0 };
-		}
-	}
-	return null;
-}
-
-/** A short one-line summary of a tool call for the tree widget. */
-function toolSummary(tool: string, args: unknown): string {
-	const a = (args ?? {}) as Record<string, unknown>;
-	const label = tool.charAt(0).toUpperCase() + tool.slice(1);
-	const detail =
-		typeof a.command === "string" ? a.command : typeof a.path === "string" ? a.path : typeof a.pattern === "string" ? a.pattern : typeof a.to === "string" ? String(a.to) : "";
-	const flat = detail.replace(/\s+/g, " ").trim();
-	return flat ? `${label}: ${flat.length > 48 ? `${flat.slice(0, 47)}…` : flat}` : label;
-}
-
 function envView(envelope: Envelope): AwaitEnvelopeView {
 	return {
 		id: envelope.id,
@@ -991,23 +972,7 @@ function readTranscriptTail(sessionFile: string, n: number): TranscriptEntry[] {
 	const messages = parseSessionEntries(content).filter((entry): entry is SessionMessageEntry => "type" in entry && entry.type === "message");
 	return messages.slice(-n).map((entry) => ({
 		role: entry.message.role,
-		text: flattenMessageText(entry.message),
+		text: flattenMessageContent((entry.message as { content?: unknown }).content, true),
 		timestamp: typeof (entry as { timestamp?: unknown }).timestamp === "string" ? (entry as { timestamp: string }).timestamp : "",
 	}));
-}
-
-function flattenMessageText(message: SessionMessageEntry["message"]): string {
-	const content = (message as { content?: unknown }).content;
-	if (typeof content === "string") return content;
-	if (Array.isArray(content)) {
-		return content
-			.map((part) => {
-				const p = part as { type?: string; text?: string };
-				if (p.type === "text" && typeof p.text === "string") return p.text;
-				return p.type ? `[${p.type}]` : "";
-			})
-			.filter(Boolean)
-			.join(" ");
-	}
-	return "";
 }

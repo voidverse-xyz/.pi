@@ -17,6 +17,11 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { CategoryColor } from "./categories.ts";
 
+// Cap on how much of the command is rendered in a confirmation prompt, so a
+// pathological command cannot flood the dialog. Display-only; classification
+// and auditing always see the full command.
+const MAX_DISPLAY_CHARS = 16 * 1024;
+
 const ICON_WARNING = ""; // nf-fa-warning (requires a Nerd Font, like the shield in index.ts)
 
 export interface DelayedConfirmOptions {
@@ -56,7 +61,7 @@ export async function delayedConfirm(ctx: ExtensionContext, opts: DelayedConfirm
 	// out-of-band, then use the built-in confirm dialog.
 	if (ctx.mode !== "tui") {
 		if (!(await sleep(opts.delayMs, ctx.signal))) return false;
-		return ctx.ui.confirm(title, `Run this command?\n\n  ${opts.command.slice(0, 16 * 1024)}`);
+		return ctx.ui.confirm(title, `Run this command?\n\n  ${opts.command.slice(0, MAX_DISPLAY_CHARS)}`);
 	}
 
 	return ctx.ui.custom<boolean>((tui, theme, _kb, done) => {
@@ -139,7 +144,7 @@ export async function delayedConfirm(ctx: ExtensionContext, opts: DelayedConfirm
 				lines.push(line);
 			}
 			lines.push(""); // padding under the header
-			addWrapped(theme.fg("dim", "  $ "), theme.fg("text", opts.command.slice(0, 16 * 1024)), 10);
+			addWrapped(theme.fg("dim", "  $ "), theme.fg("text", opts.command.slice(0, MAX_DISPLAY_CHARS)), 10);
 			lines.push("");
 
 			if (ready()) {

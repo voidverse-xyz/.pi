@@ -23,6 +23,7 @@ import {
 	createWriteToolDefinition,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { truncateFlat } from "../text.ts";
 import type { SystemDenyResult } from "./system-deny.ts";
 
 export const CODING_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
@@ -51,11 +52,6 @@ export function selectToolNames(config: AgentToolConfig): CodingToolName[] {
 	const unknown = config.tools.filter((name) => !KNOWN.has(name));
 	if (unknown.length > 0) throw new Error(`Agent "${config.name}" lists unknown tools: ${unknown.join(", ")}.`);
 	return CODING_TOOL_NAMES.filter((name) => config.tools!.includes(name));
-}
-
-function summarize(text: string, max = 200): string {
-	const flat = text.replace(/\s+/g, " ").trim();
-	return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 }
 
 function hardDeny(tool: string, reason: string): never {
@@ -103,7 +99,7 @@ function wrapBashTool(tool: ToolDefinition, ports: SandboxPorts): ToolDefinition
 			if (typeof command !== "string") throw new Error("bash: missing command.");
 			const deny = ports.systemDenyCommand(command);
 			if (deny.denied) hardDeny("bash", deny.reason ?? "protected path");
-			const result = await ports.confirm({ tool: "bash", command: summarize(command, 4096) });
+			const result = await ports.confirm({ tool: "bash", command: truncateFlat(command, 4096) });
 			if (!result.approved) confirmDenied("bash", result.note);
 			// No post-confirm re-check (unlike wrapPathTool's TOCTOU re-deny): the deny
 			// is a pure text scan of the same immutable command string — re-scanning

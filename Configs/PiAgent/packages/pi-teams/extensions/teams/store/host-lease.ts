@@ -134,7 +134,7 @@ function publishMarkerExclusive(path: string, marker: HostOwnerMarker): boolean 
 }
 
 /** Ensure the scope manifest records this cwd + owner (idempotent). */
-export function ensureScopeManifest(layout: Layout): void {
+function ensureScopeManifest(layout: Layout): void {
 	type Manifest = { cwd?: string; ownerSessionId?: string };
 	let existing: Manifest | null = null;
 	try {

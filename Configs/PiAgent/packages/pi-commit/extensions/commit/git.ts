@@ -194,8 +194,6 @@ export function createGit(pi: ExtensionAPI, cwd: string, opts?: GitOptions) {
 	};
 }
 
-export type Git = ReturnType<typeof createGit>;
-
 const MAX_DIFF_CHARS = 2 * 1024 * 1024;
 const MAX_STDERR_CHARS = 64 * 1024;
 

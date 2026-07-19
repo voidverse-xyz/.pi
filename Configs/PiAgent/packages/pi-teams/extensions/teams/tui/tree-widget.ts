@@ -43,7 +43,7 @@ export interface TreeTheme {
 }
 
 /** Compact cumulative-token label for the narrow ambient tree row. */
-export function formatTokenCount(tokens: number): string {
+function formatTokenCount(tokens: number): string {
 	const value = Math.max(0, tokens);
 	if (value < 1_000) return `${Math.round(value)}`;
 	if (value < 1_000_000) {

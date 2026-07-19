@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { Category } from "./categories.ts";
+import { SEGMENT_SPLIT_RE, type Category } from "./categories.ts";
 
 export const AUDIT_PATH = join(getAgentDir(), "safety-audit.jsonl");
 const MAX_AUDIT_BYTES = 1024 * 1024;
@@ -22,7 +22,7 @@ export interface AuditEntry {
 function summarizeCommand(command: string): { command: string; commandHash: string } {
 	const commandHash = createHash("sha256").update(command).digest("hex").slice(0, 16);
 	const heads = command
-		.split(/&&|\|\||;|(?<![>&|\d])&(?![&>])|\||\n/)
+		.split(SEGMENT_SPLIT_RE)
 		.map((segment) => segment.trim().match(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:['"]?[^\s/'"]+\/)*['"]?([^\s'"]+)/)?.[1])
 		.filter((value): value is string => Boolean(value))
 		.slice(0, 8);

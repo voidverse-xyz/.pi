@@ -18,8 +18,8 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			await ctx.newSession({
-				withSession: async (ctx) => {
-					ctx.ui.notify("New session started", "info");
+				withSession: async (sessionCtx) => {
+					sessionCtx.ui.notify("New session started", "info");
 				},
 			});
 		},

@@ -26,7 +26,7 @@ export function isMainEscape(envelope: Envelope): boolean {
 	return envelope.to === MAIN_ADDRESS && MAIN_ESCAPE_TYPES.has(envelope.type);
 }
 
-export function hopsBounceReason(hops: number, maxHops: number): string {
+function hopsBounceReason(hops: number, maxHops: number): string {
 	return `${hops} rounds unresolved (max ${maxHops}) — report to the main agent instead`;
 }
 

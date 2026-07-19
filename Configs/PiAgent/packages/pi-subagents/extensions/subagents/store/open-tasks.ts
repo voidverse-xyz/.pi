@@ -20,6 +20,7 @@ import { readFileSync, renameSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { atomicWriteJson } from "./atomic.ts";
 import { ENVELOPE_ID_RE } from "../mail/envelope.ts";
+import { ellipsize } from "../text.ts";
 
 export interface OpenTask {
 	/** The agent address `<type>/<id>` the task was sent to. */
@@ -35,8 +36,7 @@ export type OpenTasks = Record<string, OpenTask>;
 const SNIPPET_MAX = 120;
 
 export function taskSnippet(text: string): string {
-	const flat = text.replace(/\s+/g, " ").trim();
-	return flat.length <= SNIPPET_MAX ? flat : `${flat.slice(0, SNIPPET_MAX - 1)}…`;
+	return ellipsize(text.replace(/\s+/g, " ").trim(), SNIPPET_MAX);
 }
 
 /** Read the index; missing → empty. A corrupt file is moved aside, never clobbered. */

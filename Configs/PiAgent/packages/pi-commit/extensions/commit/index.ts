@@ -17,7 +17,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { runGroupChat } from "./chat.ts";
 import { classifyPaths, type ReviewGroup } from "./classify.ts";
-import { loadCommitConfig } from "./config.ts";
+import { type CommitConfig, loadCommitConfig } from "./config.ts";
 import { generateCommitDescription } from "./describe.ts";
 import { createGit } from "./git.ts";
 import { createReviewPanel, type ReviewAction } from "./review-panel.ts";
@@ -35,6 +35,15 @@ interface PlannedCommit {
 	paths: string[];
 }
 
+/** Current review groups/exclusions; handleEdit replaces both after re-classifying. */
+interface ReviewState {
+	groups: ReviewGroup[];
+	excluded: string[];
+}
+
+/** What the review loop should do next: review index `next`, or stop entirely. */
+type LoopDirective = { next: number } | { stop: true };
+
 export default function commitExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("commit", {
 		description: "Layered review and commit with native TUI (--dry-run to preview)",
@@ -48,12 +57,12 @@ async function runCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: s
 		return;
 	}
 
-	const parsedArgs = args.trim() ? args.trim().split(/\s+/) : [];
-	if (parsedArgs.some((arg) => arg !== "--dry-run") || parsedArgs.filter((arg) => arg === "--dry-run").length > 1) {
+	const trimmedArgs = args.trim();
+	if (trimmedArgs && trimmedArgs !== "--dry-run") {
 		ctx.ui.notify("Usage: /commit [--dry-run]", "error");
 		return;
 	}
-	const dryRun = parsedArgs.includes("--dry-run");
+	const dryRun = trimmedArgs === "--dry-run";
 	await ctx.waitForIdle();
 
 	const { config, source, warnings } = await loadCommitConfig(
@@ -85,8 +94,8 @@ async function runCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: s
 		return;
 	}
 
-	let { groups, excluded } = classifyPaths(paths, config);
-	if (groups.length === 0) {
+	const state: ReviewState = classifyPaths(paths, config);
+	if (state.groups.length === 0) {
 		ctx.ui.notify("No reviewable changes (config exclusions only?)", "info");
 		return;
 	}
@@ -96,35 +105,17 @@ async function runCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: s
 	const descriptionCache = new Map<string, string>();
 	let stopped = false;
 
-	for (let i = 0; i < groups.length; i++) {
-		const group = groups[i]!;
-		const action = await showGroup(ctx, git, group, i, groups.length, dryRun, descriptionCache);
+	let i = 0;
+	while (i < state.groups.length && !stopped) {
+		const group = state.groups[i]!;
+		const action = await showGroup(ctx, git, group, i, state.groups.length, dryRun, descriptionCache);
+		let nextIndex = i + 1;
 
 		switch (action) {
 			case "accept": {
-				if (dryRun) {
-					plannedCommits.push({ group: group.title, message: group.commitMessage, paths: group.paths });
-					ctx.ui.notify(
-						`[dry-run] Would commit "${group.commitMessage}" — ${group.paths.join(", ")}`,
-						"info",
-					);
-					break;
-				}
-				let sha: string | null;
-				try {
-					sha = await git.stageAndCommit(group.paths, group.commitMessage);
-				} catch (error) {
-					ctx.ui.notify(`Commit failed while restoring the Git index: ${error instanceof Error ? error.message : String(error)}. Inspect git status before continuing.`, "error");
-					stopped = true;
-					break;
-				}
-				if (!sha) {
-					ctx.ui.notify(`Commit failed for: ${group.title}. Review the Git state and retry or stop.`, "error");
-					i--;
-					break;
-				}
-				sessionCommits.push({ sha, message: group.commitMessage, paths: group.paths });
-				ctx.ui.notify(`Committed ${sha.slice(0, 8)} — ${group.commitMessage}`, "info");
+				const outcome = await handleAccept(ctx, git, group, i, dryRun, sessionCommits, plannedCommits);
+				if ("stop" in outcome) stopped = true;
+				else nextIndex = outcome.next;
 				break;
 			}
 			case "ask": {
@@ -139,38 +130,13 @@ async function runCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: s
 					const diffText = await git.diffForPaths(group.paths);
 					await runGroupChat(pi, ctx, group, diffText, target);
 				}
-				i--; // re-review this same group after the chat closes
+				nextIndex = i; // re-review this same group after the chat closes
 				break;
 			}
 			case "edit": {
-				const instruction = await ctx.ui.input(`Edit: ${group.title}`, "What should change?");
-				if (!instruction?.trim()) break;
-
-				pi.sendUserMessage(
-					`[commit] Edit request for review group "${group.title}" (${group.paths.join(", ")}):\n\n${instruction.trim()}\n\nApply the edits only for these files. Do not commit.`,
-					{ deliverAs: "followUp" },
-				);
-				await ctx.waitForIdle();
-
-				let freshPaths: string[];
-				try {
-					freshPaths = await git.changedPaths();
-				} catch (error) {
-					ctx.ui.notify(`Could not refresh Git changes: ${error instanceof Error ? error.message : String(error)}`, "error");
-					stopped = true;
-					break;
-				}
-				({ groups, excluded } = classifyPaths(freshPaths, config));
-				descriptionCache.clear();
-				const updatedIndex = groups.findIndex((g) => g.id === group.id);
-				if (updatedIndex >= 0) {
-					i = updatedIndex - 1;
-				} else {
-					const byPath = groups.findIndex((g) => g.paths.some((p) => group.paths.includes(p)));
-					if (byPath >= 0) i = byPath - 1;
-					else i--;
-				}
-				ctx.ui.notify("Edits applied — re-reviewing group", "info");
+				const outcome = await handleEdit(pi, ctx, git, config, group, i, state, descriptionCache);
+				if ("stop" in outcome) stopped = true;
+				else nextIndex = outcome.next;
 				break;
 			}
 			case "skip":
@@ -181,14 +147,97 @@ async function runCommit(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: s
 				break;
 		}
 
-		if (stopped) break;
+		i = nextIndex;
 	}
 
-	await showSummary(ctx, sessionCommits, plannedCommits, excluded, stopped, dryRun);
+	await showSummary(ctx, sessionCommits, plannedCommits, state.excluded, stopped, dryRun);
 
 	if (!dryRun && sessionCommits.length > 1) {
 		await offerSquash(ctx, git, sessionCommits);
 	}
+}
+
+/**
+ * "Accept" case of the review loop: commit the group (or record it in dry-run).
+ * A commit that returns no sha re-reviews the same group; a thrown error stops.
+ */
+async function handleAccept(
+	ctx: ExtensionCommandContext,
+	git: ReturnType<typeof createGit>,
+	group: ReviewGroup,
+	index: number,
+	dryRun: boolean,
+	sessionCommits: SessionCommit[],
+	plannedCommits: PlannedCommit[],
+): Promise<LoopDirective> {
+	if (dryRun) {
+		plannedCommits.push({ group: group.title, message: group.commitMessage, paths: group.paths });
+		ctx.ui.notify(
+			`[dry-run] Would commit "${group.commitMessage}" — ${group.paths.join(", ")}`,
+			"info",
+		);
+		return { next: index + 1 };
+	}
+	let sha: string | null;
+	try {
+		sha = await git.stageAndCommit(group.paths, group.commitMessage);
+	} catch (error) {
+		ctx.ui.notify(`Commit failed while restoring the Git index: ${error instanceof Error ? error.message : String(error)}. Inspect git status before continuing.`, "error");
+		return { stop: true };
+	}
+	if (!sha) {
+		ctx.ui.notify(`Commit failed for: ${group.title}. Review the Git state and retry or stop.`, "error");
+		return { next: index }; // retry the same group
+	}
+	sessionCommits.push({ sha, message: group.commitMessage, paths: group.paths });
+	ctx.ui.notify(`Committed ${sha.slice(0, 8)} — ${group.commitMessage}`, "info");
+	return { next: index + 1 };
+}
+
+/**
+ * "Edit" case of the review loop: send the instruction to the main agent, wait,
+ * then re-classify the working tree (updating `state`) and re-review the edited
+ * group at its new index (matched by id, then by overlapping path).
+ */
+async function handleEdit(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	git: ReturnType<typeof createGit>,
+	config: CommitConfig,
+	group: ReviewGroup,
+	index: number,
+	state: ReviewState,
+	descriptionCache: Map<string, string>,
+): Promise<LoopDirective> {
+	const instruction = await ctx.ui.input(`Edit: ${group.title}`, "What should change?");
+	if (!instruction?.trim()) return { next: index + 1 };
+
+	pi.sendUserMessage(
+		`[commit] Edit request for review group "${group.title}" (${group.paths.join(", ")}):\n\n${instruction.trim()}\n\nApply the edits only for these files. Do not commit.`,
+		{ deliverAs: "followUp" },
+	);
+	await ctx.waitForIdle();
+
+	let freshPaths: string[];
+	try {
+		freshPaths = await git.changedPaths();
+	} catch (error) {
+		ctx.ui.notify(`Could not refresh Git changes: ${error instanceof Error ? error.message : String(error)}`, "error");
+		return { stop: true };
+	}
+	({ groups: state.groups, excluded: state.excluded } = classifyPaths(freshPaths, config));
+	descriptionCache.clear();
+
+	let next: number;
+	const updatedIndex = state.groups.findIndex((g) => g.id === group.id);
+	if (updatedIndex >= 0) {
+		next = updatedIndex;
+	} else {
+		const byPath = state.groups.findIndex((g) => g.paths.some((p) => group.paths.includes(p)));
+		next = byPath >= 0 ? byPath : index;
+	}
+	ctx.ui.notify("Edits applied — re-reviewing group", "info");
+	return { next };
 }
 
 async function showGroup(

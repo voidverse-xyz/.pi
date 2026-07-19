@@ -91,9 +91,14 @@ export interface AgentCallKey {
 	model?: string | undefined;
 	thinking?: string | undefined;
 	tools?: string[] | undefined;
+	phase?: string | undefined;
 }
 
-/** The identity of an agent() call for caching. label/phase excluded (cosmetic). */
+/**
+ * The identity of an agent() call for caching. label excluded (cosmetic);
+ * phase included so structurally-identical calls in different phases are not
+ * interchangeable on resume.
+ */
 export function hashAgentCall(key: AgentCallKey): string {
 	return sha256(
 		canonicalJSON({
@@ -102,6 +107,7 @@ export function hashAgentCall(key: AgentCallKey): string {
 			model: key.model ?? null,
 			thinking: key.thinking ?? null,
 			tools: key.tools ?? null,
+			phase: key.phase ?? null,
 		}),
 	);
 }

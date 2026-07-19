@@ -8,7 +8,7 @@
 
 export type ReleaseSlot = () => void;
 
-export const DEFAULT_MAX_CONCURRENT = 5;
+const DEFAULT_MAX_CONCURRENT = 5;
 
 export class Scheduler {
 	private running = 0;

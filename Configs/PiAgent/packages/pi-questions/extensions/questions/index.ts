@@ -27,19 +27,22 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
-const ICON_SKIPPED = ""; // nf-fa-circle_o
-const ICON_SUCCESS = ""; // nf-fa-check_circle
-const ICON_EDIT = ""; // nf-fa-pencil
+import { showUserInputs } from "./ask.ts";
+import { ICON_EDIT } from "./icons.ts";
 import {
 	type Input,
 	normalizeInputs,
 	type RawInput,
-	showUserInputs,
 	summarizeAnswers,
 	type UserInputsResult,
 	validateInputs,
 	validateRawInputs,
-} from "./ask.ts";
+} from "./schema.ts";
+
+// Result-renderer-only glyphs; these intentionally differ from the panel's
+// tab icons in icons.ts (see the note there).
+const ICON_SKIPPED = ""; // nf-fa-circle_o
+const ICON_SUCCESS = ""; // nf-fa-check_circle
 
 // ---------------------------------------------------------------------------
 // Schema — what the agent fills in.
@@ -163,9 +166,6 @@ export default function askUser(pi: ExtensionAPI) {
 			if (!details) {
 				const t = result.content[0];
 				return new Text(t?.type === "text" ? t.text : "", 0, 0);
-			}
-			if (details.error) {
-				return new Text(theme.fg("error", details.error), 0, 0);
 			}
 			if (details.cancelled) {
 				return new Text(theme.fg("warning", "Cancelled"), 0, 0);

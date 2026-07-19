@@ -6,7 +6,7 @@
 
 import type { CreateAgentSessionServicesOptions, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
-import { type Envelope, parseAddress } from "./mail/envelope.ts";
+import { parseAddress, terminalTaskAnchors } from "./mail/envelope.ts";
 import { markDone, pendingCount, readPending } from "./mail/mailbox.ts";
 import { closeAllFor, closeOpenTask } from "./store/open-tasks.ts";
 import type { ConfirmFn } from "./sandbox/safety-bridge.ts";
@@ -28,6 +28,7 @@ import type {
 	SteerResult,
 	SubagentRuntime,
 } from "./runtime/types.ts";
+import type { ArchivedInfo } from "./store/archive.ts";
 import type { Layout } from "./store/layout.ts";
 import { isWorking } from "./store/registry.ts";
 import { listTypeDefs, resolveFromSource } from "./typedefs/discover.ts";
@@ -42,14 +43,8 @@ export interface AvailableType {
 	invalid?: string;
 }
 
-/** A retired agent visible in the picker's .archive section. */
-export interface ArchivedAgentInfo {
-	address: string;
-	/** Human display name, when recorded by a label-aware runtime. */
-	label?: string;
-	/** ISO retirement time, if recorded. */
-	retiredAt?: string;
-}
+/** A retired agent visible in the picker's .archive section (= store/archive's ArchivedInfo). */
+export type ArchivedAgentInfo = ArchivedInfo;
 
 export interface SubagentsCore {
 	spawn(options: SpawnOptions): Promise<SpawnResult>;
@@ -157,8 +152,8 @@ export function createCore(options: CoreOptions): SubagentsCore {
 						(p.envelope.type === "report" && p.envelope.payload.final === true) || p.envelope.type === "error";
 					if (!terminal) continue;
 					const anchors = terminalTaskAnchors(p.envelope);
-					if (anchors !== null) {
-						for (const anchorId of anchors) closeOpenTask(options.layout.openTasksFile, anchorId);
+					if (anchors.kind === "anchors") {
+						for (const anchorId of anchors.anchors) closeOpenTask(options.layout.openTasksFile, anchorId);
 					} else {
 						closeAllFor(options.layout.openTasksFile, p.envelope.from); // legacy unscoped error
 					}
@@ -189,11 +184,4 @@ export function createCore(options: CoreOptions): SubagentsCore {
 			});
 		},
 	};
-}
-
-/** null means a legacy unscoped error whose historical behavior closed all tasks. */
-function terminalTaskAnchors(envelope: Envelope): string[] | null {
-	if (envelope.payload.terminalAnchors !== undefined) return envelope.payload.terminalAnchors;
-	if (envelope.type === "report" && envelope.payload.final === true && envelope.correlationId !== null) return [envelope.correlationId];
-	return envelope.type === "error" ? null : [];
 }

@@ -148,10 +148,6 @@ export function buildDiffDisplayLines(
 	return lines.length > 0 ? lines : [theme.fg("muted", " (no diff)")];
 }
 
-export function viewModeLabel(mode: DiffViewMode): string {
-	return mode === "inline" ? "inline" : "split";
-}
-
 export function toggleViewMode(mode: DiffViewMode): DiffViewMode {
 	return mode === "inline" ? "split" : "inline";
 }

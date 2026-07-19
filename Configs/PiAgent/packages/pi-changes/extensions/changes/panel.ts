@@ -11,7 +11,6 @@
  */
 
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
 	matchesKey,
@@ -23,7 +22,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AnswerState } from "./ask.ts";
 import { buildDiffDisplayLines, type DiffViewMode, toggleViewMode } from "./diff-view.ts";
-import { escapeTerminalControls } from "./display.ts";
+import { clipPad as pad, escapeTerminalControls, rule } from "./display.ts";
 import { buildChangesListLines, buildFileContentLines, statusMarker } from "./file-view.ts";
 import { createNavKeys } from "./keys.ts";
 import { type FileChange, fileDiffText } from "./tracker.ts";
@@ -128,17 +127,6 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 		return Math.max(1, tui.terminal.rows);
 	}
 
-	function rule(width: number): string {
-		const border = new DynamicBorder((s: string) => theme.fg("borderMuted", s));
-		return border.render(Math.max(1, width))[0] ?? "";
-	}
-
-	function pad(content: string, width: number): string {
-		const clipped = truncateToWidth(content, Math.max(0, width), "…");
-		const vis = visibleWidth(clipped);
-		return clipped + " ".repeat(Math.max(0, width - vis));
-	}
-
 	function setView(next: PanelView) {
 		view = next;
 		contentScroll = 0;
@@ -167,7 +155,7 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 		const fc = selected();
 		const title = theme.bold(`Subagent · ${escapeTerminalControls(answer.rel || fc?.rel || "")}`);
 		for (const h of wrapTextWithAnsi(title, innerW)) out.push(pad(` ${h}`, innerW));
-		out.push(pad(` ${rule(width - 2)}`, innerW));
+		out.push(pad(` ${rule(theme, width - 2)}`, innerW));
 
 		if (answer.status === "error") {
 			out.push(pad(` ${theme.fg("toolDiffRemoved", "Error:")} ${theme.fg("muted", escapeTerminalControls(answer.error ?? ""))}`, innerW));
@@ -189,21 +177,46 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 		return out;
 	}
 
-	function displayLines(width: number): string[] {
-		switch (view) {
-			case "list":
-				return buildChangesListLines(changes, selectedIndex, width, theme);
-			case "diff":
-				return buildDiffDisplayLines(currentDiffText(), diffViewMode, width, theme);
-			case "file": {
+	// ── per-view handlers ─────────────────────────────────────────────────────
+
+	interface ViewHandler {
+		/** list/diff/file also react to the shared action keys (a/u/U/e/E/o). */
+		sharedActionKeys?: boolean;
+		handleInput(data: string): void;
+		lines(width: number): string[];
+	}
+
+	const viewHandlers: Record<PanelView, ViewHandler> = {
+		list: {
+			sharedActionKeys: true,
+			handleInput: handleListInput,
+			lines: (width) => buildChangesListLines(changes, selectedIndex, width, theme),
+		},
+		diff: {
+			sharedActionKeys: true,
+			handleInput: handleDiffInput,
+			lines: (width) => buildDiffDisplayLines(currentDiffText(), diffViewMode, width, theme),
+		},
+		file: {
+			sharedActionKeys: true,
+			handleInput: handleFileInput,
+			lines: (width) => {
 				const fc = selected();
 				return fc ? buildFileContentLines(fc, width, theme) : [];
-			}
-			case "ask-target":
-				return askList.render(Math.max(1, width - 4)).map((l) => ` ${l}`);
-			case "answer":
-				return answerLines(width);
-		}
+			},
+		},
+		"ask-target": {
+			handleInput: handleAskTargetInput,
+			lines: (width) => askList.render(Math.max(1, width - 4)).map((l) => ` ${l}`),
+		},
+		answer: {
+			handleInput: handleAnswerInput,
+			lines: answerLines,
+		},
+	};
+
+	function displayLines(width: number): string[] {
+		return viewHandlers[view].lines(width);
 	}
 
 	// ── input ─────────────────────────────────────────────────────────────────
@@ -216,88 +229,89 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 	}
 
 	function handleInput(data: string): void {
-		if (view === "ask-target") {
-			if (keys.cancel(data)) {
-				backFromAsk();
-				return;
-			}
-			askList.handleInput(data);
-			invalidate();
-			tui.requestRender();
-			return;
-		}
+		const handler = viewHandlers[view];
+		if (handler.sharedActionKeys && handleSharedActionKeys(data)) return;
+		handler.handleInput(data);
+	}
 
-		if (view === "answer") {
-			const fc = selected();
-			if (keys.cancel(data) || data === "q") {
-				onDone({ type: "answerClose", abs: fc?.abs ?? "" });
-				return;
-			}
-			const lines = displayLines(tui.terminal.columns);
-			const maxScroll = Math.max(0, lines.length - currentContentHeight);
-			if (scrollContent(data, maxScroll)) {
-				answerFollow = contentScroll >= maxScroll;
-				invalidate();
-				tui.requestRender();
-			}
-			return;
-		}
-
-		// list / diff / file: shared action keys
+	/** Action keys common to the list, diff, and file views. */
+	function handleSharedActionKeys(data: string): boolean {
 		if (matchesKey(data, "a") || matchesKey(data, "shift+a")) {
 			openAskTarget();
-			return;
+			return true;
 		}
 		if (allowUndo && matchesKey(data, "u")) {
 			const fc = selected();
 			if (fc) onDone({ type: "undo", abs: fc.abs });
-			return;
+			return true;
 		}
 		if (allowUndo && matchesKey(data, "shift+u")) {
 			onDone({ type: "undoAll" });
-			return;
+			return true;
 		}
 		if (allowExport && matchesKey(data, "e")) {
 			const fc = selected();
 			if (fc) onDone({ type: "exportPatch", abs: fc.abs, all: false });
-			return;
+			return true;
 		}
 		if (allowExport && matchesKey(data, "shift+e")) {
 			onDone({ type: "exportPatch", abs: selected()?.abs ?? "", all: true });
-			return;
+			return true;
 		}
 		if (matchesKey(data, "o") || matchesKey(data, "shift+o")) {
 			if (selected()) setView("file");
+			return true;
+		}
+		return false;
+	}
+
+	/** Apply scroll keys to the current view's content; re-render if anything moved. */
+	function tryScroll(data: string, afterScroll?: (maxScroll: number) => void): void {
+		const lines = displayLines(tui.terminal.columns);
+		const maxScroll = Math.max(0, lines.length - currentContentHeight);
+		if (scrollContent(data, maxScroll)) {
+			afterScroll?.(maxScroll);
+			invalidate();
+			tui.requestRender();
+		}
+	}
+
+	function handleAskTargetInput(data: string): void {
+		if (keys.cancel(data)) {
+			backFromAsk();
 			return;
 		}
+		askList.handleInput(data);
+		invalidate();
+		tui.requestRender();
+	}
 
-		if (view === "list") {
-			handleListInput(data);
+	function handleAnswerInput(data: string): void {
+		if (keys.cancel(data) || data === "q") {
+			onDone({ type: "answerClose", abs: selected()?.abs ?? "" });
 			return;
 		}
+		tryScroll(data, (maxScroll) => {
+			answerFollow = contentScroll >= maxScroll;
+		});
+	}
 
-		if (view === "diff") {
-			if (matchesKey(data, "v") || matchesKey(data, "shift+v")) {
-				diffViewMode = toggleViewMode(diffViewMode);
-				contentScroll = 0;
-				invalidate();
-				tui.requestRender();
-				return;
-			}
-			if (matchesKey(data, "f") || matchesKey(data, "shift+f") || keys.cancel(data)) {
-				setView("list");
-				return;
-			}
-			const lines = displayLines(tui.terminal.columns);
-			const maxScroll = Math.max(0, lines.length - currentContentHeight);
-			if (scrollContent(data, maxScroll)) {
-				invalidate();
-				tui.requestRender();
-			}
+	function handleDiffInput(data: string): void {
+		if (matchesKey(data, "v") || matchesKey(data, "shift+v")) {
+			diffViewMode = toggleViewMode(diffViewMode);
+			contentScroll = 0;
+			invalidate();
+			tui.requestRender();
 			return;
 		}
+		if (matchesKey(data, "f") || matchesKey(data, "shift+f") || keys.cancel(data)) {
+			setView("list");
+			return;
+		}
+		tryScroll(data);
+	}
 
-		// file view
+	function handleFileInput(data: string): void {
 		if (matchesKey(data, "f") || matchesKey(data, "shift+f")) {
 			setView("diff");
 			return;
@@ -306,12 +320,7 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 			setView("list");
 			return;
 		}
-		const lines = displayLines(tui.terminal.columns);
-		const maxScroll = Math.max(0, lines.length - currentContentHeight);
-		if (scrollContent(data, maxScroll)) {
-			invalidate();
-			tui.requestRender();
-		}
+		tryScroll(data);
 	}
 
 	function handleListInput(data: string): void {
@@ -464,9 +473,9 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 			return lines;
 		}
 		const header: string[] = [];
-		header.push(rule(innerW));
+		header.push(rule(theme, innerW));
 		for (const h of wrapTextWithAnsi(headerLine(), innerW)) header.push(pad(h, innerW));
-		header.push(rule(innerW));
+		header.push(rule(theme, innerW));
 
 		const footerRows = 2; // rule + hint
 		const overhead = header.length + footerRows;
@@ -503,7 +512,7 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 			}
 		}
 
-		lines.push(rule(innerW));
+		lines.push(rule(theme, innerW));
 		lines.push(pad(theme.fg("dim", ` ${footerHint()}`), innerW));
 
 		if (lines.length < targetH) {

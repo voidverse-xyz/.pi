@@ -15,10 +15,15 @@
 
 import type { ArchivedInfo } from "../store/archive.ts";
 import type { AgentState, AgentVitals, Lifetime } from "../store/registry.ts";
+import type { PeerControl } from "../store/settings.ts";
 import type { ThinkingLevel } from "../typedefs/parse.ts";
 
-/** Peer-messaging control (D12). "llm" = the main agent decides via team_peers. */
-export type PeerMode = "on" | "off" | "llm";
+/**
+ * Peer-messaging control (D12). "llm" = the main agent decides via team_peers.
+ * Same union as the settings knob (store/settings.ts `peers`) — one type, two
+ * names, so the settings layer stays SDK/runtime-free.
+ */
+export type PeerMode = PeerControl;
 
 export interface AgentActivity {
 	/** The current tool name (e.g. "bash", "read"), or "" while thinking. */

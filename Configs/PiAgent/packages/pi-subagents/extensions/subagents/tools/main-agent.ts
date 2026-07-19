@@ -12,11 +12,10 @@ import { parseAddress } from "../mail/envelope.ts";
 import type { Lifetime } from "../store/registry.ts";
 import { THINKING_LEVELS, type ThinkingLevel } from "../typedefs/parse.ts";
 import type { AwaitTarget } from "../runtime/types.ts";
+import { labelFromSource, MAX_LABEL_CHARS } from "../text.ts";
 import { errorResult, jsonResult } from "./results.ts";
 
 type GetCore = () => SubagentsCore;
-
-const MAX_LABEL_CHARS = 80;
 
 /** Compatibility for resumed tool calls stored before `label` became required. */
 function fallbackSpawnLabel(raw: Record<string, unknown>): string {
@@ -25,10 +24,7 @@ function fallbackSpawnLabel(raw: Record<string, unknown>): string {
 		typeof raw.prompt === "string" ? raw.prompt.replace(/^You are\s+/i, "") :
 		typeof raw.id === "string" ? raw.id :
 		typeof raw.type === "string" ? raw.type : "subagent";
-	const flat = source.replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim() || "subagent";
-	const sentence = flat.match(/^(.+?[.!?])(?:\s|$)/)?.[1] ?? flat;
-	const chars = Array.from(sentence);
-	return chars.length <= MAX_LABEL_CHARS ? sentence : `${chars.slice(0, MAX_LABEL_CHARS - 1).join("").trimEnd()}…`;
+	return labelFromSource(source) || "subagent";
 }
 
 /** These tools target a subagent instance — `main`/`user`/garbage are rejected up front. */

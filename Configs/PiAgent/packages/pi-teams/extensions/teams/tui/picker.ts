@@ -16,8 +16,7 @@ import { SelectList, type SelectItem, truncateToWidth } from "@earendil-works/pi
 import type { TUI } from "@earendil-works/pi-tui";
 import type { ArchivedAgentInfo, SubagentsCore } from "../core.ts";
 import type { RosterEntry } from "../runtime/types.ts";
-
-export const MAIL_ICON = "󰇮"; // nf-md-email
+import { MAIL_ICON } from "./tree-widget.ts";
 
 export const STATE_GLYPHS: Record<RosterEntry["state"], string> = {
 	running: "", // nf-fa-circle
@@ -52,22 +51,12 @@ export function isSelectable(row: PickerRow): boolean {
 	return row.kind === "agent" || row.kind === "archived" || row.kind === "archive-header";
 }
 
+/** One-line text form of a row — derived from `pickerRowItem` so the two can never drift. */
 export function pickerRowText(row: PickerRow): string {
-	switch (row.kind) {
-		case "agent": {
-			const { entry } = row;
-			const label = entry.label ? ` “${entry.label}”` : "";
-			const pct = entry.vitals.ctxPercent !== null ? ` · ${Math.round(entry.vitals.ctxPercent)}%` : "";
-			const badge = row.unread > 0 ? ` · ${MAIL_ICON} ${row.unread}` : "";
-			return `${STATE_GLYPHS[entry.state]} ${entry.address}${label} · ${entry.state}${pct}${badge}`;
-		}
-		case "archive-header":
-			return `${row.expanded ? "" : ""} .archive (${row.count})`;
-		case "archived": {
-			const when = row.info.retiredAt ? ` · retired ${row.info.retiredAt.slice(0, 10)}` : "";
-			return `   ${row.info.address}${when}`;
-		}
-	}
+	const item = pickerRowItem(row);
+	// The archive-header description is an interaction hint, not row data.
+	if (row.kind === "archive-header" || !item.description) return item.label;
+	return `${item.label} · ${item.description}`;
 }
 
 /** SelectList item for a row: label column = who, description column = state. */
@@ -142,7 +131,7 @@ export function createPicker(options: PickerOptions): PickerComponent {
 	const selectedRow = (): PickerRow | undefined => {
 		const value = list?.getSelectedItem()?.value;
 		if (value === undefined) return undefined;
-		return rows[rows.findIndex((row) => pickerRowItem(row).value === value)];
+		return rows.find((row) => pickerRowItem(row).value === value);
 	};
 
 	const rebuild = (): void => {

@@ -41,6 +41,23 @@ export interface CategoryMeta {
 
 const THREE_SECONDS = 3000;
 
+// Commands longer than this are never run through the regex classifier —
+// classifyCommand fails closed to "destructive" instead, so a pathological
+// input can neither evade classification nor stall the regex engine.
+const MAX_CLASSIFIED_COMMAND_LENGTH = 256 * 1024;
+
+/**
+ * Splits a command line on every command separator, including a bare `&`
+ * (background/async) — omitting it let `ls & ./evil.sh` collapse into one
+ * "safe" segment and run ungated. The lookbehind/lookahead keep this from
+ * splitting the `&` inside `&&`, `&>`/`&>>` (redirect), `>&`/`2>&1` (fd dup),
+ * or `|&` (pipe stderr).
+ *
+ * SECURITY: shared by the classifier (categories.ts) and the audit summarizer
+ * (audit.ts) so the two can never diverge on what counts as a segment.
+ */
+export const SEGMENT_SPLIT_RE = /&&|\|\||;|(?<![>&|\d])&(?![&>])|\||\n/;
+
 export const CATEGORY_META: Record<Category, CategoryMeta> = {
 	destructive: {
 		label: "Destructive",
@@ -291,26 +308,21 @@ function isReadOnlySafe(command: string): boolean {
 	for (const m of command.matchAll(/&>>?\s*([^\s|&;<>]+)/g)) {
 		if (m[1] !== "/dev/null") return false;
 	}
-	// Split on every command separator, including a bare `&` (background/async) —
-	// omitting it let `ls & ./evil.sh` collapse into one "safe" segment and run
-	// ungated. The lookbehind/lookahead keep this from splitting the `&` inside
-	// `&&`, `&>`/`&>>` (redirect), `>&`/`2>&1` (fd dup), or `|&` (pipe stderr).
 	const segments = command
-		.split(/&&|\|\||;|(?<![>&|\d])&(?![&>])|\||\n/)
+		.split(SEGMENT_SPLIT_RE)
 		.map((s) => s.trim())
 		.filter(Boolean);
 	if (segments.length === 0) return false;
 	for (const seg of segments) {
-		const tokens = seg.split(/\s+/).filter(Boolean);
+		const [first, ...args] = seg.split(/\s+/).filter(Boolean);
+		if (!first) return false;
 		// Environment assignments can retune otherwise-safe programs (PAGER,
 		// LESSOPEN, GIT_EXTERNAL_DIFF, library injection, etc.). Gate them.
-		let idx = 0;
-		if (idx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx])) return false;
-		if (idx >= tokens.length) return false;
-		const head = commandHead(tokens[idx]);
+		if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(first)) return false;
+		const head = commandHead(first);
 		if (head === "git") {
-			const sub = tokens[idx + 1] ? commandHead(tokens[idx + 1]) : "";
-			const rest = tokens.slice(idx + 2);
+			const sub = args[0] ? commandHead(args[0]) : "";
+			const rest = args.slice(1);
 			if (!GIT_READONLY.has(sub)) return false;
 			if (rest.some((token) =>
 				token === "--output" || token.startsWith("--output=") ||
@@ -320,7 +332,7 @@ function isReadOnlySafe(command: string): boolean {
 		}
 		if (!SAFE_COMMANDS.has(head)) return false;
 		// A known-safe head can still write/exec via a side-effect flag or operand.
-		if (safeCommandUsedUnsafely(head, tokens.slice(idx + 1))) return false;
+		if (safeCommandUsedUnsafely(head, args)) return false;
 	}
 	return true;
 }
@@ -331,6 +343,9 @@ function isReadOnlySafe(command: string): boolean {
  * confirms it), or null for read-only inspection commands (never gated).
  */
 export function classifyCommand(command: string): Category | null {
+	// Fail closed on pathological input before touching any regex (see
+	// MAX_CLASSIFIED_COMMAND_LENGTH above).
+	if (command.length > MAX_CLASSIFIED_COMMAND_LENGTH) return "destructive";
 	// A single `>` truncates or creates a file. Treat it as destructive unless
 	// it targets a standard sink/descriptor. (`>>` is still a mutation and falls
 	// through to "other" in max mode, but it does not erase existing contents.)

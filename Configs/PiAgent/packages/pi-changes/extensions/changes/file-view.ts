@@ -3,21 +3,11 @@
  * content view (syntax-highlighted via the SDK's highlightCode).
  */
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, getLanguageFromPath, highlightCode } from "@earendil-works/pi-coding-agent";
+import { getLanguageFromPath, highlightCode } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { countDiffStat } from "./diff.ts";
-import { escapeTerminalControls } from "./display.ts";
+import { escapeTerminalControls, padToWidth as pad, rule } from "./display.ts";
 import { type ChangeStatus, type FileChange, fileDiffText } from "./tracker.ts";
-
-function pad(content: string, width: number): string {
-	const vis = visibleWidth(content);
-	return content + " ".repeat(Math.max(0, width - vis));
-}
-
-function rule(theme: Theme, width: number): string {
-	const border = new DynamicBorder((s: string) => theme.fg("borderMuted", s));
-	return border.render(Math.max(1, width))[0] ?? "";
-}
 
 const MARKER: Record<ChangeStatus, { char: string; color: string }> = {
 	created: { char: "A", color: "toolDiffAdded" },

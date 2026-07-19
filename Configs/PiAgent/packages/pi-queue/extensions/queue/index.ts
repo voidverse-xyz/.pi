@@ -222,7 +222,7 @@ export default function queueExtension(pi: ExtensionAPI): void {
 		try {
 			pi.sendUserMessage(contentFor(entry), deliverAs ? { deliverAs } : undefined);
 			return true;
-		} catch (error) {
+		} catch {
 			entries.splice(index, 0, entry);
 			persist({ op: "enqueue", entry });
 			persist({ op: "order", ids: entries.map((candidate) => candidate.id) });

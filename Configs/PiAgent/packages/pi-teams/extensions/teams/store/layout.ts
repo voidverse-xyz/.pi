@@ -94,7 +94,7 @@ export function collectRequestsFileOf(mailboxDir: string): string {
 }
 
 /** <typeDefsDir>.json — the settings-file sibling of a type-def dir. */
-export function settingsFileSiblingOf(typeDefsDir: string): string {
+function settingsFileSiblingOf(typeDefsDir: string): string {
 	return `${typeDefsDir}.json`;
 }
 
@@ -119,11 +119,7 @@ export interface Layout {
 	readonly ownerSessionId: string;
 	/** ~/.pi/agent */
 	readonly agentDir: string;
-	/** ~/.pi/agent/sessions */
-	readonly sessionsRoot: string;
-	/** ~/.pi/agent/sessions/<cwd-slug> — Pi's own dir for this project. */
-	readonly projectSessionDir: string;
-	/** <projectSessionDir>/teams — parent of all session scopes for this project. */
+	/** ~/.pi/agent/sessions/<cwd-slug>/teams — parent of all session scopes for this project. */
 	readonly projectSubagentsRoot: string;
 	/** <projectSubagentsRoot>/<sessionId> — root of all mutable state for this conversation. */
 	readonly subagentsRoot: string;
@@ -167,8 +163,9 @@ export function createLayout(cwd: string, options: LayoutOptions): Layout {
 	}
 	const home = options.home ?? homedir();
 	const agentDir = join(home, ".pi", "agent");
-	const sessionsRoot = join(agentDir, "sessions");
-	const projectSessionDir = join(sessionsRoot, cwdSlug(cwd));
+	// ~/.pi/agent/sessions/<cwd-slug> — Pi's own per-project sessions dir; our
+	// teams subtree sits beside Pi's main-session JSONLs inside it.
+	const projectSessionDir = join(agentDir, "sessions", cwdSlug(cwd));
 	const projectSubagentsRoot = join(projectSessionDir, "teams");
 	const subagentsRoot = options.subagentsRoot ?? join(projectSubagentsRoot, options.sessionId);
 	const archiveRoot = join(subagentsRoot, ".archive");
@@ -184,8 +181,6 @@ export function createLayout(cwd: string, options: LayoutOptions): Layout {
 		cwd,
 		ownerSessionId: options.sessionId,
 		agentDir,
-		sessionsRoot,
-		projectSessionDir,
 		projectSubagentsRoot,
 		subagentsRoot,
 		scopeManifestFile: join(subagentsRoot, "scope.json"),

@@ -258,12 +258,6 @@ function makeLineBgStyle(theme: Theme, matrixEnabled: boolean): LineBgStyle | un
 	return { ...styles[Math.floor(Math.random() * styles.length)]!, matrix };
 }
 
-/**
- * Repaint one rendered working-indicator line with a full-width animated
- * background: a uniform tint under the text, per-column animation across the
- * empty remainder. Inner full resets re-apply the text tint so embedded
- * styling (label pill, dim stats) stays visually continuous.
- */
 function trimRenderPadding(line: string): string {
 	// Pi's Text renderer pads every content row to the requested width. Remove
 	// only those trailing cells so the animated runway remains measurable.
@@ -281,22 +275,46 @@ function collapseStatusLines(lines: string[]): string {
 		.join(" ");
 }
 
-function paintStatusLine(line: string, width: number, style: LineBgStyle, t: number): string {
-	const fitted = truncateToWidth(trimRenderPadding(line), width, "");
-	const textWidth = visibleWidth(fitted);
-	const textBg = bgAnsi(style.text(t));
-	let out = `${textBg}${fitted.replaceAll(RESET, `${RESET}${textBg}`)}`;
+/**
+ * Paint animated background cells for columns `startCol..width`: one space (or
+ * matrix glyph) per column over the per-column background from `bgFor`,
+ * emitting each bg code only when it changes from the previous column.
+ */
+function paintCellRun(
+	style: LineBgStyle,
+	t: number,
+	row: 0 | 1 | 2,
+	startCol: number,
+	width: number,
+	bgFor: (col: number) => Rgb,
+): string {
+	let out = "";
 	let previous = "";
-	for (let col = textWidth; col < width; col++) {
-		const code = bgAnsi(style.pad(t, col, textWidth, width));
+	for (let col = startCol; col < width; col++) {
+		const code = bgAnsi(bgFor(col));
 		const prefix = code === previous ? "" : code;
-		const matrix = style.matrix?.cell(t, col, 1);
+		const matrix = style.matrix?.cell(t, col, row);
 		out += matrix
 			? `${prefix}${matrix.foreground}${matrix.glyph}${RESET_FG}`
 			: `${prefix} `;
 		previous = code;
 	}
-	return `${out}${RESET}`;
+	return out;
+}
+
+/**
+ * Repaint one rendered working-indicator line with a full-width animated
+ * background: a uniform tint under the text, per-column animation across the
+ * empty remainder. Inner full resets re-apply the text tint so embedded
+ * styling (label pill, dim stats) stays visually continuous.
+ */
+function paintStatusLine(line: string, width: number, style: LineBgStyle, t: number): string {
+	const fitted = truncateToWidth(trimRenderPadding(line), width, "");
+	const textWidth = visibleWidth(fitted);
+	const textBg = bgAnsi(style.text(t));
+	const text = `${textBg}${fitted.replaceAll(RESET, `${RESET}${textBg}`)}`;
+	const runway = paintCellRun(style, t, 1, textWidth, width, (col) => style.pad(t, col, textWidth, width));
+	return `${text}${runway}${RESET}`;
 }
 
 /**
@@ -305,18 +323,10 @@ function paintStatusLine(line: string, width: number, style: LineBgStyle, t: num
  * vertically with the painted text row.
  */
 function paintPaddingLine(width: number, style: LineBgStyle, t: number, textWidth: number, row: 0 | 2): string {
-	let out = "";
-	let previous = "";
-	for (let col = 0; col < width; col++) {
-		const code = bgAnsi(col < textWidth ? style.text(t) : style.pad(t, col, textWidth, width));
-		const prefix = code === previous ? "" : code;
-		const matrix = style.matrix?.cell(t, col, row);
-		out += matrix
-			? `${prefix}${matrix.foreground}${matrix.glyph}${RESET_FG}`
-			: `${prefix} `;
-		previous = code;
-	}
-	return `${out}${RESET}`;
+	const cells = paintCellRun(style, t, row, 0, width, (col) =>
+		col < textWidth ? style.text(t) : style.pad(t, col, textWidth, width),
+	);
+	return `${cells}${RESET}`;
 }
 
 function stripAnsi(value: string): string {
@@ -386,39 +396,71 @@ type ToolExecutionLike = {
 	getRenderShell(): "default" | "self";
 };
 
-type ToolExecutionPrototype = {
-	render(width: number): string[];
-	[TOOL_PATCH]?: { original: (this: ToolExecutionLike, width: number) => string[] };
-};
-
 const WORKING_BG_PATCH = Symbol.for("void-agent.working-bg-patch");
 
 // Current full-line background animation; set per agent run, cleared when the
-// run settles. The patched render below reads it on every frame.
+// run settles. The patched render below reads it on every frame. Note: this
+// state is process-global, not per-session — inherent to patching a shared
+// prototype, since every WorkingStatusIndicator instance renders through it.
 let activeLineBg: LineBgStyle | undefined;
 let activeLineBgStartedAt = 0;
 
-type WorkingIndicatorPrototype = {
-	render(width: number): string[];
-	[WORKING_BG_PATCH]?: { installed: true };
+type RenderFn = (width: number) => string[];
+
+type PiRenderPrototype = {
+	render: RenderFn;
+	[marker: symbol]: { original: RenderFn } | undefined;
 };
+
+/**
+ * Shared scaffold for patching the `render` method of a Pi CLI component
+ * class: resolve `modulePath` next to the running CLI entrypoint, dynamically
+ * import it, and install `wrap(original)` as the new render. A per-patch
+ * `marker` symbol on the prototype keeps installation idempotent (a repeat
+ * install returns a no-op restore), and the returned restore only unwinds
+ * while this patch still owns `render`. Returns undefined when the module or
+ * class cannot be found (e.g. Pi internals moved).
+ */
+async function patchPiPrototype(
+	modulePath: string,
+	className: string,
+	marker: symbol,
+	wrap: (original: RenderFn) => RenderFn,
+): Promise<(() => void) | undefined> {
+	try {
+		const cliPath = realpathSync(process.argv[1] ?? "");
+		const moduleUrl = pathToFileURL(join(dirname(cliPath), modulePath)).href;
+		const module = await import(moduleUrl) as Record<string, { prototype?: PiRenderPrototype } | undefined>;
+		const prototype = module[className]?.prototype;
+		if (!prototype) return undefined;
+		if (prototype[marker]) return () => {};
+
+		const original = prototype.render;
+		const patched = wrap(original);
+		prototype.render = patched;
+		prototype[marker] = { original };
+
+		return () => {
+			if (prototype.render !== patched) return;
+			prototype.render = original;
+			delete prototype[marker];
+		};
+	} catch {
+		return undefined;
+	}
+}
 
 /**
  * Patch WorkingStatusIndicator.render to repaint its output with the active
  * full-line background animation. The loader's own frame timer already
  * requests renders every ~80ms, which drives the animation.
  */
-async function installWorkingBgPatch(): Promise<(() => void) | undefined> {
-	try {
-		const cliPath = realpathSync(process.argv[1] ?? "");
-		const moduleUrl = pathToFileURL(join(dirname(cliPath), "modes/interactive/components/status-indicator.js")).href;
-		const module = await import(moduleUrl) as { WorkingStatusIndicator?: { prototype: WorkingIndicatorPrototype } };
-		const prototype = module.WorkingStatusIndicator?.prototype;
-		if (!prototype) return undefined;
-		if (prototype[WORKING_BG_PATCH]) return () => {};
-
-		const original = prototype.render;
-		const patched = function (this: unknown, width: number): string[] {
+function installWorkingBgPatch(): Promise<(() => void) | undefined> {
+	return patchPiPrototype(
+		"modes/interactive/components/status-indicator.js",
+		"WorkingStatusIndicator",
+		WORKING_BG_PATCH,
+		(original) => function (this: unknown, width: number): string[] {
 			const lines = original.call(this, width);
 			const style = activeLineBg;
 			if (!style || width <= 0) return lines;
@@ -431,33 +473,16 @@ async function installWorkingBgPatch(): Promise<(() => void) | undefined> {
 			const top = paintPaddingLine(width, style, t, textWidth, 0);
 			const bottom = paintPaddingLine(width, style, t, textWidth, 2);
 			return ["", top, paintStatusLine(content, width, style, t), bottom];
-		};
-		prototype.render = patched;
-		prototype[WORKING_BG_PATCH] = { installed: true };
-
-		return () => {
-			if (prototype.render !== patched) return;
-			prototype.render = original;
-			delete prototype[WORKING_BG_PATCH];
-		};
-	} catch {
-		return undefined;
-	}
+		},
+	);
 }
 
-async function installToolSeparatorPatch(): Promise<(() => void) | undefined> {
-	try {
-		const cliPath = realpathSync(process.argv[1] ?? "");
-		const moduleUrl = pathToFileURL(join(dirname(cliPath), "modes/interactive/components/tool-execution.js")).href;
-		const module = await import(moduleUrl) as { ToolExecutionComponent?: { prototype: ToolExecutionPrototype } };
-		const prototype = module.ToolExecutionComponent?.prototype;
-		if (!prototype) return undefined;
-
-		const existing = prototype[TOOL_PATCH];
-		if (existing) return () => {};
-
-		const original = prototype.render;
-		prototype.render = function (this: ToolExecutionLike, width: number): string[] {
+function installToolSeparatorPatch(): Promise<(() => void) | undefined> {
+	return patchPiPrototype(
+		"modes/interactive/components/tool-execution.js",
+		"ToolExecutionComponent",
+		TOOL_PATCH,
+		(original) => function (this: ToolExecutionLike, width: number): string[] {
 			const lines = original.call(this, width);
 			const shell = this.getRenderShell();
 			// Default rows contain both ToolExecutionComponent's leading spacer and
@@ -472,17 +497,8 @@ async function installToolSeparatorPatch(): Promise<(() => void) | undefined> {
 			if (shell === "self") lines.push("");
 			lines.push(`${DIM}${"─".repeat(width)}${RESET}`);
 			return lines;
-		};
-		prototype[TOOL_PATCH] = { original };
-
-		return () => {
-			if (prototype[TOOL_PATCH]?.original !== original) return;
-			prototype.render = original;
-			delete prototype[TOOL_PATCH];
-		};
-	} catch {
-		return undefined;
-	}
+		},
+	);
 }
 
 export default async function voidAgent(pi: ExtensionAPI): Promise<void> {

@@ -50,35 +50,37 @@ function formatCwd(cwd: string): string {
 	return rel === "" ? "~" : `~${sep}${rel}`;
 }
 
-// Cache successful layouts only. A negative cache would hide a repository created
-// after Pi starts until the session is reloaded.
-let layoutCache: { cwd: string; layout: Layout } | undefined;
+const resolveLayout = (() => {
+	// Cache successful layouts only. A negative cache would hide a repository created
+	// after Pi starts until the session is reloaded.
+	let layoutCache: { cwd: string; layout: Layout } | undefined;
 
-async function resolveLayout(pi: ExtensionAPI, cwd: string): Promise<Layout | null> {
-	if (layoutCache?.cwd === cwd) return layoutCache.layout;
-	try {
-		const out = await git(pi, cwd, [
-			"rev-parse",
-			"--path-format=absolute",
-			"--show-toplevel",
-			"--git-common-dir",
-			"--absolute-git-dir",
-		]);
-		const [toplevel, commonDir, gitDir] = out.trim().split("\n");
-		if (!toplevel || !commonDir || !gitDir) return null;
-		const isLinked = gitDir !== commonDir;
-		const mainRoot = basename(commonDir) === ".git" ? dirname(commonDir) : commonDir;
-		const layout: Layout = {
-			gitDir,
-			repoName: isLinked ? basename(mainRoot) : basename(toplevel),
-			worktree: isLinked ? basename(toplevel) : null,
-		};
-		layoutCache = { cwd, layout };
-		return layout;
-	} catch {
-		return null;
-	}
-}
+	return async function resolveLayout(pi: ExtensionAPI, cwd: string): Promise<Layout | null> {
+		if (layoutCache?.cwd === cwd) return layoutCache.layout;
+		try {
+			const out = await git(pi, cwd, [
+				"rev-parse",
+				"--path-format=absolute",
+				"--show-toplevel",
+				"--git-common-dir",
+				"--absolute-git-dir",
+			]);
+			const [toplevel, commonDir, gitDir] = out.trim().split("\n");
+			if (!toplevel || !commonDir || !gitDir) return null;
+			const isLinked = gitDir !== commonDir;
+			const mainRoot = basename(commonDir) === ".git" ? dirname(commonDir) : commonDir;
+			const layout: Layout = {
+				gitDir,
+				repoName: isLinked ? basename(mainRoot) : basename(toplevel),
+				worktree: isLinked ? basename(toplevel) : null,
+			};
+			layoutCache = { cwd, layout };
+			return layout;
+		} catch {
+			return null;
+		}
+	};
+})();
 
 function detectOperation(gitDir: string): { operation: string | null; branch: string | null } {
 	if (existsSync(join(gitDir, "rebase-merge")) || existsSync(join(gitDir, "rebase-apply"))) {

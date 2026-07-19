@@ -20,6 +20,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { generateUnifiedPatch } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isBinary, readTextSnapshot } from "./fs-util.ts";
 
 /** Files larger than this are tracked but not captured/undoable (session-file hygiene). */
 const MAX_CAPTURE_BYTES = 4 * 1024 * 1024;
@@ -89,32 +90,6 @@ export interface FileChange {
 
 export function sha256(text: string): string {
 	return createHash("sha256").update(text, "utf8").digest("hex");
-}
-
-function isBinary(buf: Buffer): boolean {
-	// A NUL byte in the first 8KB is the usual "binary" heuristic.
-	const n = Math.min(buf.length, 8192);
-	for (let i = 0; i < n; i++) if (buf[i] === 0) return true;
-	return false;
-}
-
-/** Read a file as text, reporting existence and whether it was readable-as-text. */
-function readTextFile(abs: string): { exists: boolean; text: string | null; unreadable: boolean } {
-	let stat: fs.Stats;
-	try {
-		stat = fs.statSync(abs);
-	} catch {
-		return { exists: false, text: null, unreadable: false };
-	}
-	if (!stat.isFile()) return { exists: true, text: null, unreadable: true };
-	if (stat.size > MAX_CAPTURE_BYTES) return { exists: true, text: null, unreadable: true };
-	try {
-		const buf = fs.readFileSync(abs);
-		if (isBinary(buf)) return { exists: true, text: null, unreadable: true };
-		return { exists: true, text: buf.toString("utf8"), unreadable: false };
-	} catch {
-		return { exists: true, text: null, unreadable: true };
-	}
 }
 
 // ── Live capture ────────────────────────────────────────────────────────────
@@ -341,7 +316,7 @@ export function collectChangeset(ctx: ExtensionContext): FileChange[] {
 		const rec = recordedCalls.get(fc.abs) ?? 0;
 		if (fc.changeCount === 0) fc.changeCount = rec;
 
-		const read = readTextFile(fc.abs);
+		const read = readTextSnapshot(fc.abs, { maxBytes: MAX_CAPTURE_BYTES, missingOn: "stat-error" });
 		fc.currentExists = read.exists;
 		fc.current = read.text;
 		fc.currentUnreadable = read.unreadable;

@@ -18,10 +18,10 @@
  */
 
 import { execFile } from "node:child_process";
-import { constants } from "node:fs";
+import { constants, mkdirSync } from "node:fs";
 import { access, readdir } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 async function isExecutable(p: string): Promise<boolean> {
@@ -122,6 +122,14 @@ export function renderHtmlSnapshot(
 		pathToFileURL(htmlAbs).href,
 	];
 	return new Promise((resolve) => {
+		// Owner-only private dir so no other user can pre-plant a symlink at the
+		// predictable screenshot path (Chromium follows symlinks when writing).
+		try {
+			mkdirSync(dirname(outPng), { recursive: true, mode: 0o700 });
+		} catch (e) {
+			resolve({ ok: false, error: (e instanceof Error ? e.message : String(e)).split("\n")[0] });
+			return;
+		}
 		execFile(
 			chromium,
 			args,
@@ -141,7 +149,7 @@ export function renderHtmlSnapshot(
 export function snapshotPathFor(htmlAbs: string): string {
 	let h = 5381;
 	for (let i = 0; i < htmlAbs.length; i++) h = (((h << 5) + h) ^ htmlAbs.charCodeAt(i)) >>> 0;
-	return join(tmpdir(), `pi-show-files-snap-${h.toString(36)}.png`);
+	return join(tmpdir(), "pi-show-files", `snap-${h.toString(36)}.png`);
 }
 
 /** Open a local file/URL in the platform's default app. Local-only; no network. */
@@ -152,6 +160,11 @@ export function openExternally(target: string): Promise<{ ok: boolean; error?: s
 		cmd = "open";
 		args = [target];
 	} else if (process.platform === "win32") {
+		// `cmd.exe` re-parses its argv for metacharacters even when Node passes an
+		// argv array, so a hostile path could inject a command. Refuse instead.
+		if (/[&<>^|"%`\r\n]/.test(target)) {
+			return Promise.resolve({ ok: false, error: "refused: path contains shell metacharacters" });
+		}
 		cmd = "cmd";
 		args = ["/c", "start", "", target];
 	} else {

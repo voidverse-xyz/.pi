@@ -28,9 +28,9 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { type FileSpec, type PresentedFile, resolveFiles } from "./files.ts";
+import { createShowFilesPanel, type ShowFilesOutcome } from "./panel.ts";
 
 const ICON_SUCCESS = ""; // nf-fa-check
-import { createShowFilesPanel, type ShowFilesOutcome } from "./panel.ts";
 
 // ---------------------------------------------------------------------------
 // Optional ipc capability (no import — pure runtime rendezvous over pi.events).
@@ -179,6 +179,39 @@ async function presentPanel(
 	);
 }
 
+/** Resolve the specs and reject an all-missing set (shared precondition of every entry point). */
+async function resolveChecked(
+	cwd: string,
+	specs: FileSpec[],
+): Promise<{ files: PresentedFile[]; missing: string[] }> {
+	const files = await resolveFiles(cwd, specs);
+	const missing = files.filter((f) => f.kind === "missing").map((f) => f.rel);
+	if (files.every((f) => f.kind === "missing")) {
+		// Tool failures must throw; returning `isError` does not mark a custom
+		// tool result as failed in Pi.
+		throw new Error(`None of the given paths exist: ${missing.join(", ")}. Fix the paths and retry.`);
+	}
+	return { files, missing };
+}
+
+// Shared path of the two local presentation entry points (the tool's TUI branch
+// and the parent-side ipc:serve claim): resolve + check the specs, record the
+// presentation for /show-files, and run the panel. Deliberate: a forwarded
+// presentation also becomes this session's "last" one, so /show-files on the
+// parent reopens the most recent thing that was on screen.
+async function resolveAndPresent(
+	ctx: ExtensionContext,
+	title: string,
+	summary: string | undefined,
+	specs: FileSpec[],
+	from?: string[],
+): Promise<{ files: PresentedFile[]; missing: string[]; outcome: ShowFilesOutcome }> {
+	const { files, missing } = await resolveChecked(ctx.cwd, specs);
+	lastPresentation = { title, summary, specs };
+	const outcome = await presentPanel(ctx, title, summary, files, from);
+	return { files, missing, outcome };
+}
+
 // ---------------------------------------------------------------------------
 // Extension.
 // ---------------------------------------------------------------------------
@@ -208,14 +241,6 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const specs = params.files as FileSpec[];
-			const files = await resolveFiles(ctx.cwd, specs);
-			const missing = files.filter((f) => f.kind === "missing").map((f) => f.rel);
-
-			if (files.every((f) => f.kind === "missing")) {
-				// Tool failures must throw; returning `isError` does not mark a custom
-				// tool result as failed in Pi.
-				throw new Error(`None of the given paths exist: ${missing.join(", ")}. Fix the paths and retry.`);
-			}
 
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
 				// Headless subagent — forward to the parent's TUI via the optional `ipc`
@@ -224,6 +249,7 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 				// parent stamps our identity onto the request's `from`, so the user sees
 				// which subagent is showing files. If ipc isn't installed or there's no
 				// parent channel, nothing claims the probe and we return a graceful error.
+				const { files } = await resolveChecked(ctx.cwd, specs);
 				const fwdFiles = specs.map((s, i) => ({ ...s, path: files[i]!.abs }));
 				const res = await busCall<ForwardedShowResult>(pi, "ipc:client", "files.show", {
 					title: params.title,
@@ -249,8 +275,7 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 				};
 			}
 
-			lastPresentation = { title: params.title, summary: params.summary, specs };
-			const outcome = await presentPanel(ctx, params.title, params.summary, files);
+			const { files, missing, outcome } = await resolveAndPresent(ctx, params.title, params.summary, specs);
 
 			const details: ShowFilesDetails = {
 				title: params.title,
@@ -305,14 +330,7 @@ export default function showFilesExtension(pi: ExtensionAPI) {
 			const summary = typeof req.summary === "string" && req.summary ? req.summary : undefined;
 			const specs = Array.isArray(req.files) ? req.files : [];
 			if (specs.length === 0) throw new Error("no files given");
-			const files = await resolveFiles(ctx.cwd, specs);
-			const missing = files.filter((f) => f.kind === "missing").map((f) => f.rel);
-			if (files.every((f) => f.kind === "missing"))
-				throw new Error(`none of the given paths exist: ${missing.join(", ")}. Fix the paths and retry.`);
-			// Deliberate: a forwarded presentation becomes this session's "last" one, so
-			// /show-files on the parent reopens the most recent thing that was on screen.
-			lastPresentation = { title, summary, specs };
-			const outcome = await presentPanel(ctx, title, summary, files, meta.from);
+			const { files, missing, outcome } = await resolveAndPresent(ctx, title, summary, specs, meta.from);
 			const result: ForwardedShowResult = { outcome, shown: files.map((f) => f.rel), missing };
 			return result;
 		});

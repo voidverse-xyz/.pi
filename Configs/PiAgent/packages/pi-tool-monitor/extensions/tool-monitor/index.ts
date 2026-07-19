@@ -59,7 +59,7 @@
  * Reload: /reload
  */
 
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Input, matchesKey, truncateToWidth, type TUI, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 const STATUS_KEY = "tool-monitor";
@@ -282,8 +282,14 @@ class ToolMonitorComponent {
 	}
 
 	private close(): void {
-		clearInterval(this.durationTimer);
+		this.dispose();
 		this.done();
+	}
+
+	// Rows available for scrollable content: terminal height minus the overlay's
+	// outer margin and the interior vertical padding (top + bottom of each).
+	private viewportRows(): number {
+		return Math.max(1, this.tui.terminal.rows - OVERLAY_MARGIN * 2 - INNER_PAD_Y * 2);
 	}
 
 	private blurFilter(clear: boolean): void {
@@ -370,7 +376,7 @@ class ToolMonitorComponent {
 			this.close();
 			return;
 		}
-		const viewport = Math.max(1, this.tui.terminal.rows - OVERLAY_MARGIN * 2 - INNER_PAD_Y * 2);
+		const viewport = this.viewportRows();
 		const maxScroll = Math.max(0, this.detailLineCount - viewport);
 		if (matchesKey(data, "up") || data === "k") this.detailScroll = Math.max(0, this.detailScroll - 1);
 		else if (matchesKey(data, "down") || data === "j") this.detailScroll = Math.min(maxScroll, this.detailScroll + 1);
@@ -504,7 +510,7 @@ class ToolMonitorComponent {
 			...wrapTextWithAnsi(summarize(run.status === "running" ? run.partialResult : run.result), width),
 		);
 		this.detailLineCount = lines.length;
-		const viewport = Math.max(1, this.tui.terminal.rows - OVERLAY_MARGIN * 2 - INNER_PAD_Y * 2);
+		const viewport = this.viewportRows();
 		this.detailScroll = Math.min(this.detailScroll, Math.max(0, lines.length - viewport));
 		return lines.slice(this.detailScroll, this.detailScroll + viewport);
 	}

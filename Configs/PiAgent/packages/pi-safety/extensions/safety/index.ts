@@ -17,8 +17,12 @@ const MODES: SafetyMode[] = ["off", "on", "max"];
 const DEFAULT_MODE: SafetyMode = "max";
 const STATUS_KEY = "safety";
 const CONFIG_PATH = join(getAgentDir(), "safety.json");
-const MAX_CLASSIFIED_COMMAND_LENGTH = 256 * 1024;
 const ICON_SHIELD = ""; // nf-fa-shield — text always names the feature and state
+
+// Name allowlist of mutation tools covered by the opt-in write gate
+// (/safety-writes). Mutation tools NOT listed here are not gated. Unknown
+// names never match an event, so listing extras is harmless.
+const WRITE_TOOLS = ["edit", "write", "multiedit", "apply_patch", "notebook_edit"] as const;
 
 const MODE_CATEGORIES: Record<SafetyMode, ReadonlySet<Category>> = {
 	off: new Set(),
@@ -91,12 +95,33 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 		}
 	}
 
+	/**
+	 * The single confirmation gate: serialize the prompt, audit the outcome, and
+	 * fail closed if confirmation itself errors. `display` is both what the user
+	 * confirms and what gets audited. All three gated paths (main-agent bash,
+	 * main-agent writes, subagent confirm provider) route through here so
+	 * confirm/audit/error handling can never diverge; callers only phrase their
+	 * own block/decline messages. `reason` is set only on a confirmation error
+	 * (the raw error message); a plain decline is `{ approved: false }`.
+	 */
+	async function gate(ctx: ExtensionContext, category: Category, display: string): Promise<{ approved: boolean; reason?: string }> {
+		let approved: boolean;
+		try {
+			approved = await confirmSerial(ctx, category, display);
+		} catch (error) {
+			auditLog({ rawCommand: display, category, mode: currentMode, decision: "denied", source: "auto" });
+			return { approved: false, reason: error instanceof Error ? error.message : String(error) };
+		}
+		auditLog({ rawCommand: display, category, mode: currentMode, decision: approved ? "approved" : "denied", source: "user" });
+		return { approved };
+	}
+
 	pi.on("tool_call", async (event, ctx) => {
 		if (!isToolCallEventType("bash", event)) return;
 		const command = event.input.command;
 		if (typeof command !== "string" || !command.trim()) return;
 
-		const category = command.length > MAX_CLASSIFIED_COMMAND_LENGTH ? "destructive" : classifyCommand(command);
+		const category = classifyCommand(command);
 		if (!category) {
 			auditLog({ rawCommand: command, category: "read-only", mode: currentMode, decision: "auto-allowed", source: "auto" });
 			return;
@@ -114,19 +139,12 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 			};
 		}
 
-		let approved: boolean;
-		try {
-			approved = await confirmSerial(ctx, category, command);
-		} catch (error) {
-			auditLog({ rawCommand: command, category, mode: currentMode, decision: "denied", source: "auto" });
+		const verdict = await gate(ctx, category, command);
+		if (verdict.reason !== undefined) {
 			ctx.ui.notify("Safety confirmation failed; command blocked", "error");
-			return {
-				block: true,
-				reason: `pi-safety confirmation failed: ${error instanceof Error ? error.message : String(error)}`,
-			};
+			return { block: true, reason: `pi-safety confirmation failed: ${verdict.reason}` };
 		}
-		auditLog({ rawCommand: command, category, mode: currentMode, decision: approved ? "approved" : "denied", source: "user" });
-		if (approved) return;
+		if (verdict.approved) return;
 		ctx.ui.notify(`Blocked ${CATEGORY_META[category].label.toLowerCase()} command`, "warning");
 		return { block: true, reason: `Blocked by pi-safety (${category}; declined by user)` };
 	});
@@ -135,7 +153,7 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 	// never surprises normal editing; enable with /safety-writes on.
 	pi.on("tool_call", async (event, ctx) => {
 		if (!gateWrites || currentMode === "off") return;
-		const writeTool = isToolCallEventType("edit", event) ? "edit" : isToolCallEventType("write", event) ? "write" : null;
+		const writeTool = WRITE_TOOLS.find((name) => isToolCallEventType(name, event)) ?? null;
 		if (!writeTool) return;
 		const rawPath = (event.input as { path?: unknown }).path;
 		const path = typeof rawPath === "string" ? rawPath : "";
@@ -145,14 +163,11 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 			auditLog({ rawCommand: `${writeTool} ${path}`, category, mode: currentMode, decision: "denied", source: "auto" });
 			return { block: true, reason: `pi-safety blocked a ${writeTool} because no confirmation UI is available` };
 		}
-		let approved: boolean;
-		try {
-			approved = await confirmSerial(ctx, category, `${writeTool} ${path}`);
-		} catch (error) {
-			return { block: true, reason: `pi-safety confirmation failed: ${error instanceof Error ? error.message : String(error)}` };
+		const verdict = await gate(ctx, category, `${writeTool} ${path}`);
+		if (verdict.reason !== undefined) {
+			return { block: true, reason: `pi-safety confirmation failed: ${verdict.reason}` };
 		}
-		auditLog({ rawCommand: `${writeTool} ${path}`, category, mode: currentMode, decision: approved ? "approved" : "denied", source: "user" });
-		if (approved) return;
+		if (verdict.approved) return;
 		return { block: true, reason: `Blocked by pi-safety (${writeTool}; declined by user)` };
 	});
 
@@ -176,7 +191,7 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 			let display: string;
 			if (req.tool === "bash") {
 				const command = typeof req.command === "string" ? req.command : "";
-				const classified = command.length > MAX_CLASSIFIED_COMMAND_LENGTH ? "destructive" : classifyCommand(command);
+				const classified = classifyCommand(command);
 				if (!classified) {
 					auditLog({ rawCommand: `[${agent}] ${command}`, category: "read-only", mode: currentMode, decision: "auto-allowed", source: "auto" });
 					return { approved: true };
@@ -192,15 +207,9 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 				auditLog({ rawCommand: `[${agent}] ${display}`, category, mode: currentMode, decision: "auto-allowed", source: "auto" });
 				return { approved: true };
 			}
-			let approved: boolean;
-			try {
-				approved = await confirmSerial(ctx, category, `[${agent}] ${display}`);
-			} catch (error) {
-				auditLog({ rawCommand: `[${agent}] ${display}`, category, mode: currentMode, decision: "denied", source: "auto" });
-				return { approved: false, note: `confirmation failed: ${error instanceof Error ? error.message : String(error)}` };
-			}
-			auditLog({ rawCommand: `[${agent}] ${display}`, category, mode: currentMode, decision: approved ? "approved" : "denied", source: "user" });
-			return approved ? { approved: true } : { approved: false, note: "declined by the human" };
+			const verdict = await gate(ctx, category, `[${agent}] ${display}`);
+			if (verdict.reason !== undefined) return { approved: false, note: `confirmation failed: ${verdict.reason}` };
+			return verdict.approved ? { approved: true } : { approved: false, note: "declined by the human" };
 		});
 	};
 	pi.events.on("teams:confirm-request", handleConfirmRequest);
@@ -225,6 +234,7 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 						"  max — confirm everything except commands proven read-only",
 						"  on  — confirm destructive commands only",
 						"  off — do not confirm",
+						"Note: on gates only clearly-destructive commands (best-effort; shell obfuscation can evade it); max gates everything not provably read-only and is the only fail-closed mode.",
 						"Usage: /safety <off|on|max>",
 					].join("\n"),
 					"info",

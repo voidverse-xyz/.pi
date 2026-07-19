@@ -1,3 +1,7 @@
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+
 const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
 
 /** Render terminal control bytes as visible escapes while preserving tabs/newlines. */
@@ -17,4 +21,27 @@ export function capDisplayLines(value: string, maxLines: number, marker: string)
 		cursor = newline + 1;
 	}
 	return cursor >= value.length ? value : `${value.slice(0, cursor)}${marker}`;
+}
+
+/** Pad a (possibly ANSI-styled) string to an exact visible width with trailing spaces. */
+export function padToWidth(content: string, width: number): string {
+	return content + " ".repeat(Math.max(0, width - visibleWidth(content)));
+}
+
+/** Truncate to `width` (with an ellipsis) then pad to exactly that visible width. */
+export function clipPad(content: string, width: number): string {
+	return padToWidth(truncateToWidth(content, Math.max(0, width), "…"), width);
+}
+
+// DynamicBorder is stateless; reuse one per theme instead of allocating per rule.
+const ruleBorders = new WeakMap<Theme, DynamicBorder>();
+
+/** A muted horizontal rule spanning `width` columns. */
+export function rule(theme: Theme, width: number): string {
+	let border = ruleBorders.get(theme);
+	if (!border) {
+		border = new DynamicBorder((s: string) => theme.fg("borderMuted", s));
+		ruleBorders.set(theme, border);
+	}
+	return border.render(Math.max(1, width))[0] ?? "";
 }

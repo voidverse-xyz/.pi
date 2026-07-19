@@ -110,7 +110,7 @@ export default function workflow(pi: ExtensionAPI) {
 			const l = requireLayout(ctx);
 			if (typeof request.script === "string" && request.script.trim()) return { source: request.script };
 			if (typeof request.name === "string" && request.name.trim()) return resolveByName(request.name.trim(), l, ctx.isProjectTrusted());
-			return resolveByPath(String(request.scriptPath).trim(), ctx.cwd);
+			return resolveByPath(String(request.scriptPath).trim(), ctx.cwd, ctx.isProjectTrusted());
 		},
 		createRun(input, ctx, onChange) {
 			const l = requireLayout(ctx);

@@ -64,8 +64,7 @@ function progressText(run: WorkflowRun): string {
 	const snap = run.snapshot();
 	const lines = [`workflow ${snap.name} [${snap.runId}] — ${snap.status}${snap.currentPhase ? ` · phase ${snap.currentPhase}` : ""}`];
 	for (const row of snap.rows) {
-		const mark = row.state === "done" || row.state === "cached" ? "" : row.state === "error" ? "" : row.state === "running" || row.state === "waiting" ? "" : "";
-		lines.push(`  ${mark} ${row.label}${row.cached ? " (cached)" : ""}${row.activity?.summary ? ` · ${row.activity.summary}` : ""}${row.error ? ` — ${row.error}` : ""}`);
+		lines.push(`  ${row.label}${row.cached ? " (cached)" : ""}${row.activity?.summary ? ` · ${row.activity.summary}` : ""}${row.error ? ` — ${row.error}` : ""}`);
 	}
 	for (const log of snap.logs.slice(-2)) lines.push(`  log: ${log}`);
 	return lines.join("\n");

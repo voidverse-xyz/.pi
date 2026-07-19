@@ -51,11 +51,14 @@ test("resolveByName: project wins, trust-gated; miss lists available", () => {
 	assert.throws(() => resolveByName("../evil", layout, true), /Invalid workflow name/);
 });
 
-test("resolveByPath: .js only, absolute or cwd-relative", () => {
+test("resolveByPath: .js only, absolute or cwd-relative, trust-gated, cwd-confined", () => {
 	const { cwd } = world();
 	writeFileSync(join(cwd, "my-flow.js"), wf("my-flow", "x"));
-	assert.equal(resolveByPath("my-flow.js", cwd).fallbackName, "my-flow");
-	assert.equal(resolveByPath(join(cwd, "my-flow.js"), cwd).fallbackName, "my-flow");
-	assert.throws(() => resolveByPath("my-flow.ts", cwd), /must point to a \.js file/);
-	assert.throws(() => resolveByPath("nope.js", cwd), /not found/);
+	assert.equal(resolveByPath("my-flow.js", cwd, true).fallbackName, "my-flow");
+	assert.equal(resolveByPath(join(cwd, "my-flow.js"), cwd, true).fallbackName, "my-flow");
+	assert.throws(() => resolveByPath("my-flow.ts", cwd, true), /must point to a \.js file/);
+	assert.throws(() => resolveByPath("nope.js", cwd, true), /not found/);
+	assert.throws(() => resolveByPath("my-flow.js", cwd, false), /project not trusted/);
+	assert.throws(() => resolveByPath("../outside.js", cwd, true), /inside the project directory/);
+	assert.throws(() => resolveByPath("/etc/evil.js", cwd, true), /inside the project directory/);
 });

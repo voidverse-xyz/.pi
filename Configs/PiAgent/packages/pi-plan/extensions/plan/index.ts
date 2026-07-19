@@ -130,6 +130,15 @@ function modeLabel(mode: AgentMode): string {
 	return mode === "off" ? "Off" : `${mode[0]!.toUpperCase()}${mode.slice(1)}`;
 }
 
+function completions(options: string[]) {
+	return (prefix: string) => {
+		const matches = options
+			.filter((option) => option.startsWith(prefix.trim().toLowerCase()))
+			.map((option) => ({ value: option, label: option }));
+		return matches.length > 0 ? matches : null;
+	};
+}
+
 export default function planExtension(pi: ExtensionAPI): void {
 	let mode: AgentMode = "off";
 	let authorizedPlanPath: string | undefined;
@@ -242,19 +251,18 @@ export default function planExtension(pi: ExtensionAPI): void {
 		return true;
 	}
 
+	function requireIdle(ctx: ExtensionContext): boolean {
+		if (ctx.isIdle()) return true;
+		ctx.ui.notify("Agent mode can only be changed while Pi is idle.", "warning");
+		return false;
+	}
+
 	function toggleMode(target: Exclude<AgentMode, "off">, ctx: ExtensionContext): void {
-		if (!ctx.isIdle()) {
-			ctx.ui.notify("Agent mode can only be changed while Pi is idle.", "warning");
-			return;
-		}
 		setMode(mode === target ? "off" : target, ctx);
 	}
 
 	function cycleMode(ctx: ExtensionContext): void {
-		if (!ctx.isIdle()) {
-			ctx.ui.notify("Agent mode can only be changed while Pi is idle.", "warning");
-			return;
-		}
+		if (!requireIdle(ctx)) return;
 		const index = MODE_ORDER.indexOf(mode);
 		setMode(MODE_ORDER[(index + 1) % MODE_ORDER.length]!, ctx);
 	}
@@ -271,10 +279,7 @@ export default function planExtension(pi: ExtensionAPI): void {
 		args: string,
 		ctx: ExtensionCommandContext,
 	): Promise<void> {
-		if (!ctx.isIdle()) {
-			ctx.ui.notify("Agent mode can only be changed while Pi is idle.", "warning");
-			return;
-		}
+		if (!requireIdle(ctx)) return;
 		const command = parseModeCommand(args);
 		if (command.kind === "toggle") {
 			toggleMode(target, ctx);
@@ -352,31 +357,16 @@ export default function planExtension(pi: ExtensionAPI): void {
 	for (const target of ["ask", "discuss"] as const) {
 		pi.registerCommand(target, {
 			description: `${target === "ask" ? "Toggle brief Ask" : "Toggle normal-response Discuss"} mode, or enable it and send a message`,
-			getArgumentCompletions: (prefix) => {
-				const options = ["on", "off", "exit", "toggle", "status"];
-				const matches = options
-					.filter((option) => option.startsWith(prefix.trim().toLowerCase()))
-					.map((option) => ({ value: option, label: option }));
-				return matches.length > 0 ? matches : null;
-			},
+			getArgumentCompletions: completions(["on", "off", "exit", "toggle", "status"]),
 			handler: (args, ctx) => handleConversationCommand(target, args, ctx),
 		});
 	}
 
 	pi.registerCommand("plan", {
 		description: "Toggle Plan mode, or enable it and plan a task",
-		getArgumentCompletions: (prefix) => {
-			const options = ["on", "off", "exit", "toggle", "status", "--skill "];
-			const matches = options
-				.filter((option) => option.startsWith(prefix.trim().toLowerCase()))
-				.map((option) => ({ value: option, label: option }));
-			return matches.length > 0 ? matches : null;
-		},
+		getArgumentCompletions: completions(["on", "off", "exit", "toggle", "status", "--skill "]),
 		handler: async (args, ctx) => {
-			if (!ctx.isIdle()) {
-				ctx.ui.notify("Agent mode can only be changed while Pi is idle.", "warning");
-				return;
-			}
+			if (!requireIdle(ctx)) return;
 
 			const command = parsePlanCommand(args);
 			if (command.kind === "toggle") {

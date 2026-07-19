@@ -16,7 +16,7 @@
  * pipeline as library type defs, so persistence and live-retune are identical.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -26,9 +26,7 @@ import {
 	type CreateAgentSessionFromServicesOptions,
 	type CreateAgentSessionServicesOptions,
 	type ModelRegistry,
-	parseSessionEntries,
 	resolveCliModel,
-	type SessionMessageEntry,
 	SessionManager,
 	type SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -42,6 +40,7 @@ import {
 	MAIN_ADDRESS,
 	parseAddress,
 	seedUlidClock,
+	terminalTaskAnchors,
 	USER_ADDRESS,
 } from "../mail/envelope.ts";
 import {
@@ -74,6 +73,8 @@ import { createSubagentTools, type SubagentMailPort } from "../tools/sub-agent.t
 import { buildSandboxedTools, selectToolNames } from "../sandbox/tools-filter.ts";
 import { makeCommandDenyCheck, makeSystemDenyCheck } from "../sandbox/system-deny.ts";
 import { type ConfirmFn, denyAllConfirm } from "../sandbox/safety-bridge.ts";
+import { readTranscriptTail } from "../session-read.ts";
+import { ellipsize, labelFromSource, MAX_LABEL_CHARS } from "../text.ts";
 import type {
 	AgentActivity,
 	AgentActivityRow,
@@ -96,12 +97,10 @@ import type {
 	SteerResult,
 	SubagentRuntime,
 	TargetOutcome,
-	TranscriptEntry,
 } from "./types.ts";
 import { Scheduler } from "./scheduler.ts";
 
 const TMP_ID_BYTES = 4;
-const MAX_LABEL_CHARS = 80;
 const AWAIT_POLL_MS = 40;
 const DEFAULT_AWAIT_TIMEOUT_S = 300;
 
@@ -130,6 +129,12 @@ interface Handle {
 	assignment: string | null;
 	/** Set when the agent sent a final report this turn; a oneshot auto-retires after. */
 	retireAfterTurn: boolean;
+}
+
+/** A terminal assistant failure observed on agent_end (stopReason error/aborted). */
+interface TurnFailure {
+	stopReason: string;
+	message: string;
 }
 
 function vitalsFrom(session: AgentSession, state: AgentState): AgentVitals {
@@ -465,10 +470,10 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				if (!remaining.has(`${target.to} ${target.anchorId}`)) continue; // resolved by an earlier sibling this pass
 				const finalReport = pending.find((p) => {
 					if (p.envelope.type !== "report" || p.envelope.from !== target.to || p.envelope.payload.final !== true) return false;
-					return terminalTaskAnchors(p.envelope).includes(target.anchorId);
+					return terminalAnchorList(p.envelope).includes(target.anchorId);
 				});
 				if (finalReport) {
-					const anchors = new Set(terminalTaskAnchors(finalReport.envelope));
+					const anchors = new Set(terminalAnchorList(finalReport.envelope));
 					consumeSupersededProgress(mainbox, pending, finalReport.envelope, anchors);
 					markDone(mainbox, finalReport.envelope.id);
 					const view = envView(finalReport.envelope);
@@ -477,11 +482,11 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				}
 				const fatal = pending.find((p) => {
 					if (p.envelope.type !== "error" || p.envelope.from !== target.to) return false;
-					const anchors = terminalTaskAnchors(p.envelope);
+					const anchors = terminalAnchorList(p.envelope);
 					return anchors.length === 0 || anchors.includes(target.anchorId); // empty = legacy unscoped error
 				});
 				if (fatal) {
-					const anchors = terminalTaskAnchors(fatal.envelope);
+					const anchors = terminalAnchorList(fatal.envelope);
 					if (anchors.length > 0) consumeSupersededProgress(mainbox, pending, fatal.envelope, new Set(anchors));
 					markDone(mainbox, fatal.envelope.id);
 					const view = envView(fatal.envelope);
@@ -697,96 +702,15 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				items: pending.map((p): DigestItem => ({ envelope: p.envelope, redelivered: p.redelivered })),
 			});
 
-			const startingVitals = vitalsFrom(handle.session, "running");
-			this.activity.set(address, {
-				tool: "",
-				summary: "thinking…",
-				toolUses: 0,
-				tokens: startingVitals.tokens,
-				ctxPercent: startingVitals.ctxPercent,
-			});
-			let failure: { stopReason: string; message: string } | null = null;
-			const activeTools = new Map<string, { tool: string; summary: string }>();
-			const publishActivity = (next: AgentActivity): void => {
-				this.activity.set(address, next);
-				this.emit({ type: "state-changed", address, state: "running" });
-			};
-			const unsubscribe = handle.session.subscribe((event) => {
-				if (event.type === "tool_execution_start") {
-					const prev = this.activity.get(address);
-					if (!prev) return;
-					const tool = event.toolName;
-					const current = { tool, summary: toolSummary(tool, event.args) };
-					activeTools.set(event.toolCallId, current);
-					publishActivity({ ...prev, ...current, toolUses: prev.toolUses + 1 });
-					return;
-				}
-				if (event.type === "tool_execution_end") {
-					const prev = this.activity.get(address);
-					if (!prev) return;
-					activeTools.delete(event.toolCallId);
-					const current = [...activeTools.values()].at(-1);
-					publishActivity(current
-						? { ...prev, ...current }
-						: { ...prev, tool: "", summary: "thinking…" });
-					return;
-				}
-				// message_end is emitted just before SessionManager persistence. Defer one
-				// microtask so getSessionStats() includes that finalized message, then
-				// refresh cumulative tokens/context and any tool calls it introduced.
-				if (event.type === "message_end") {
-					queueMicrotask(() => {
-						const prev = this.activity.get(address);
-						if (!prev) return;
-						const live = vitalsFrom(handle.session, "running");
-						publishActivity({ ...prev, tokens: live.tokens, ctxPercent: live.ctxPercent });
-					});
-					return;
-				}
-				if (event.type !== "agent_end") return;
-				for (const message of event.messages) {
-					const m = message as { role?: string; stopReason?: string; errorMessage?: string };
-					if (m.role === "assistant" && (m.stopReason === "error" || m.stopReason === "aborted")) {
-						failure = { stopReason: m.stopReason, message: m.errorMessage ?? "(no error message)" };
-					}
-				}
-			});
+			const telemetry = this.trackTurnActivity(address, handle);
 			try {
 				await handle.session.prompt(digest);
 				await handle.session.waitForIdle();
 			} finally {
-				unsubscribe();
+				telemetry.unsubscribe();
 			}
 
-			if (this.disposed || handle.aborted || (failure && (failure as { stopReason: string }).stopReason === "aborted")) {
-				// cancel/shutdown: leave the triggering mail pending, don't auto-retry
-				leavePending = true;
-			} else {
-				for (const p of pending) markDone(mailboxDir, p.envelope.id);
-			}
-
-			const vitals = vitalsFrom(handle.session, "dormant");
-			patchAgent(this.registry, address, { vitals, lastActiveAt: new Date().toISOString() });
-			this.persist();
-			handle.trigger = null;
-
-			if (failure && (failure as { stopReason: string }).stopReason === "error") {
-				this.emit({ type: "turn-error", address, error: (failure as { message: string }).message });
-				// Persist exactly the task anchors consumed by this failed turn. Mail that
-				// arrived while it ran remains pending for the next turn and must not be
-				// completed by this error.
-				this.deliverer.send({
-					from: { kind: "agent", type: record.type, id: record.id },
-					to: MAIN_ADDRESS,
-					type: "error",
-					text: `Turn failed: ${(failure as { message: string }).message}`,
-					terminalAnchors: taskAnchors(pending.map((p) => p.envelope)),
-				});
-			}
-			this.activity.delete(address);
-			this.emit({ type: "state-changed", address, state: "dormant" });
-			this.emit({ type: "turn-finished", address, vitals });
-			if (!leavePending) handle.assignment = null;
+			leavePending = this.finishTurn({ address, record, handle, mailboxDir, pending, failure: telemetry.failure() });
 		} finally {
 			this.activity.delete(address);
 			// Consume any cancel intent that landed in the sliver where the session
@@ -806,6 +730,120 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		}
 		// More mail arrived during the turn (held, never interrupts) → drain again.
 		if (!leavePending && !this.disposed && pendingCount(mailboxDir) > 0) this.scheduleMailTurn(address);
+	}
+
+	/**
+	 * Seed the live activity row and subscribe to the session's stream events:
+	 * current tool call + count for the tree widget, live tokens/ctx refresh on
+	 * message_end, and terminal-failure capture off agent_end. Pure telemetry —
+	 * no mail or lifecycle decisions here. Returns the unsubscribe plus a getter
+	 * for the failure observed this turn (if any).
+	 */
+	private trackTurnActivity(address: string, handle: Handle): { unsubscribe: () => void; failure: () => TurnFailure | null } {
+		const startingVitals = vitalsFrom(handle.session, "running");
+		this.activity.set(address, {
+			tool: "",
+			summary: "thinking…",
+			toolUses: 0,
+			tokens: startingVitals.tokens,
+			ctxPercent: startingVitals.ctxPercent,
+		});
+		let failure: TurnFailure | null = null;
+		const activeTools = new Map<string, { tool: string; summary: string }>();
+		const publishActivity = (next: AgentActivity): void => {
+			this.activity.set(address, next);
+			this.emit({ type: "state-changed", address, state: "running" });
+		};
+		const unsubscribe = handle.session.subscribe((event) => {
+			if (event.type === "tool_execution_start") {
+				const prev = this.activity.get(address);
+				if (!prev) return;
+				const tool = event.toolName;
+				const current = { tool, summary: toolSummary(tool, event.args) };
+				activeTools.set(event.toolCallId, current);
+				publishActivity({ ...prev, ...current, toolUses: prev.toolUses + 1 });
+				return;
+			}
+			if (event.type === "tool_execution_end") {
+				const prev = this.activity.get(address);
+				if (!prev) return;
+				activeTools.delete(event.toolCallId);
+				const current = [...activeTools.values()].at(-1);
+				publishActivity(current
+					? { ...prev, ...current }
+					: { ...prev, tool: "", summary: "thinking…" });
+				return;
+			}
+			// message_end is emitted just before SessionManager persistence. Defer one
+			// microtask so getSessionStats() includes that finalized message, then
+			// refresh cumulative tokens/context and any tool calls it introduced.
+			if (event.type === "message_end") {
+				queueMicrotask(() => {
+					const prev = this.activity.get(address);
+					if (!prev) return;
+					const live = vitalsFrom(handle.session, "running");
+					publishActivity({ ...prev, tokens: live.tokens, ctxPercent: live.ctxPercent });
+				});
+				return;
+			}
+			if (event.type !== "agent_end") return;
+			for (const message of event.messages) {
+				const m = message as { role?: string; stopReason?: string; errorMessage?: string };
+				if (m.role === "assistant" && (m.stopReason === "error" || m.stopReason === "aborted")) {
+					failure = { stopReason: m.stopReason, message: m.errorMessage ?? "(no error message)" };
+				}
+			}
+		});
+		return { unsubscribe, failure: () => failure };
+	}
+
+	/**
+	 * Post-turn commit: complete (or deliberately leave pending) the drained
+	 * mail, persist vitals, surface a terminal failure as an error envelope with
+	 * this turn's exact task anchors, and emit the closing events. Returns
+	 * leavePending — true when the turn was aborted/shut down and its triggering
+	 * mail must stay pending.
+	 */
+	private finishTurn(args: {
+		address: string;
+		record: AgentRecord;
+		handle: Handle;
+		mailboxDir: string;
+		pending: ReturnType<typeof readPending>;
+		failure: TurnFailure | null;
+	}): boolean {
+		const { address, record, handle, mailboxDir, pending, failure } = args;
+		let leavePending = false;
+		if (this.disposed || handle.aborted || failure?.stopReason === "aborted") {
+			// cancel/shutdown: leave the triggering mail pending, don't auto-retry
+			leavePending = true;
+		} else {
+			for (const p of pending) markDone(mailboxDir, p.envelope.id);
+		}
+
+		const vitals = vitalsFrom(handle.session, "dormant");
+		patchAgent(this.registry, address, { vitals, lastActiveAt: new Date().toISOString() });
+		this.persist();
+		handle.trigger = null;
+
+		if (failure?.stopReason === "error") {
+			this.emit({ type: "turn-error", address, error: failure.message });
+			// Persist exactly the task anchors consumed by this failed turn. Mail that
+			// arrived while it ran remains pending for the next turn and must not be
+			// completed by this error.
+			this.deliverer.send({
+				from: { kind: "agent", type: record.type, id: record.id },
+				to: MAIN_ADDRESS,
+				type: "error",
+				text: `Turn failed: ${failure.message}`,
+				terminalAnchors: taskAnchors(pending.map((p) => p.envelope)),
+			});
+		}
+		this.activity.delete(address);
+		this.emit({ type: "state-changed", address, state: "dormant" });
+		this.emit({ type: "turn-finished", address, vitals });
+		if (!leavePending) handle.assignment = null;
+		return leavePending;
 	}
 
 	private async ensureHandle(address: string, record: AgentRecord, def: TypeDefinition, inherit?: InheritedDefaults): Promise<Handle> {
@@ -927,17 +965,12 @@ function normalizeLabel(value: string | undefined): string | undefined {
 /** Backward-compatible label for direct callers and resumed pre-label tool calls. */
 function fallbackLabel(options: SpawnOptions, type: string, id: string): string {
 	const source = options.task ?? (options.prompt !== undefined ? options.prompt.replace(/^You are\s+/i, "") : "");
-	const flat = source.replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim();
-	const sentence = flat.match(/^(.+?[.!?])(?:\s|$)/)?.[1] ?? flat;
-	if (!sentence) return `${type}/${id}`;
-	const chars = Array.from(sentence);
-	return chars.length <= MAX_LABEL_CHARS ? sentence : `${chars.slice(0, MAX_LABEL_CHARS - 1).join("").trimEnd()}…`;
+	return labelFromSource(source) || `${type}/${id}`;
 }
 
 /** A one-line description for an ad-hoc def, derived from its prompt. */
 function adhocDescription(prompt: string): string {
-	const flat = prompt.replace(/\s+/g, " ").trim();
-	return flat.length <= 100 ? flat : `${flat.slice(0, 99)}…`;
+	return ellipsize(prompt.replace(/\s+/g, " ").trim(), 100);
 }
 
 /** A short one-line summary of a tool call for the tree widget. */
@@ -947,7 +980,7 @@ function toolSummary(tool: string, args: unknown): string {
 	const detail =
 		typeof a.command === "string" ? a.command : typeof a.path === "string" ? a.path : typeof a.pattern === "string" ? a.pattern : typeof a.to === "string" ? String(a.to) : "";
 	const flat = detail.replace(/\s+/g, " ").trim();
-	return flat ? `${label}: ${flat.length > 48 ? `${flat.slice(0, 47)}…` : flat}` : label;
+	return flat ? `${label}: ${ellipsize(flat, 48)}` : label;
 }
 
 /** Task anchors consumed by one mail-turn snapshot (never includes held future mail). */
@@ -958,11 +991,14 @@ function taskAnchors(trigger: Envelope[] | null): string[] {
 		.map((envelope) => envelope.id))];
 }
 
-/** Persisted terminal anchors, with correlationId fallback for pre-migration reports. */
-function terminalTaskAnchors(envelope: Envelope): string[] {
-	if (envelope.payload.terminalAnchors !== undefined) return envelope.payload.terminalAnchors;
-	if (envelope.type === "report" && envelope.payload.final === true && envelope.correlationId !== null) return [envelope.correlationId];
-	return [];
+/**
+ * Flat anchor-list view of mail/envelope's terminalTaskAnchors for the await
+ * loop: a legacy unscoped error flattens to [] — which the fatal matcher above
+ * treats as matching ANY target of that sender (historical behavior).
+ */
+function terminalAnchorList(envelope: Envelope): string[] {
+	const result = terminalTaskAnchors(envelope);
+	return result.kind === "anchors" ? result.anchors : [];
 }
 
 /**
@@ -1019,33 +1055,3 @@ function randomHex(bytes: number): string {
 	return out;
 }
 
-function readTranscriptTail(sessionFile: string, n: number): TranscriptEntry[] {
-	let content: string;
-	try {
-		content = readFileSync(sessionFile, "utf8");
-	} catch {
-		return [];
-	}
-	const messages = parseSessionEntries(content).filter((entry): entry is SessionMessageEntry => "type" in entry && entry.type === "message");
-	return messages.slice(-n).map((entry) => ({
-		role: entry.message.role,
-		text: flattenMessageText(entry.message),
-		timestamp: typeof (entry as { timestamp?: unknown }).timestamp === "string" ? (entry as { timestamp: string }).timestamp : "",
-	}));
-}
-
-function flattenMessageText(message: SessionMessageEntry["message"]): string {
-	const content = (message as { content?: unknown }).content;
-	if (typeof content === "string") return content;
-	if (Array.isArray(content)) {
-		return content
-			.map((part) => {
-				const p = part as { type?: string; text?: string };
-				if (p.type === "text" && typeof p.text === "string") return p.text;
-				return p.type ? `[${p.type}]` : "";
-			})
-			.filter(Boolean)
-			.join(" ");
-	}
-	return "";
-}

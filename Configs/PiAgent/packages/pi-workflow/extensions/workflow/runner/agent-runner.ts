@@ -28,6 +28,7 @@ import { AgentFailure, WorkflowStopped } from "../script/semantics.ts";
 import { schemaShapeErrors } from "../schema/validate.ts";
 import type { ConfirmFn } from "../sandbox/safety-bridge.ts";
 import { buildSandboxedTools, selectToolNames, type SandboxPorts } from "../sandbox/tools-filter.ts";
+import { truncateFlat } from "../text.ts";
 import { createOutputSlot, createStructuredOutputTool, STRUCTURED_OUTPUT_TOOL } from "./structured-output.ts";
 import type { Scheduler } from "./scheduler.ts";
 
@@ -298,6 +299,6 @@ function toolSummary(tool: string, args: unknown): string {
 	const label = tool.charAt(0).toUpperCase() + tool.slice(1);
 	const detail =
 		typeof a.command === "string" ? a.command : typeof a.path === "string" ? a.path : typeof a.pattern === "string" ? a.pattern : "";
-	const flat = detail.replace(/\s+/g, " ").trim();
-	return flat ? `${label}: ${flat.length > 48 ? `${flat.slice(0, 47)}…` : flat}` : label;
+	const flat = truncateFlat(detail, 48);
+	return flat ? `${label}: ${flat}` : label;
 }

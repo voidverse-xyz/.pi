@@ -80,6 +80,3 @@ export function makeSafetyConfirm(pi: ExtensionAPI): ConfirmFn {
 		});
 	};
 }
-
-/** A confirm that always denies — the safe default when no port is wired. */
-export const denyAllConfirm: ConfirmFn = () => Promise.resolve({ approved: false, note: "no confirmation provider configured" });

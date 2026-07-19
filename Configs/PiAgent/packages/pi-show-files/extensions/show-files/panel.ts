@@ -69,6 +69,7 @@ import {
 import { appendToEditor, dirMention, type EditorUi, fileMention, linesMention } from "./add-to-chat.ts";
 import { findChromium, openExternally, renderHtmlSnapshot, snapshotPathFor } from "./browser.ts";
 import { createNavKeys } from "./keys.ts";
+import { applyScrollKeys, handleGG } from "./scroll-keys.ts";
 import type { PresentedFile } from "./files.ts";
 import { htmlToText, renderableKind, type RenderableKind } from "./rendered.ts";
 
@@ -849,26 +850,18 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			if (file) addFileToChat(file);
 			return;
 		}
-		if (keys.goTop(data)) {
-			if (pendingG) {
-				pendingG = false;
-				jumpList(false);
-				rerender();
-			} else {
-				pendingG = true;
-			}
-			return;
-		}
-		pendingG = false;
-		if (keys.goBottom(data)) jumpList(true);
-		else if (keys.up(data)) moveList(-1);
-		else if (keys.down(data)) moveList(1);
-		else if (keys.pageUp(data)) moveList(-contentH);
-		else if (keys.pageDown(data)) moveList(contentH);
-		else if (keys.halfPageUp(data)) moveList(-Math.max(1, Math.floor(contentH / 2)));
-		else if (keys.halfPageDown(data)) moveList(Math.max(1, Math.floor(contentH / 2)));
-		else return;
-		rerender();
+		const gg = handleGG(keys.goTop(data), pendingG, () => {
+			jumpList(false);
+			rerender();
+		});
+		pendingG = gg.pendingG;
+		if (gg.handled) return;
+		const scrolled = applyScrollKeys(keys, data, {
+			toBottom: () => jumpList(true),
+			move: moveList,
+			page: () => contentH,
+		});
+		if (scrolled) rerender();
 	}
 
 	// ── preview navigation ────────────────────────────────────────────────────────
@@ -1035,29 +1028,27 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 				ctx.ui.notify("Line actions work in the raw view — press r", "info");
 				return;
 			}
-			if (keys.goTop(data)) {
-				if (pendingG) {
-					pendingG = false;
-					previewScroll = 0;
-					rerender();
-				} else {
-					pendingG = true;
-				}
-				return;
-			}
-			pendingG = false;
+			const gg = handleGG(keys.goTop(data), pendingG, () => {
+				previewScroll = 0;
+				rerender();
+			});
+			pendingG = gg.pendingG;
+			if (gg.handled) return;
 			// The HTML banner occupies fixed rows, so the scrollable text area is smaller.
 			const textH = Math.max(1, previewContentH() - renderedBannerRows());
 			const maxScroll = Math.max(0, renderedCount - textH);
-			if (keys.goBottom(data)) previewScroll = maxScroll;
-			else if (keys.up(data)) previewScroll = Math.max(0, previewScroll - 1);
-			else if (keys.down(data)) previewScroll = Math.min(maxScroll, previewScroll + 1);
-			else if (keys.pageUp(data)) previewScroll = Math.max(0, previewScroll - textH);
-			else if (keys.pageDown(data)) previewScroll = Math.min(maxScroll, previewScroll + textH);
-			else if (keys.halfPageUp(data)) previewScroll = Math.max(0, previewScroll - Math.max(1, Math.floor(previewContentH() / 2)));
-			else if (keys.halfPageDown(data)) previewScroll = Math.min(maxScroll, previewScroll + Math.max(1, Math.floor(previewContentH() / 2)));
-			else return;
-			rerender();
+			const scrolled = applyScrollKeys(keys, data, {
+				toBottom: () => {
+					previewScroll = maxScroll;
+				},
+				move: (d) => {
+					previewScroll = Math.max(0, Math.min(maxScroll, previewScroll + d));
+				},
+				page: () => textH,
+				// Kept from the original ladder: half-page steps by previewContentH()/2, not textH/2.
+				halfPage: () => Math.max(1, Math.floor(previewContentH() / 2)),
+			});
+			if (scrolled) rerender();
 			return;
 		}
 
@@ -1110,29 +1101,22 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 				rerender();
 				return;
 			}
-			if (keys.goTop(data)) {
-				if (pendingG) {
-					pendingG = false;
-					cursorLine = 0;
-					keepCursorVisible();
-					rerender();
-				} else {
-					pendingG = true;
-				}
-				return;
-			}
-			pendingG = false;
-			if (keys.goBottom(data)) {
-				cursorLine = Math.max(0, fileLines.length - 1);
+			const gg = handleGG(keys.goTop(data), pendingG, () => {
+				cursorLine = 0;
 				keepCursorVisible();
-			} else if (keys.up(data)) moveCursor(-1);
-			else if (keys.down(data)) moveCursor(1);
-			else if (keys.pageUp(data)) moveCursor(-previewContentH());
-			else if (keys.pageDown(data)) moveCursor(previewContentH());
-			else if (keys.halfPageUp(data)) moveCursor(-Math.max(1, Math.floor(previewContentH() / 2)));
-			else if (keys.halfPageDown(data)) moveCursor(Math.max(1, Math.floor(previewContentH() / 2)));
-			else return;
-			rerender();
+				rerender();
+			});
+			pendingG = gg.pendingG;
+			if (gg.handled) return;
+			const scrolled = applyScrollKeys(keys, data, {
+				toBottom: () => {
+					cursorLine = Math.max(0, fileLines.length - 1);
+					keepCursorVisible();
+				},
+				move: moveCursor,
+				page: previewContentH,
+			});
+			if (scrolled) rerender();
 			return;
 		}
 
@@ -1186,29 +1170,22 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			browseUp();
 			return;
 		}
-		if (keys.goTop(data)) {
-			if (pendingG) {
-				pendingG = false;
-				dirCursor = 0;
-				keepDirCursorVisible();
-				rerender();
-			} else {
-				pendingG = true;
-			}
-			return;
-		}
-		pendingG = false;
-		if (keys.goBottom(data)) {
-			dirCursor = Math.max(0, rows.length - 1);
+		const gg = handleGG(keys.goTop(data), pendingG, () => {
+			dirCursor = 0;
 			keepDirCursorVisible();
-		} else if (keys.up(data)) moveDirCursor(-1);
-		else if (keys.down(data)) moveDirCursor(1);
-		else if (keys.pageUp(data)) moveDirCursor(-previewContentH());
-		else if (keys.pageDown(data)) moveDirCursor(previewContentH());
-		else if (keys.halfPageUp(data)) moveDirCursor(-Math.max(1, Math.floor(previewContentH() / 2)));
-		else if (keys.halfPageDown(data)) moveDirCursor(Math.max(1, Math.floor(previewContentH() / 2)));
-		else return;
-		rerender();
+			rerender();
+		});
+		pendingG = gg.pendingG;
+		if (gg.handled) return;
+		const scrolled = applyScrollKeys(keys, data, {
+			toBottom: () => {
+				dirCursor = Math.max(0, rows.length - 1);
+				keepDirCursorVisible();
+			},
+			move: moveDirCursor,
+			page: previewContentH,
+		});
+		if (scrolled) rerender();
 	}
 
 	// ── note editor ────────────────────────────────────────────────────────────────
@@ -1401,7 +1378,8 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			const lines = visible.map((r, i) => {
 				const idx = previewScroll + i;
 				const isCursor = idx === dirCursor && focus === "preview";
-				const pointer = isCursor ? (focus === "preview" ? theme.fg("accent", "› ") : theme.fg("dim", "› ")) : "  ";
+				// isCursor already implies focus === "preview", so the pointer is always accent.
+				const pointer = isCursor ? theme.fg("accent", "› ") : "  ";
 				if (r.kind === "up") {
 					return ` ${pointer}${theme.fg("muted", "../")}${theme.fg("dim", "  up")}`;
 				}
@@ -1476,29 +1454,10 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		return fillBody(lines);
 	}
 
-	function render(width: number): string[] {
-		const targetH = panelRows();
-		if (cachedLines && cachedWidth === width && cachedHeight === targetH) return cachedLines;
-
-		// TUI components must not render beyond the supplied width.
-		const innerW = Math.max(1, width);
-		if (innerW < 10) {
-			const lines = [truncateToWidth(theme.bold("Show files"), innerW, "")];
-			while (lines.length < targetH) lines.push(" ".repeat(innerW));
-			cachedWidth = width;
-			cachedHeight = targetH;
-			cachedLines = lines;
-			return lines;
-		}
-		const sepW = innerW >= 24 ? 3 : 1;
-		const sep = theme.fg("borderMuted", sepW === 3 ? " │ " : "│");
-		const available = Math.max(0, innerW - sepW);
-		const leftW = Math.max(0, Math.min(52, Math.floor(available * 0.38)));
-		const rightW = Math.max(0, available - leftW);
-
+	// Header block: rule, title row (+ optional forwarding chain), optional summary.
+	function buildHeader(innerW: number): string[] {
 		const fileCount = files.length;
 		const missingCount = files.filter((f) => f.kind === "missing").length;
-
 		const header: string[] = [];
 		header.push(rule(innerW));
 		header.push(pad("", innerW)); // top padding above the title
@@ -1526,15 +1485,19 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			});
 		}
 		header.push(pad("", innerW)); // bottom padding below the header block
+		return header;
+	}
 
-		// pane labels row — an active list filter stays visible after the input closes.
+	// Pane-labels row: list label (an active filter stays visible after the input
+	// closes) │ preview label with selection / search / region / browse info.
+	function buildLabelRow(leftW: number, rightW: number, sep: string): string {
 		const filterInfo = listFilter ? theme.fg("accent", ` /${listFilter}`) : "";
 		const listLabel =
 			(focus === "list" ? theme.fg("accent", "▸ ") : theme.fg("dim", "  ")) +
 			(focus === "list" ? theme.fg("text", "Files") : theme.fg("dim", "Files")) +
 			truncateToWidth(filterInfo, Math.max(0, leftW - 8), "…");
 		const file = previewFile;
-		let prevTitle = file ? file.rel : "Preview";
+		const prevTitle = file ? file.rel : "Preview";
 		const selInfo =
 			previewKind === "file" && selAnchor !== null
 				? theme.fg("accent", `  sel ${Math.min(selAnchor, cursorLine) + 1}-${Math.max(selAnchor, cursorLine) + 1}`)
@@ -1566,10 +1529,55 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			(focus === "preview" ? theme.fg("text", prevLabelText) : theme.fg("dim", prevLabelText)) +
 			selInfo +
 			truncateToWidth(regionInfo, Math.max(0, rightW - visibleWidth(prevLabelText) - visibleWidth(selInfo) - 2), "…");
-		const labelRow =
-			pad(truncateToWidth(listLabel, leftW, ""), leftW) +
-			sep +
-			pad(truncateToWidth(prevLabel, rightW, ""), rightW);
+		return pad(truncateToWidth(listLabel, leftW, ""), leftW) + sep + pad(truncateToWidth(prevLabel, rightW, ""), rightW);
+	}
+
+	// Footer hint line — one branch per surface (list, rendered file, raw file,
+	// dir browser, image, binary/missing), spelling out the keys that work there.
+	function footerHint(): string {
+		const noteInfo = note ? ` · ${ICON_SUCCESS} note` : "";
+		const hasSel = previewKind === "file" && !rendered && selAnchor !== null;
+		// What `a` will add at the cursor's current spot, so the hint isn't a lie.
+		const inRegion = previewKind === "file" && !rendered && regionAt(cursorLine) !== null;
+		const addLabel = hasSel ? "a add range" : inRegion ? "a add region" : "a add line";
+		// A curated dir adds its `@dir/` mention from either focus — say so.
+		const listAdd = selectedFile()?.kind === "dir" ? "a add @dir/" : "a add mention";
+		const openHtml = renderableAs === "html" ? " · o open browser" : "";
+		if (focus === "list")
+			return `↑↓ move · Enter open · / filter · ${listAdd} · c copy mention · m note${noteInfo} · q close`;
+		if (previewKind === "file" && rendered)
+			return `↑↓ scroll · r raw${openHtml} · a add file · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`;
+		if (previewKind === "file")
+			return `↑↓ line · n/p ${previewSearch ? "match" : "region"} · / search${renderableAs ? " · r rendered" : ""}${openHtml} · s select · ${addLabel} · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`;
+		if (previewKind === "dir")
+			return `↑↓ select · Enter open · h/⌫ up · a add mention · c copy mention · m note${noteInfo} · Esc up · q close`;
+		if (previewKind === "image") return `a add file · c copy mention · m note${noteInfo} · Esc back · q close`;
+		return `↑↓ scroll · a add · c copy mention · m note${noteInfo} · Esc back · q close`;
+	}
+
+	function render(width: number): string[] {
+		const targetH = panelRows();
+		if (cachedLines && cachedWidth === width && cachedHeight === targetH) return cachedLines;
+
+		// TUI components must not render beyond the supplied width.
+		const innerW = Math.max(1, width);
+		if (innerW < 10) {
+			const lines = [truncateToWidth(theme.bold("Show files"), innerW, "")];
+			while (lines.length < targetH) lines.push(" ".repeat(innerW));
+			cachedWidth = width;
+			cachedHeight = targetH;
+			cachedLines = lines;
+			return lines;
+		}
+		const sepW = innerW >= 24 ? 3 : 1;
+		const sep = theme.fg("borderMuted", sepW === 3 ? " │ " : "│");
+		const available = Math.max(0, innerW - sepW);
+		const leftW = Math.max(0, Math.min(52, Math.floor(available * 0.38)));
+		const rightW = Math.max(0, available - leftW);
+
+		const header = buildHeader(innerW);
+		const labelRow = buildLabelRow(leftW, rightW, sep);
+		const file = previewFile;
 
 		// Description block for the previewed file (used by previewColumn via cache).
 		descLinesCache =
@@ -1588,27 +1596,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			footer.push(pad(theme.fg("accent", ` ${searchLabel}`) + theme.fg("dim", "  (Enter keep, Esc cancel)"), innerW));
 			for (const l of searchEditor.render(Math.max(10, innerW - 2))) footer.push(pad(` ${l}`, innerW));
 		} else {
-			const noteInfo = note ? ` · ${ICON_SUCCESS} note` : "";
-			const hasSel = previewKind === "file" && !rendered && selAnchor !== null;
-			// What `a` will add at the cursor's current spot, so the hint isn't a lie.
-			const inRegion = previewKind === "file" && !rendered && regionAt(cursorLine) !== null;
-			const addLabel = hasSel ? "a add range" : inRegion ? "a add region" : "a add line";
-			// A curated dir adds its `@dir/` mention from either focus — say so.
-			const listAdd = selectedFile()?.kind === "dir" ? "a add @dir/" : "a add mention";
-			const openHtml = renderableAs === "html" ? " · o open browser" : "";
-			const hint =
-				focus === "list"
-					? `↑↓ move · Enter open · / filter · ${listAdd} · c copy mention · m note${noteInfo} · q close`
-					: previewKind === "file" && rendered
-						? `↑↓ scroll · r raw${openHtml} · a add file · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`
-						: previewKind === "file"
-							? `↑↓ line · n/p ${previewSearch ? "match" : "region"} · / search${renderableAs ? " · r rendered" : ""}${openHtml} · s select · ${addLabel} · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`
-							: previewKind === "dir"
-								? `↑↓ select · Enter open · h/⌫ up · a add mention · c copy mention · m note${noteInfo} · Esc up · q close`
-								: previewKind === "image"
-									? `a add file · c copy mention · m note${noteInfo} · Esc back · q close`
-									: `↑↓ scroll · a add · c copy mention · m note${noteInfo} · Esc back · q close`;
-			footer.push(pad(theme.fg("dim", ` ${truncateToWidth(hint, innerW - 2, "…")}`), innerW));
+			footer.push(pad(theme.fg("dim", ` ${truncateToWidth(footerHint(), innerW - 2, "…")}`), innerW));
 		}
 
 		const overhead = header.length + 1 /*labels*/ + footer.length;

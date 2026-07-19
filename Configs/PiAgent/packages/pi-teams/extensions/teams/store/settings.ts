@@ -62,7 +62,7 @@ export interface LayerReadResult {
 }
 
 /** Read one settings file into a validated patch. Missing file → empty patch (intentional). */
-export function readSettingsFile(path: string): LayerReadResult {
+function readSettingsFile(path: string): LayerReadResult {
 	let text: string;
 	try {
 		text = readFileSync(path, "utf8");

@@ -32,14 +32,14 @@ export function fsyncDirBestEffort(dir: string): void {
  * crash. The tmp file is cleaned up if the write fails (no `.<hex>.tmp` litter on
  * ENOSPC).
  */
-export function atomicWriteJson(path: string, value: unknown): void {
+function atomicWrite(path: string, content: string): void {
 	const dir = dirname(path);
 	mkdirSync(dir, { recursive: true });
 	const tmp = join(dir, `.${randomBytes(6).toString("hex")}.tmp`);
 	try {
 		const fd = openSync(tmp, "w");
 		try {
-			writeFileSync(fd, JSON.stringify(value, null, 2), "utf8");
+			writeFileSync(fd, content, "utf8");
 			fsyncSync(fd);
 		} finally {
 			closeSync(fd);
@@ -56,30 +56,15 @@ export function atomicWriteJson(path: string, value: unknown): void {
 	fsyncDirBestEffort(dir);
 }
 
+/** Atomic + crash-durable JSON write (see atomicWrite). */
+export function atomicWriteJson(path: string, value: unknown): void {
+	atomicWrite(path, JSON.stringify(value, null, 2));
+}
+
 /**
  * Atomic + crash-durable TEXT write (same discipline as atomicWriteJson) — used
  * for ad-hoc def.md files, which are markdown, not JSON.
  */
 export function atomicWriteText(path: string, text: string): void {
-	const dir = dirname(path);
-	mkdirSync(dir, { recursive: true });
-	const tmp = join(dir, `.${randomBytes(6).toString("hex")}.tmp`);
-	try {
-		const fd = openSync(tmp, "w");
-		try {
-			writeFileSync(fd, text, "utf8");
-			fsyncSync(fd);
-		} finally {
-			closeSync(fd);
-		}
-		renameSync(tmp, path);
-	} catch (error) {
-		try {
-			rmSync(tmp, { force: true });
-		} catch {
-			/* ignore */
-		}
-		throw error;
-	}
-	fsyncDirBestEffort(dir);
+	atomicWrite(path, text);
 }

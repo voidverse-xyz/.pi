@@ -43,29 +43,40 @@ export function createRoot(cwd: string): TreeNode {
 	};
 }
 
+/**
+ * Read a directory's entries (symlinks resolved so links to directories count
+ * as dirs), sorted dirs-first then case-insensitive alphabetical. Unreadable
+ * directories yield an empty list. Shared by the tree and the dir preview.
+ */
+export async function readDirEntries(abs: string): Promise<Array<{ name: string; isDir: boolean }>> {
+	const entries: Array<{ name: string; isDir: boolean }> = [];
+	const dirents = await readdir(abs, { withFileTypes: true });
+	for (const d of dirents) {
+		let isDir = d.isDirectory();
+		// Resolve symlinks so a link to a directory expands correctly.
+		if (d.isSymbolicLink()) {
+			try {
+				isDir = (await stat(join(abs, d.name))).isDirectory();
+			} catch {
+				isDir = false;
+			}
+		}
+		entries.push({ name: d.name, isDir });
+	}
+	entries.sort(compareEntries);
+	return entries;
+}
+
 /** Read (or re-read) a directory node's immediate children. */
 export async function loadChildren(root: string, node: TreeNode): Promise<void> {
 	if (!node.isDir) return;
 	let entries: Array<{ name: string; isDir: boolean }> = [];
 	try {
-		const dirents = await readdir(node.abs, { withFileTypes: true });
-		for (const d of dirents) {
-			let isDir = d.isDirectory();
-			// Resolve symlinks so a link to a directory expands correctly.
-			if (d.isSymbolicLink()) {
-				try {
-					isDir = (await stat(join(node.abs, d.name))).isDirectory();
-				} catch {
-					isDir = false;
-				}
-			}
-			entries.push({ name: d.name, isDir });
-		}
+		entries = await readDirEntries(node.abs);
 	} catch {
 		entries = [];
 	}
 
-	entries.sort(compareEntries);
 	node.children = entries.map((e) => {
 		const abs = join(node.abs, e.name);
 		return {

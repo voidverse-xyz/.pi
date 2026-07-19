@@ -20,15 +20,14 @@
  * panel and the pi-changes panel (closure state, pull-based render).
  */
 
-import { readFile, readdir } from "node:fs/promises";
-import { stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import type { ExtensionCommandContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { Editor, type EditorTheme, fuzzyMatch, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { appendToEditor, dirMention, fileMention, linesMention } from "./add-to-chat.ts";
 import { createNavKeys } from "./keys.ts";
-import { createRoot, flatten, loadChildren, type TreeNode } from "./tree.ts";
+import { createRoot, flatten, loadChildren, readDirEntries, type TreeNode } from "./tree.ts";
 
 const MAX_PREVIEW_BYTES = 512 * 1024;
 
@@ -160,26 +159,7 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 
 		if (node.isDir) {
 			try {
-				const dirents = await readdir(node.abs, { withFileTypes: true });
-				const entries: Array<{ name: string; isDir: boolean }> = [];
-				for (const d of dirents) {
-					let isDir = d.isDirectory();
-					if (d.isSymbolicLink()) {
-						try {
-							isDir = (await stat(`${node.abs}/${d.name}`)).isDirectory();
-						} catch {
-							isDir = false;
-						}
-					}
-					entries.push({ name: d.name, isDir });
-				}
-				entries.sort((a, b) =>
-					a.isDir !== b.isDir
-						? a.isDir
-							? -1
-							: 1
-						: a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
-				);
+				const entries = await readDirEntries(node.abs);
 				if (token !== loadToken) return;
 				dirEntries = entries;
 				previewKind = "dir";
@@ -255,6 +235,17 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 	}
 
 	// ── tree navigation ──────────────────────────────────────────────────────────
+
+	// Vim-style `gg`: the first g arms pendingG; the second runs onTop.
+	function handleGoTop(onTop: () => void): void {
+		if (pendingG) {
+			pendingG = false;
+			onTop();
+			rerender();
+		} else {
+			pendingG = true;
+		}
+	}
 
 	function moveTree(delta: number) {
 		const max = Math.max(0, rows.length - 1);
@@ -361,15 +352,11 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 			return;
 		}
 		if (keys.goTop(data)) {
-			if (pendingG) {
-				pendingG = false;
+			handleGoTop(() => {
 				treeSelected = 0;
 				treeScroll = 0;
 				void loadPreview(selectedNode());
-				rerender();
-			} else {
-				pendingG = true;
-			}
+			});
 			return;
 		}
 		pendingG = false;
@@ -447,14 +434,10 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 				return;
 			}
 			if (keys.goTop(data)) {
-				if (pendingG) {
-					pendingG = false;
+				handleGoTop(() => {
 					cursorLine = 0;
 					keepCursorVisible();
-					rerender();
-				} else {
-					pendingG = true;
-				}
+				});
 				return;
 			}
 			pendingG = false;

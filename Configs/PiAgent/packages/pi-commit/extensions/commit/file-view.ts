@@ -1,11 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-
-function pad(content: string, width: number): string {
-	const clipped = truncateToWidth(content, Math.max(0, width), "…");
-	const vis = visibleWidth(clipped);
-	return clipped + " ".repeat(Math.max(0, width - vis));
-}
+import { truncateToWidth } from "@earendil-works/pi-tui";
+import { pad } from "./tui-util.ts";
 
 /** Scrollable file list for a review group. */
 export function buildFilesListLines(
@@ -30,19 +25,4 @@ export function buildFilesListLines(
 	}
 
 	return lines;
-}
-
-export function contentViewLabel(
-	view: "diff" | "files" | "file",
-	diffMode: "inline" | "split",
-	filePath?: string,
-): string {
-	switch (view) {
-		case "diff":
-			return diffMode === "inline" ? "inline" : "split";
-		case "files":
-			return "files";
-		case "file":
-			return filePath ? `file · ${filePath.split("/").pop() ?? filePath}` : "file";
-	}
 }

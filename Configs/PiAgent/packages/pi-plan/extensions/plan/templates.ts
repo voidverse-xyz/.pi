@@ -6,6 +6,8 @@ export const MAX_FORCED_TEMPLATE_BYTES = 50 * 1024;
 export const MAX_AUTOMATIC_TEMPLATES = 20;
 export const MAX_DISCOVERED_SHARED_TEMPLATES = 100;
 const MAX_CATALOG_DESCRIPTION_CHARS = 1024;
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
+const PLAN_TEMPLATE_TAG_RE = /^plan-template:\s*true\s*$/m;
 
 export interface PlanSkillDescriptor {
 	name: string;
@@ -31,12 +33,12 @@ function readPrefix(path: string, maxBytes: number): string | undefined {
 function frontmatterFromFile(path: string): string | undefined {
 	const content = readPrefix(path, MAX_FRONTMATTER_BYTES);
 	if (!content?.startsWith("---")) return undefined;
-	return content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
+	return content.match(FRONTMATTER_RE)?.[1];
 }
 
 export function stripFrontmatter(content: string): string {
 	if (!content.startsWith("---")) return content.trim();
-	const match = content.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+	const match = content.match(FRONTMATTER_RE);
 	return (match ? content.slice(match[0].length) : content).trim();
 }
 
@@ -67,7 +69,7 @@ export function discoverTaggedSkillDirectories(
 		if (skillFile) {
 			const path = join(directory, skillFile.name);
 			const metadata = frontmatterFromFile(path);
-			if (metadata !== undefined && /^plan-template:\s*true\s*$/m.test(metadata)) found.push(directory);
+			if (metadata !== undefined && PLAN_TEMPLATE_TAG_RE.test(metadata)) found.push(directory);
 			return;
 		}
 		for (const entry of entries) {
@@ -88,7 +90,7 @@ export function discoverPlanTemplates(
 		if (skill.name === baseSkillName) return false;
 		if (skill.disableModelInvocation && !options.includeDisabled) return false;
 		const metadata = frontmatterFromFile(skill.filePath);
-		return metadata !== undefined && /^plan-template:\s*true\s*$/m.test(metadata);
+		return metadata !== undefined && PLAN_TEMPLATE_TAG_RE.test(metadata);
 	});
 }
 

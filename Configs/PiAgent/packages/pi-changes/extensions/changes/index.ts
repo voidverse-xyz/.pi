@@ -18,6 +18,13 @@ interface BrowserOptions {
 	collect(): Promise<FileChange[]>;
 }
 
+/** What the browser loop does after handling a panel result. */
+type Flow = "again" | "exit";
+
+type ResultHandlers = {
+	[K in PanelResult["type"]]: (result: Extract<PanelResult, { type: K }>) => Promise<Flow>;
+};
+
 export default function changesExtension(pi: ExtensionAPI): void {
 	registerTracker(pi);
 
@@ -137,6 +144,77 @@ async function runBrowser(pi: ExtensionAPI, ctx: ExtensionCommandContext, option
 		return true;
 	};
 
+	// Re-collect after a mutating action; exit the browser when the refresh
+	// failed or nothing is left to show.
+	const refreshOrExit = async (): Promise<Flow> => {
+		if (!(await refresh())) return "exit";
+		if (changes.length === 0) {
+			ctx.ui.notify(options.emptyMessage, "info");
+			return "exit";
+		}
+		return "again";
+	};
+
+	const findChange = (abs: string): FileChange | undefined => changes.find((candidate) => candidate.abs === abs);
+
+	// One handler per panel result type; each says whether the browser loop
+	// should show the panel again or exit.
+	const resultHandlers: ResultHandlers = {
+		close: async () => "exit",
+		answerClose: async () => {
+			currentAnswer?.kill();
+			currentAnswer = undefined;
+			return "again";
+		},
+		undo: async (result) => {
+			if (!options.allowUndo) return "again";
+			const change = findChange(result.abs);
+			if (change) {
+				const outcome = await undoFile(pi, ctx, change);
+				ctx.ui.notify(outcome.message, outcome.level);
+			}
+			return refreshOrExit();
+		},
+		undoAll: async () => {
+			if (!options.allowUndo) return "again";
+			const outcome = await undoAllFiles(pi, ctx, changes);
+			ctx.ui.notify(outcome.message, outcome.level);
+			return refreshOrExit();
+		},
+		exportPatch: async (result) => {
+			if (!options.allowExport) return "again";
+			const change = findChange(result.abs);
+			const exportRoot = options.source === "git" ? (change?.reviewCwd ?? changes[0]?.reviewCwd ?? ctx.cwd) : ctx.cwd;
+			const outcome = await exportPatch(exportRoot, changes, change, result.all);
+			ctx.ui.notify(outcome.message, outcome.level);
+			return "again";
+		},
+		askMain: async (result) => {
+			const change = findChange(result.abs);
+			if (change) {
+				const question = await ctx.ui.input(`Ask about: ${escapeTerminalControls(change.rel)}`, "Your question…");
+				if (question?.trim()) {
+					pi.sendUserMessage(buildMainAgentMessage(change, question), { deliverAs: "followUp" });
+					await ctx.waitForIdle();
+					ctx.ui.notify("Agent answered — check chat, then continue", "info");
+				}
+			}
+			return (await refresh()) && changes.length > 0 ? "again" : "exit";
+		},
+		askSub: async (result) => {
+			const change = findChange(result.abs);
+			if (change) {
+				const question = await ctx.ui.input(`Ask subagent about: ${escapeTerminalControls(change.rel)}`, "Your question…");
+				if (question?.trim()) {
+					currentAnswer?.kill();
+					currentAnswer = spawnSubagentAnswer(change.reviewCwd ?? ctx.cwd, change, question.trim());
+					nextView = "answer";
+				}
+			}
+			return "again";
+		},
+	};
+
 	try {
 		while (true) {
 			const result = await showPanel(
@@ -151,76 +229,13 @@ async function runBrowser(pi: ExtensionAPI, ctx: ExtensionCommandContext, option
 			);
 			nextView = "list";
 
-			if (!result || result.type === "close") break;
+			if (!result) break;
 			if ("abs" in result && result.abs) selectedAbs = result.abs;
 
-			if (result.type === "answerClose") {
-				currentAnswer?.kill();
-				currentAnswer = undefined;
-				continue;
-			}
-
-			if (result.type === "undo") {
-				if (!options.allowUndo) continue;
-				const change = changes.find((candidate) => candidate.abs === result.abs);
-				if (change) {
-					const outcome = await undoFile(pi, ctx, change);
-					ctx.ui.notify(outcome.message, outcome.level);
-				}
-				if (!(await refresh())) break;
-				if (changes.length === 0) {
-					ctx.ui.notify(options.emptyMessage, "info");
-					break;
-				}
-				continue;
-			}
-
-			if (result.type === "undoAll") {
-				if (!options.allowUndo) continue;
-				const outcome = await undoAllFiles(pi, ctx, changes);
-				ctx.ui.notify(outcome.message, outcome.level);
-				if (!(await refresh())) break;
-				if (changes.length === 0) {
-					ctx.ui.notify(options.emptyMessage, "info");
-					break;
-				}
-				continue;
-			}
-
-			if (result.type === "exportPatch") {
-				if (!options.allowExport) continue;
-				const change = changes.find((candidate) => candidate.abs === result.abs);
-				const exportRoot = options.source === "git" ? (change?.reviewCwd ?? changes[0]?.reviewCwd ?? ctx.cwd) : ctx.cwd;
-				const outcome = await exportPatch(exportRoot, changes, change, result.all);
-				ctx.ui.notify(outcome.message, outcome.level);
-				continue;
-			}
-
-			if (result.type === "askMain") {
-				const change = changes.find((candidate) => candidate.abs === result.abs);
-				if (change) {
-					const question = await ctx.ui.input(`Ask about: ${escapeTerminalControls(change.rel)}`, "Your question…");
-					if (question?.trim()) {
-						pi.sendUserMessage(buildMainAgentMessage(change, question), { deliverAs: "followUp" });
-						await ctx.waitForIdle();
-						ctx.ui.notify("Agent answered — check chat, then continue", "info");
-					}
-				}
-				if (!(await refresh()) || changes.length === 0) break;
-				continue;
-			}
-
-			if (result.type === "askSub") {
-				const change = changes.find((candidate) => candidate.abs === result.abs);
-				if (change) {
-					const question = await ctx.ui.input(`Ask subagent about: ${escapeTerminalControls(change.rel)}`, "Your question…");
-					if (question?.trim()) {
-						currentAnswer?.kill();
-						currentAnswer = spawnSubagentAnswer(change.reviewCwd ?? ctx.cwd, change, question.trim());
-						nextView = "answer";
-					}
-				}
-			}
+			// Dispatch is type-safe per key; TS can't correlate the runtime key
+			// with the payload here, hence the cast.
+			const flow = await resultHandlers[result.type](result as never);
+			if (flow === "exit") break;
 		}
 	} finally {
 		currentAnswer?.kill();

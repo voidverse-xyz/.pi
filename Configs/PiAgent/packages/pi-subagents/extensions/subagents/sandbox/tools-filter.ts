@@ -28,6 +28,7 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { TypeConfig } from "../typedefs/parse.ts";
+import { ellipsize } from "../text.ts";
 import type { SystemDenyResult } from "./system-deny.ts";
 
 export const CODING_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const;
@@ -52,8 +53,7 @@ export function selectToolNames(config: Pick<TypeConfig, "name" | "tools">): Cod
 }
 
 function summarize(text: string, max = 200): string {
-	const flat = text.replace(/\s+/g, " ").trim();
-	return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
+	return ellipsize(text.replace(/\s+/g, " ").trim(), max);
 }
 
 function hardDeny(tool: string, reason: string): never {

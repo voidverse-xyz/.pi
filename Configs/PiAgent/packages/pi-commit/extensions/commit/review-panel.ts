@@ -1,5 +1,4 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
 	matchesKey,
@@ -14,6 +13,7 @@ import type { ReviewGroup } from "./classify.ts";
 import { summarizePaths } from "./diff.ts";
 import { buildDiffDisplayLines, type DiffViewMode, toggleViewMode } from "./diff-view.ts";
 import { buildFilesListLines } from "./file-view.ts";
+import { pad, panelRows, rule } from "./tui-util.ts";
 
 export type ReviewAction = "accept" | "ask" | "skip" | "edit" | "stop";
 type Pane = "content" | "actions";
@@ -143,21 +143,6 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 		cachedDisplayLines = lines;
 		cachedDisplayKey = key;
 		return lines;
-	}
-
-	function panelRows(): number {
-		return Math.max(1, tui.terminal.rows);
-	}
-
-	function rule(width: number): string {
-		const border = new DynamicBorder((s: string) => theme.fg("borderMuted", s));
-		return border.render(Math.max(1, width))[0] ?? "";
-	}
-
-	function pad(content: string, width: number): string {
-		const clipped = truncateToWidth(content, Math.max(0, width), "…");
-		const vis = visibleWidth(clipped);
-		return clipped + " ".repeat(Math.max(0, width - vis));
 	}
 
 	async function refreshDescription() {
@@ -459,9 +444,8 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 			switchPane(focus === "actions" ? "content" : "actions");
 			return;
 		}
-		if (keys.right(data) && focus === "content" && contentView === "files") {
-			// handled inside files (open file); fall through
-		} else if (keys.right(data) && focus === "content" && contentView === "detail") {
+		// In the files view, right is handled by handleFilesInput (opens the file).
+		if (keys.right(data) && focus === "content" && contentView === "detail") {
 			pendingG = false;
 			switchPane("actions");
 			return;
@@ -477,7 +461,7 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 	}
 
 	function render(width: number): string[] {
-		const targetH = panelRows();
+		const targetH = panelRows(tui);
 		if (cachedLines && cachedWidth === width && cachedHeight === targetH) return cachedLines;
 
 		const innerW = Math.max(1, width);
@@ -505,7 +489,7 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 			}
 			for (const line of visible) headerLines.push(pad(line, innerW));
 		};
-		headerLines.push(rule(innerW));
+		headerLines.push(rule(innerW, theme));
 		const titleLine =
 			theme.bold(`${index + 1}/${total} `) +
 			theme.fg("text", group.title) +
@@ -569,7 +553,7 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 		}
 
 		for (let i = 0; i < sectionGap; i++) lines.push(pad("", innerW));
-		lines.push(rule(innerW));
+		lines.push(rule(innerW, theme));
 		selectList.setSelectedIndex(actionSelectedIndex);
 
 		const actionsLabel =

@@ -24,102 +24,41 @@
  * order until both lines fit (never truncates mid-segment into garbage).
  * The /status-line command inspects and persists all of this live.
  *
+ * Config persistence lives in ./config.ts; segment styling/composition in
+ * ./segments.ts. This file is the wiring: the /status-line command plus the
+ * header widget and footer mounting.
+ *
  * Enable the pi-status-line package in settings.json.
  * Reload: /reload
  */
 
-import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-
-// Nerd Font hard-drive glyph for the context-usage gauge (JetBrainsMono NF).
-const ICON_HDD = ""; // nf-fa-hdd_o (U+F0A0)
-const ICON_INPUT = ""; // nf-fa-long_arrow_up
-const ICON_OUTPUT = ""; // nf-fa-long_arrow_down
-const ICON_ACTIVITY = ""; // nf-oct-cpu — aggregate token activity
+import {
+	CONFIG_PATH,
+	defaultConfig,
+	effectiveOrder,
+	type FooterMode,
+	isFooterMode,
+	isSegmentId,
+	loadConfig,
+	NARROW_WIDTH,
+	saveConfig,
+	SEGMENT_IDS,
+	type StatusLineConfig,
+} from "./config.ts";
+import {
+	buildSegmentTexts,
+	composeSides,
+	footerFits,
+	GIT_STATUS_KEY,
+	MODEL_THINKING_STATUS_KEY,
+} from "./segments.ts";
 
 const HEADER_WIDGET_KEY = "status-line-header";
-const GIT_STATUS_KEY = "git-status";
-const MODEL_THINKING_STATUS_KEY = "model-thinking";
-const HEADER_STATUS_KEYS = new Set([GIT_STATUS_KEY, MODEL_THINKING_STATUS_KEY]);
 
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-
-function formatTokens(count: number): string {
-	if (count < 1000) return count.toString();
-	if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-	if (count < 1000000) return `${Math.round(count / 1000)}k`;
-	if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-	return `${Math.round(count / 1000000)}M`;
-}
-
-const HOUR_MS = 60 * 60 * 1000;
-
-function collectUsage(ctx: ExtensionContext) {
-	let input = 0;
-	let output = 0;
-	let cost = 0;
-	let lastHour = 0;
-	const hourAgo = Date.now() - HOUR_MS;
-
-	for (const entry of ctx.sessionManager.getEntries()) {
-		if (entry.type === "message" && entry.message.role === "assistant") {
-			const message = entry.message as AssistantMessage;
-			// usage can be absent on an aborted/errored assistant entry — guard so a
-			// single such entry doesn't throw inside render() and blank the footer.
-			const usage = message.usage;
-			if (!usage) continue;
-			input += usage.input;
-			output += usage.output;
-			cost += usage.cost?.total ?? 0;
-			if (message.timestamp >= hourAgo) {
-				lastHour += usage.input + usage.output;
-			}
-		}
-	}
-
-	return { input, output, cost, lastHour };
-}
-
-function contextColor(percent: number): "dim" | "success" | "warning" | "error" {
-	if (percent > 90) return "error";
-	if (percent > 70) return "warning";
-	if (percent > 50) return "success";
-	return "dim";
-}
-
-// Theme exposes the resolved error foreground but has no corresponding dark-red
-// background slot. Derive a muted burgundy so tool activity remains readable.
-function renderToolMonitorStatus(value: string, theme: ExtensionContext["ui"]["theme"]): string {
-	const content = theme.fg("text", ` ${value} `);
-	const foreground = theme.getFgAnsi("error");
-	const match = foreground.match(/\x1b\[38;2;(\d+);(\d+);(\d+)m/);
-	if (!match) return theme.bg("toolErrorBg", content);
-
-	const DARKEN_FACTOR = 0.38;
-	const darken = (channel: string) => Math.round(Number(channel) * DARKEN_FACTOR);
-	const background = `\x1b[48;2;${darken(match[1]!)};${darken(match[2]!)};${darken(match[3]!)}m`;
-	return `${background}${content}\x1b[49m`;
-}
-
-function formatContext(ctx: ExtensionContext, theme: ExtensionContext["ui"]["theme"], mode: FooterMode): string {
-	const usage = ctx.getContextUsage();
-	if (!usage || usage.percent === null) {
-		return theme.fg("dim", mode === "compact" ? "?%" : `${ICON_HDD} ?`);
-	}
-
-	const color = contextColor(usage.percent);
-	const value = `${usage.percent.toFixed(0)}%`;
-	// compact: the value alone; verbose: hard-drive icon "label" + value.
-	return theme.fg(color, mode === "compact" ? value : `${ICON_HDD} ${value}`);
-}
-
-function joinSegments(segments: string[], separator: string): string {
-	return segments.filter((segment) => segment.length > 0).join(separator);
-}
 
 // Right-aligns `text` within `width` (ANSI-aware), padding with leading spaces.
 // When it does not fit, truncates the end so the leftmost segments stay visible.
@@ -127,26 +66,6 @@ function alignRight(text: string, width: number): string {
 	const w = visibleWidth(text);
 	if (w >= width) return truncateToWidth(text, width);
 	return `${" ".repeat(width - w)}${text}`;
-}
-
-// Reserved plain-text producer keys; buildSegmentTexts styles them and
-// composeSides chooses their footer rows.
-const TOOL_MONITOR_STATUS_KEY = "tool-monitor";
-const PLAN_MODE_STATUS_KEY = "plan-mode";
-// Subagent status takes line 1-left whenever it is visible.
-const SUBAGENT_STATUS_KEY = "subagents";
-
-function renderPlanModeStatus(
-	value: string,
-	theme: ExtensionContext["ui"]["theme"],
-): string {
-	if (!value) return "";
-	const color = value.endsWith(" ask mode")
-		? "thinkingMinimal"
-		: value.endsWith(" discuss mode")
-			? "warning"
-			: "success";
-	return theme.fg(color, value);
 }
 
 // `left ...gap... right` across the full width, ANSI-aware. When both don't fit,
@@ -217,177 +136,7 @@ function renderHeader(
 	return [splitHeaderLine(left, right, width)];
 }
 
-// ---------------------------------------------------------------------------
-// Configuration — ~/.pi/agent/status-line.json (same idiom as command-safety):
-// load on demand with a try/catch fallback to defaults, save best-effort.
-// ---------------------------------------------------------------------------
-
-type FooterMode = "verbose" | "compact";
-
-// Stable segment ids, in DEFAULT order. Most render into a fixed line/side slot;
-// tool-monitor dynamically uses line 1-left when subagents are absent and line
-// 2-left when subagents occupy line 1. `order` also sets narrow-width drop priority.
-const SEGMENT_IDS = ["plan-mode", "subagents", "context", "extension-statuses", "tool-monitor", "tokens", "cost", "hourly"] as const;
-type SegmentId = (typeof SEGMENT_IDS)[number];
-
-type Slot = "1L" | "1R" | "2L" | "2R";
-const SEGMENT_SLOTS: Record<SegmentId, Slot> = {
-	"plan-mode": "1L",
-	subagents: "1L",
-	context: "1R",
-	"extension-statuses": "1R",
-	"tool-monitor": "2L", // composeSides overrides dynamically
-	tokens: "2R",
-	cost: "2R",
-	hourly: "2R",
-};
-
-const DEFAULT_MODE: FooterMode = "verbose";
-// Below this many columns the footer auto-degrades to compact mode (before the
-// segment-dropping fallback kicks in).
-const NARROW_WIDTH = 80;
-
-const CONFIG_PATH = join(getAgentDir(), "status-line.json");
-
-interface StatusLineConfig {
-	// Explicitly-ordered segment ids; ids not listed append in default order.
-	order: SegmentId[];
-	hidden: SegmentId[];
-	mode: FooterMode;
-}
-
-function defaultConfig(): StatusLineConfig {
-	return { order: [], hidden: [], mode: DEFAULT_MODE };
-}
-
-function isSegmentId(value: unknown): value is SegmentId {
-	return typeof value === "string" && (SEGMENT_IDS as readonly string[]).includes(value);
-}
-
-function isFooterMode(value: unknown): value is FooterMode {
-	return value === "verbose" || value === "compact";
-}
-
-// Coerces an untrusted JSON value into a deduped list of KNOWN segment ids —
-// unknown ids and non-arrays are silently ignored (never crash on bad config).
-// Preserve configs written before `extensions` was renamed to `extension-statuses`.
-function toIdList(value: unknown): SegmentId[] {
-	if (!Array.isArray(value)) return [];
-	const out: SegmentId[] = [];
-	for (const entry of value) {
-		const id = entry === "extensions" ? "extension-statuses" : entry;
-		if (isSegmentId(id) && !out.includes(id)) out.push(id);
-	}
-	return out;
-}
-
-function loadConfig(): StatusLineConfig {
-	try {
-		const raw = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
-		if (raw && typeof raw === "object") {
-			return {
-				order: toIdList(raw.order),
-				hidden: toIdList(raw.hidden),
-				mode: isFooterMode(raw.mode) ? raw.mode : DEFAULT_MODE,
-			};
-		}
-	} catch {
-		// Missing or malformed config — fall back to the defaults.
-	}
-	return defaultConfig();
-}
-
-function saveConfig(config: StatusLineConfig): void {
-	try {
-		const dir = dirname(CONFIG_PATH);
-		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-		writeFileSync(CONFIG_PATH, `${JSON.stringify(config, null, 2)}\n`);
-	} catch {
-		// Best effort: if we can't persist, the config still applies to this session.
-	}
-}
-
-// Configured order first, then every unlisted segment in default order.
-function effectiveOrder(config: StatusLineConfig): SegmentId[] {
-	return [...config.order, ...SEGMENT_IDS.filter((id) => !config.order.includes(id))];
-}
-
 let currentConfig: StatusLineConfig = loadConfig();
-
-// ---------------------------------------------------------------------------
-// Segment rendering
-// ---------------------------------------------------------------------------
-
-// Every segment's styled text for one render pass. Producer extensions publish
-// plain values; this presenter applies their theme treatment.
-function buildSegmentTexts(
-	ctx: ExtensionContext,
-	theme: ExtensionContext["ui"]["theme"],
-	extensionStatuses: ReadonlyMap<string, string>,
-	mode: FooterMode,
-	separator: string,
-): Record<SegmentId, string> {
-	const { input, output, cost, lastHour } = collectUsage(ctx);
-	const otherStatuses = Array.from(extensionStatuses.entries())
-		.filter(([key]) =>
-			key !== TOOL_MONITOR_STATUS_KEY
-			&& key !== PLAN_MODE_STATUS_KEY
-			&& key !== SUBAGENT_STATUS_KEY
-			&& !HEADER_STATUS_KEYS.has(key)
-		)
-		.map(([, value]) => value);
-
-	const planMode = extensionStatuses.get(PLAN_MODE_STATUS_KEY) ?? "";
-	const subagents = extensionStatuses.get(SUBAGENT_STATUS_KEY) ?? "";
-	const toolMonitor = extensionStatuses.get(TOOL_MONITOR_STATUS_KEY) ?? "";
-
-	return {
-		"plan-mode": renderPlanModeStatus(planMode, theme),
-		subagents: subagents ? theme.fg("dim", subagents) : "",
-		context: formatContext(ctx, theme, mode),
-		"extension-statuses": joinSegments(otherStatuses, separator),
-		"tool-monitor": toolMonitor ? renderToolMonitorStatus(toolMonitor, theme) : "",
-		tokens:
-			input > 0 || output > 0
-				? theme.fg("dim", `${ICON_INPUT} ${formatTokens(input)} ${ICON_OUTPUT} ${formatTokens(output)}`)
-				: "",
-		cost: theme.fg("dim", `$${cost.toFixed(mode === "compact" ? 2 : 3)}`),
-		hourly:
-			lastHour > 0
-				? theme.fg("dim", mode === "compact" ? `${ICON_ACTIVITY} 1h ${formatTokens(lastHour)}` : `${ICON_ACTIVITY} last 1h: ${formatTokens(lastHour)}`)
-				: "",
-	};
-}
-
-interface FooterSides {
-	l1: string;
-	r1: string;
-	l2: string;
-	r2: string;
-}
-
-function composeSides(active: SegmentId[], texts: Record<SegmentId, string>, separator: string): FooterSides {
-	const subagentsVisible = active.includes("subagents");
-	const segmentSlot = (id: SegmentId): Slot =>
-		id === "tool-monitor" ? (subagentsVisible ? "2L" : "1L") : SEGMENT_SLOTS[id];
-	const slot = (which: Slot) =>
-		joinSegments(
-			active.filter((id) => segmentSlot(id) === which).map((id) => texts[id]),
-			separator,
-		);
-	return { l1: slot("1L"), r1: slot("1R"), l2: slot("2L"), r2: slot("2R") };
-}
-
-function sideFits(left: string, right: string, width: number): boolean {
-	const l = left ? visibleWidth(left) : 0;
-	const r = right ? visibleWidth(right) : 0;
-	const gap = left && right ? 1 : 0;
-	return l + r + gap <= width;
-}
-
-function footerFits(sides: FooterSides, width: number): boolean {
-	return sideFits(sides.l1, sides.r1, width) && sideFits(sides.l2, sides.r2, width);
-}
 
 export default function (pi: ExtensionAPI) {
 	let activeTui: TUI | undefined;

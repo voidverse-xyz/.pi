@@ -15,6 +15,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { escapeTerminalControls } from "./display.ts";
+import { appendCapped, signalProcessTree } from "./proc-util.ts";
 import { type FileChange, fileDiffText } from "./tracker.ts";
 
 const DIFF_CAP = 24 * 1024;
@@ -101,6 +102,81 @@ function formatUsage(u: { input: number; output: number; cost: number }): string
 	return parts.join(" ");
 }
 
+interface AnswerStreamParser {
+	/** Consume a stdout chunk, processing any complete NDJSON lines. */
+	feed(chunk: string): void;
+	/** Process a trailing partial line (call once, when the stream ends). */
+	flush(): void;
+	/** Re-derive state.usageLine from the accumulated usage totals. */
+	syncUsageLine(): void;
+}
+
+/**
+ * Incremental parser for the subagent's NDJSON event stream. Accumulates
+ * assistant text (bounded) and usage totals into the given AnswerState,
+ * notifying state.onRender after each parsed message.
+ */
+function createAnswerStreamParser(state: AnswerState): AnswerStreamParser {
+	const usage = { input: 0, output: 0, cost: 0 };
+	let buffer = "";
+	let answerTruncated = false;
+
+	const processLine = (line: string) => {
+		if (!line.trim()) return;
+		let ev: { type?: string; message?: Record<string, unknown> };
+		try {
+			ev = JSON.parse(line);
+		} catch {
+			return;
+		}
+		if (ev.type !== "message_end" || !ev.message) return;
+		const msg = ev.message as {
+			role?: string;
+			content?: Array<{ type: string; text?: string }>;
+			usage?: { input?: number; output?: number; cost?: { total?: number } };
+		};
+		if (msg.role !== "assistant") return;
+		for (const part of msg.content ?? []) {
+			if (part.type !== "text" || !part.text || answerTruncated) continue;
+			const prefix = state.text ? "\n" : "";
+			const remaining = MAX_ANSWER_CHARS - state.text.length - prefix.length;
+			if (remaining <= 0) {
+				answerTruncated = true;
+				state.text += "\n[Answer truncated: display limit reached]";
+				continue;
+			}
+			state.text += prefix + part.text.slice(0, remaining);
+			if (part.text.length > remaining) {
+				answerTruncated = true;
+				state.text += "\n[Answer truncated: display limit reached]";
+			}
+		}
+		const u = msg.usage;
+		if (u) {
+			usage.input += u.input ?? 0;
+			usage.output += u.output ?? 0;
+			usage.cost += u.cost?.total ?? 0;
+		}
+		state.usageLine = formatUsage(usage);
+		state.onRender?.();
+	};
+
+	return {
+		feed(chunk: string): void {
+			buffer += chunk;
+			const lines = buffer.split("\n");
+			buffer = lines.pop() ?? "";
+			for (const line of lines) processLine(line);
+		},
+		flush(): void {
+			if (buffer.trim()) processLine(buffer);
+		},
+		syncUsageLine(): void {
+			state.usageLine = formatUsage(usage);
+		},
+	};
+}
+
 /** Spawn an isolated snapshot-only subagent and stream its answer into an AnswerState. */
 export function spawnSubagentAnswer(cwd: string, fc: FileChange, question: string): AnswerState {
 	const state: AnswerState = {
@@ -145,21 +221,13 @@ export function spawnSubagentAnswer(cwd: string, fc: FileChange, question: strin
 	let killed = false;
 	let closed = false;
 	let terminationError: string | undefined;
-	const signalProcess = (signal: NodeJS.Signals): void => {
-		try {
-			if (process.platform !== "win32" && proc.pid) process.kill(-proc.pid, signal);
-			else proc.kill(signal);
-		} catch {
-			try { proc.kill(signal); } catch { /* already gone */ }
-		}
-	};
 	const terminate = (reason?: string): void => {
 		if (killed || closed) return;
 		killed = true;
 		terminationError = reason;
-		signalProcess("SIGTERM");
+		signalProcessTree(proc, "SIGTERM");
 		const killTimer = setTimeout(() => {
-			if (!closed) signalProcess("SIGKILL");
+			if (!closed) signalProcessTree(proc, "SIGKILL");
 		}, 3000);
 		killTimer.unref?.();
 	};
@@ -167,51 +235,9 @@ export function spawnSubagentAnswer(cwd: string, fc: FileChange, question: strin
 	const deadline = setTimeout(() => terminate("Reviewer timed out after 120 seconds"), REVIEW_TIMEOUT_MS);
 	deadline.unref?.();
 
-	const usage = { input: 0, output: 0, cost: 0 };
+	const parser = createAnswerStreamParser(state);
 	let stderr = "";
-	let buffer = "";
 	let stdoutChars = 0;
-	let answerTruncated = false;
-
-	const processLine = (line: string) => {
-		if (!line.trim()) return;
-		let ev: { type?: string; message?: Record<string, unknown> };
-		try {
-			ev = JSON.parse(line);
-		} catch {
-			return;
-		}
-		if (ev.type !== "message_end" || !ev.message) return;
-		const msg = ev.message as {
-			role?: string;
-			content?: Array<{ type: string; text?: string }>;
-			usage?: { input?: number; output?: number; cost?: { total?: number } };
-		};
-		if (msg.role !== "assistant") return;
-		for (const part of msg.content ?? []) {
-			if (part.type !== "text" || !part.text || answerTruncated) continue;
-			const prefix = state.text ? "\n" : "";
-			const remaining = MAX_ANSWER_CHARS - state.text.length - prefix.length;
-			if (remaining <= 0) {
-				answerTruncated = true;
-				state.text += "\n[Answer truncated: display limit reached]";
-				continue;
-			}
-			state.text += prefix + part.text.slice(0, remaining);
-			if (part.text.length > remaining) {
-				answerTruncated = true;
-				state.text += "\n[Answer truncated: display limit reached]";
-			}
-		}
-		const u = msg.usage;
-		if (u) {
-			usage.input += u.input ?? 0;
-			usage.output += u.output ?? 0;
-			usage.cost += u.cost?.total ?? 0;
-		}
-		state.usageLine = formatUsage(usage);
-		state.onRender?.();
-	};
 
 	proc.stdout?.on("data", (d: Buffer) => {
 		const chunk = d.toString();
@@ -220,21 +246,16 @@ export function spawnSubagentAnswer(cwd: string, fc: FileChange, question: strin
 			terminate("Reviewer output exceeded the 4 MiB protocol limit");
 			return;
 		}
-		buffer += chunk;
-		const ls = buffer.split("\n");
-		buffer = ls.pop() ?? "";
-		for (const l of ls) processLine(l);
+		parser.feed(chunk);
 	});
 	proc.stderr?.on("data", (d: Buffer) => {
-		// Keep enough diagnostics without allowing a noisy child to grow memory
-		// without bound.
-		stderr = (stderr + d.toString()).slice(-64 * 1024);
+		stderr = appendCapped(stderr, d.toString());
 	});
 	proc.on("close", (code) => {
 		if (closed) return;
 		closed = true;
 		clearTimeout(deadline);
-		if (buffer.trim() && !terminationError) processLine(buffer);
+		if (!terminationError) parser.flush();
 		if (terminationError) {
 			state.status = "error";
 			state.error = terminationError;
@@ -245,7 +266,7 @@ export function spawnSubagentAnswer(cwd: string, fc: FileChange, question: strin
 			state.status = "done";
 			if (!state.text && !killed) state.text = "(no answer)";
 		}
-		state.usageLine = formatUsage(usage);
+		parser.syncUsageLine();
 		state.onRender?.();
 	});
 	proc.on("error", (e) => {

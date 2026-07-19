@@ -238,6 +238,32 @@ export function makeEnvelope(options: MakeEnvelopeOptions): Envelope {
 }
 
 /**
+ * The task anchors a terminal envelope (final report / error) makes terminal.
+ *
+ *   { kind: "anchors" }               — an explicit (possibly empty) anchor list,
+ *                                       with correlationId fallback for
+ *                                       pre-migration final reports.
+ *   { kind: "legacy-unscoped-error" } — an error persisted before terminalAnchors
+ *                                       existed; its historical behavior closed
+ *                                       ALL tasks for the sender.
+ *
+ * Callers choose how to honor "legacy-unscoped-error": the await loop treats it
+ * as matching any target (same as an explicitly empty anchor list), while the
+ * main-mail commit closes every open task for the sender.
+ */
+export type TerminalAnchors =
+	| { kind: "anchors"; anchors: string[] }
+	| { kind: "legacy-unscoped-error" };
+
+export function terminalTaskAnchors(envelope: Envelope): TerminalAnchors {
+	if (envelope.payload.terminalAnchors !== undefined) return { kind: "anchors", anchors: envelope.payload.terminalAnchors };
+	if (envelope.type === "report" && envelope.payload.final === true && envelope.correlationId !== null) {
+		return { kind: "anchors", anchors: [envelope.correlationId] };
+	}
+	return envelope.type === "error" ? { kind: "legacy-unscoped-error" } : { kind: "anchors", anchors: [] };
+}
+
+/**
  * Validate an envelope (e.g. read back from a mailbox file). Returns a list of
  * human-readable problems; empty = valid.
  */

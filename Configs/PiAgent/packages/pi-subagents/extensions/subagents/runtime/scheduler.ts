@@ -6,15 +6,15 @@
  * cap. Pure in-memory — the host lease already guarantees one process.
  */
 
-export type ReleaseSlot = () => void;
+import { DEFAULT_SETTINGS } from "../store/settings.ts";
 
-export const DEFAULT_MAX_CONCURRENT = 4;
+export type ReleaseSlot = () => void;
 
 export class Scheduler {
 	private running = 0;
 	private waiters: Array<(release: ReleaseSlot) => void> = [];
 
-	constructor(private readonly max: number = DEFAULT_MAX_CONCURRENT) {}
+	constructor(private readonly max: number = DEFAULT_SETTINGS.maxConcurrent) {}
 
 	/** Acquire a slot; resolves immediately if one is free, else queues FIFO. */
 	acquire(): Promise<ReleaseSlot> {

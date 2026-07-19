@@ -12,57 +12,31 @@
  *    (sendUserMessage/followUp); it is answered in the main chat after the panel
  *    closes. The transcript notes that so the behavior isn't surprising.
  *
- * The streaming/parse loop is adapted from pi-changes' ask.ts.
+ * The streaming/parse loop (now in subagent.ts) is adapted from pi-changes' ask.ts.
  */
 
-import { type ChildProcess, spawn } from "node:child_process";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	KeybindingsManager,
 	Theme,
 } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import { Input, Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Input, Key, matchesKey, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ReviewGroup } from "./classify.ts";
+import { type AnswerState, spawnSubagentAnswer } from "./subagent.ts";
+import { pad, panelRows, rule } from "./tui-util.ts";
 
 const DIFF_CAP = 24 * 1024;
 const QUESTION_CAP = 8 * 1024;
 const HISTORY_CAP = 32 * 1024;
-const ANSWER_CAP = 256 * 1024;
-const STDERR_CAP = 64 * 1024;
-const JSON_BUFFER_CAP = 1024 * 1024;
 const FILE_LIST_CAP = 8 * 1024;
-const CHILD_TIMEOUT_MS = 5 * 60 * 1000;
 
 export type ChatTarget = "sub" | "main";
 
 interface Turn {
 	role: "you" | "agent" | "note" | "error";
 	text: string;
-}
-
-interface AnswerState {
-	status: "running" | "done" | "error";
-	text: string;
-	error?: string;
-	onRender?: () => void;
-	kill(): void;
-}
-
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
-	const currentScript = process.argv[1];
-	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
-	}
-	const execName = path.basename(process.execPath).toLowerCase();
-	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-	if (!isGenericRuntime) return { command: process.execPath, args };
-	return { command: "pi", args };
 }
 
 function capDiff(diff: string): string {
@@ -110,126 +84,6 @@ function buildSubagentTask(group: ReviewGroup, diff: string, history: Turn[], qu
 		"Answer concisely. You may read files in the working directory (read/grep/find/ls) to inform your answer. Do not attempt to modify anything.",
 	);
 	return parts.join("\n");
-}
-
-function spawnSubagentAnswer(
-	cwd: string,
-	group: ReviewGroup,
-	diff: string,
-	history: Turn[],
-	question: string,
-): AnswerState {
-	const state: AnswerState = { status: "running", text: "", kill() {} };
-
-	const task = buildSubagentTask(group, diff, history, question);
-	const inv = getPiInvocation([
-		"--mode",
-		"json",
-		"-p",
-		"--no-session",
-		"--tools",
-		"read,grep,find,ls",
-		`Task: ${task}`,
-	]);
-
-	let proc: ChildProcess;
-	try {
-		proc = spawn(inv.command, inv.args, {
-			cwd,
-			shell: false,
-			stdio: ["ignore", "pipe", "pipe", "ignore"],
-		});
-	} catch (e) {
-		state.status = "error";
-		state.error = String(e);
-		return state;
-	}
-
-	let killed = false;
-	let closed = false;
-	const timeout = setTimeout(() => state.kill(), CHILD_TIMEOUT_MS);
-	timeout.unref?.();
-	state.kill = () => {
-		if (killed || closed) return;
-		killed = true;
-		try {
-			proc.kill("SIGTERM");
-		} catch {
-			/* ignore */
-		}
-		const killTimer = setTimeout(() => {
-			try {
-				if (!closed) proc.kill("SIGKILL");
-			} catch {
-				/* ignore */
-			}
-		}, 3000);
-		killTimer.unref?.();
-	};
-
-	let stderr = "";
-	let buffer = "";
-	const processLine = (line: string) => {
-		if (!line.trim()) return;
-		let ev: { type?: string; message?: Record<string, unknown> };
-		try {
-			ev = JSON.parse(line);
-		} catch {
-			return;
-		}
-		if (ev.type !== "message_end" || !ev.message) return;
-		const msg = ev.message as { role?: string; content?: Array<{ type: string; text?: string }> };
-		if (msg.role !== "assistant") return;
-		for (const part of msg.content ?? []) {
-			if (part.type === "text" && part.text) {
-				state.text += (state.text ? "\n" : "") + part.text;
-				if (state.text.length > ANSWER_CAP) state.text = `${state.text.slice(0, ANSWER_CAP)}\n[answer truncated]`;
-			}
-		}
-		state.onRender?.();
-	};
-
-	proc.stdout?.on("data", (d: Buffer) => {
-		buffer += d.toString();
-		if (buffer.length > JSON_BUFFER_CAP) {
-			state.status = "error";
-			state.error = "subagent emitted an oversized JSON event";
-			state.kill();
-			state.onRender?.();
-			return;
-		}
-		const ls = buffer.split("\n");
-		buffer = ls.pop() ?? "";
-		for (const l of ls) processLine(l);
-	});
-	proc.stderr?.on("data", (d: Buffer) => {
-		stderr = (stderr + d.toString()).slice(-STDERR_CAP);
-	});
-	proc.on("close", (code) => {
-		if (closed) return;
-		closed = true;
-		clearTimeout(timeout);
-		if (buffer.trim()) processLine(buffer);
-		if (state.status === "error") {
-			// Preserve an earlier bounded-output or stream error.
-		} else if (!killed && code && code !== 0 && !state.text) {
-			state.status = "error";
-			state.error = stderr.trim() || `subagent exited with code ${code}`;
-		} else {
-			state.status = "done";
-			if (!state.text && !killed) state.text = "(no answer)";
-		}
-		state.onRender?.();
-	});
-	proc.on("error", (e) => {
-		closed = true;
-		clearTimeout(timeout);
-		state.status = "error";
-		state.error = String(e);
-		state.onRender?.();
-	});
-
-	return state;
 }
 
 interface ChatPanelOptions {
@@ -302,7 +156,7 @@ function createChatPanel(opts: ChatPanelOptions): Component {
 		}
 
 		const history = turns.slice(0, -1); // exclude the just-pushed question
-		const answer = spawnSubagentAnswer(ctx.cwd, group, diffText, history, q);
+		const answer = spawnSubagentAnswer(ctx.cwd, buildSubagentTask(group, diffText, history, q));
 		streaming = answer;
 		answer.onRender = () => {
 			follow = true;
@@ -330,19 +184,6 @@ function createChatPanel(opts: ChatPanelOptions): Component {
 
 	input.onSubmit = (value) => submit(value);
 	input.onEscape = () => close();
-
-	function panelRows(): number {
-		return Math.max(1, tui.terminal.rows);
-	}
-	function rule(width: number): string {
-		const border = new DynamicBorder((s: string) => theme.fg("borderMuted", s));
-		return border.render(Math.max(1, width))[0] ?? "";
-	}
-	function pad(content: string, width: number): string {
-		const clipped = truncateToWidth(content, Math.max(0, width), "…");
-		const vis = visibleWidth(clipped);
-		return clipped + " ".repeat(Math.max(0, width - vis));
-	}
 
 	function roleLabel(role: Turn["role"]): string {
 		switch (role) {
@@ -420,7 +261,7 @@ function createChatPanel(opts: ChatPanelOptions): Component {
 	}
 
 	function render(width: number): string[] {
-		const targetH = panelRows();
+		const targetH = panelRows(tui);
 		if (cachedLines && cachedWidth === width && cachedHeight === targetH) return cachedLines;
 
 		const innerW = Math.max(1, width);
@@ -434,14 +275,14 @@ function createChatPanel(opts: ChatPanelOptions): Component {
 		}
 
 		const header: string[] = [];
-		header.push(rule(innerW));
+		header.push(rule(innerW, theme));
 		const targetLabel = target === "sub" ? "subagent" : "main agent";
 		const title =
 			theme.bold("Ask · ") +
 			theme.fg("text", group.title) +
 			theme.fg("dim", `  (${group.paths.length} file${group.paths.length === 1 ? "" : "s"})  ·  ${targetLabel}`);
 		for (const h of wrapTextWithAnsi(title, innerW)) header.push(pad(h, innerW));
-		header.push(rule(innerW));
+		header.push(rule(innerW, theme));
 
 		const inputLines = input.render(Math.max(1, innerW - 3));
 		const inputRows = Math.max(1, inputLines.length);
@@ -461,7 +302,7 @@ function createChatPanel(opts: ChatPanelOptions): Component {
 			lines.push(visible[i] !== undefined ? pad(truncateToWidth(visible[i]!, innerW, "…"), innerW) : pad("", innerW));
 		}
 
-		lines.push(rule(innerW));
+		lines.push(rule(innerW, theme));
 		for (let i = 0; i < inputRows; i++) {
 			const prompt = i === 0 ? theme.fg("accent", "> ") : "  ";
 			lines.push(pad(`${prompt}${inputLines[i] ?? ""}`, innerW));

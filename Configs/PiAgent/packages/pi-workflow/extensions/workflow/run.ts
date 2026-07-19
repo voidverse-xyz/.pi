@@ -7,8 +7,9 @@
  *   stop()    — sets the stopped flag; running sessions are aborted by the
  *               runner's watcher; pending/future agent() calls reject
  *               WorkflowStopped, which unwinds through the combinators.
- *               A script that swallows all errors is abandoned after a grace
- *               period (the floating vm promise has no OS resources behind it).
+ *               The grace period abandons a script that swallows the stop
+ *               error; in-flight agent sessions are separately aborted by the
+ *               runner's stop watcher.
  *
  * execute() never rejects for script problems — it resolves an outcome with
  * status completed | stopped | failed. Only programmer errors escape.
@@ -33,6 +34,7 @@ import type { SandboxPorts } from "./sandbox/tools-filter.ts";
 import { compileScript } from "./script/compile.ts";
 import { extractMeta, type WorkflowMeta } from "./script/meta.ts";
 import { AgentFailure, makeCombinators, WorkflowStopped } from "./script/semantics.ts";
+import { truncateFlat } from "./text.ts";
 
 const STOP_GRACE_MS = 5_000;
 const PREVIEW_MAX = 200;
@@ -48,6 +50,7 @@ export interface AgentRow {
 	error?: string;
 	cached?: boolean;
 	model?: string;
+	elapsedMs?: number;
 }
 
 export interface RunSnapshot {
@@ -111,11 +114,6 @@ interface AgentOpts {
 	tools?: string[];
 }
 
-function preview(text: string): string {
-	const flat = text.replace(/\s+/g, " ").trim();
-	return flat.length <= PREVIEW_MAX ? flat : `${flat.slice(0, PREVIEW_MAX - 1)}…`;
-}
-
 export class WorkflowRun {
 	readonly runId: string;
 	readonly name: string;
@@ -134,6 +132,7 @@ export class WorkflowRun {
 	private currentPhase = "";
 	private readonly rows = new Map<number, AgentRow>();
 	private readonly logs: string[] = [];
+	private loggedDivergence = false;
 
 	private constructor(options: WorkflowRunOptions, meta: WorkflowMeta | null, body: string) {
 		this.options = options;
@@ -256,6 +255,7 @@ export class WorkflowRun {
 				model: call.model,
 				thinking: call.thinking,
 				tools: call.tools,
+				phase: call.phase,
 			});
 			const row: AgentRow = { seq, label: call.label, phase: call.phase, state: "queued", ...(call.model ? { model: call.model } : {}) };
 			this.rows.set(seq, row);
@@ -276,7 +276,7 @@ export class WorkflowRun {
 						phase: call.phase,
 						status: "ok",
 						output,
-						promptPreview: preview(call.prompt),
+						promptPreview: truncateFlat(call.prompt, PREVIEW_MAX),
 						elapsedMs: 0,
 						cached: true,
 					},
@@ -290,8 +290,10 @@ export class WorkflowRun {
 				this.log(`resume: diverged at agent #${seq} ("${call.label}") — running live from here.`);
 			}
 
+			const startedAt = Date.now();
 			try {
 				const { output, elapsedMs } = await this.options.runAgentImpl(call, ports);
+				row.elapsedMs = elapsedMs;
 				this.journal.appendAgent(
 					{
 						type: "agent",
@@ -301,7 +303,7 @@ export class WorkflowRun {
 						phase: call.phase,
 						status: "ok",
 						output,
-						promptPreview: preview(call.prompt),
+						promptPreview: truncateFlat(call.prompt, PREVIEW_MAX),
 						elapsedMs,
 					},
 					sidecar,
@@ -311,6 +313,7 @@ export class WorkflowRun {
 				if (error instanceof WorkflowStopped) throw error;
 				const message = error instanceof Error ? error.message : String(error);
 				row.error = message;
+				row.elapsedMs = Date.now() - startedAt;
 				this.journal.appendAgent(
 					{
 						type: "agent",
@@ -320,8 +323,8 @@ export class WorkflowRun {
 						phase: call.phase,
 						status: "error",
 						error: message,
-						promptPreview: preview(call.prompt),
-						elapsedMs: 0,
+						promptPreview: truncateFlat(call.prompt, PREVIEW_MAX),
+						elapsedMs: row.elapsedMs,
 					},
 					sidecar,
 				);
@@ -331,8 +334,6 @@ export class WorkflowRun {
 		};
 	}
 
-	private loggedDivergence = false;
-
 	private buildOutcome(status: Exclude<RunStatus, "running">, result?: unknown, error?: string): RunOutcome {
 		const agents = [...this.rows.values()]
 			.sort((a, b) => a.seq - b.seq)
@@ -341,7 +342,7 @@ export class WorkflowRun {
 				label: row.label,
 				phase: row.phase,
 				status: (row.cached ? "cached" : row.error ? "error" : "ok") as "ok" | "error" | "cached",
-				elapsedMs: 0,
+				elapsedMs: row.elapsedMs ?? 0,
 			}));
 		return {
 			runId: this.runId,

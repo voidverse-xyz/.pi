@@ -174,10 +174,9 @@ export function isToolAllowedInMode(
 
 function existingTrustedNames(
 	names: Iterable<string>,
-	allTools: readonly ToolSource[],
+	byName: ReadonlyMap<string, ToolSource>,
 	trustedCustomTools: TrustedCustomToolOwners,
 ): string[] {
-	const byName = new Map(allTools.map((tool) => [tool.name, tool]));
 	return [...names].filter((name) => isTrustedTool(byName.get(name), trustedCustomTools));
 }
 
@@ -195,7 +194,7 @@ export function restrictedModeTools(
 	if (mode === "discuss") {
 		return [...new Set([
 			...coreReadTools,
-			...existingTrustedNames(DISCUSS_CUSTOM_TOOLS, allTools, trustedCustomTools),
+			...existingTrustedNames(DISCUSS_CUSTOM_TOOLS, byName, trustedCustomTools),
 		])];
 	}
 
@@ -206,8 +205,8 @@ export function restrictedModeTools(
 	return [...new Set([
 		...coreReadTools,
 		...activeCompanionTools,
-		...existingTrustedNames([SAVE_PLAN_TOOL], allTools, trustedCustomTools),
-		...existingTrustedNames(PLAN_SUBAGENT_TOOL_NAMES, allTools, trustedCustomTools),
+		...existingTrustedNames([SAVE_PLAN_TOOL], byName, trustedCustomTools),
+		...existingTrustedNames(PLAN_SUBAGENT_TOOL_NAMES, byName, trustedCustomTools),
 	])];
 }
 

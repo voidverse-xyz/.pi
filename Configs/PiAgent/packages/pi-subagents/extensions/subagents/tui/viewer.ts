@@ -20,6 +20,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import type { SubagentsCore } from "../core.ts";
+import { flattenTextOnly } from "../session-read.ts";
 import { formatTokens } from "./widget.ts";
 
 interface Component {
@@ -60,7 +61,7 @@ function buildComponents(sessionFile: string | null, tui: TUI, cwd: string): Com
 		if (entry.type !== "message" || !entry.message) continue;
 		const message = entry.message;
 		if (message.role === "user") {
-			components.push(new UserMessageComponent(flatten(message.content)));
+			components.push(new UserMessageComponent(flattenTextOnly(message.content)));
 		} else if (message.role === "assistant") {
 			components.push(new AssistantMessageComponent(message as ConstructorParameters<typeof AssistantMessageComponent>[0]));
 			for (const part of Array.isArray(message.content) ? (message.content as Array<Record<string, unknown>>) : []) {
@@ -76,14 +77,6 @@ function buildComponents(sessionFile: string | null, tui: TUI, cwd: string): Com
 		}
 	}
 	return components;
-}
-
-function flatten(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (Array.isArray(content)) {
-		return content.map((p) => ((p as { type?: string; text?: string }).type === "text" ? ((p as { text?: string }).text ?? "") : "")).join("");
-	}
-	return "";
 }
 
 export function createViewer(options: ViewerOptions): ViewerComponent {

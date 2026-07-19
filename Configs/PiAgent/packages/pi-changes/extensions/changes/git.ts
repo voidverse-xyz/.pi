@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { capDisplayLines } from "./display.ts";
+import { readTextSnapshot } from "./fs-util.ts";
+import { appendCapped, signalProcessTree } from "./proc-util.ts";
 import type { FileChange } from "./tracker.ts";
 
 const MAX_STATUS_CHARS = 4 * 1024 * 1024;
@@ -22,7 +23,6 @@ interface ExecResult {
 }
 
 export interface GitChangesResult {
-	root: string;
 	changes: FileChange[];
 	warnings: string[];
 }
@@ -37,14 +37,7 @@ function execGitCapped(cwd: string, args: string[], maxChars: number): Promise<E
 			stdio: ["ignore", "pipe", "pipe"],
 			env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
 		});
-		const killChild = () => {
-			try {
-				if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
-				else child.kill("SIGKILL");
-			} catch {
-				try { child.kill("SIGKILL"); } catch { /* already gone */ }
-			}
-		};
+		const killChild = () => signalProcessTree(child, "SIGKILL");
 		let stdout = "";
 		let stderr = "";
 		let truncated = false;
@@ -65,7 +58,7 @@ function execGitCapped(cwd: string, args: string[], maxChars: number): Promise<E
 			}
 		});
 		child.stderr.on("data", (chunk: string) => {
-			stderr = (stderr + chunk).slice(-64 * 1024);
+			stderr = appendCapped(stderr, chunk);
 		});
 		child.on("error", (error) => {
 			if (closed) return;
@@ -86,28 +79,6 @@ function literalPath(file: string): string {
 	return `:(literal)${file}`;
 }
 
-function readWorkingFile(abs: string, remainingChars: number): { exists: boolean; text: string | null; unreadable: boolean } {
-	try {
-		const stat = fs.lstatSync(abs);
-		if (!stat.isFile() || stat.size > MAX_FILE_BYTES || stat.size > remainingChars) {
-			return { exists: true, text: null, unreadable: true };
-		}
-		const buffer = fs.readFileSync(abs);
-		const sample = buffer.subarray(0, Math.min(buffer.length, 8192));
-		if (sample.includes(0)) return { exists: true, text: null, unreadable: true };
-		const text = capDisplayLines(
-			buffer.toString("utf8"),
-			MAX_DISPLAY_LINES,
-			"[File display truncated: line limit reached]",
-		);
-		return { exists: true, text, unreadable: false };
-	} catch (error) {
-		return (error as NodeJS.ErrnoException).code === "ENOENT"
-			? { exists: false, text: null, unreadable: false }
-			: { exists: true, text: null, unreadable: true };
-	}
-}
-
 function stateLabel(index: string, worktree: string): string {
 	if (index === "?" && worktree === "?") return "untracked";
 	if (index === "!" && worktree === "!") return "ignored";
@@ -123,7 +94,12 @@ function stateLabel(index: string, worktree: string): string {
 
 function blankGitChange(root: string, rel: string, index: string, worktree: string, remainingChars: number): FileChange {
 	const abs = path.join(root, ...rel.split("/"));
-	const current = readWorkingFile(abs, remainingChars);
+	const current = readTextSnapshot(abs, {
+		maxBytes: Math.min(MAX_FILE_BYTES, remainingChars),
+		capLines: { maxLines: MAX_DISPLAY_LINES, marker: "[File display truncated: line limit reached]" },
+		noFollow: true,
+		missingOn: "enoent",
+	});
 	const created = index === "?" || index === "A";
 	return {
 		abs,
@@ -220,7 +196,7 @@ export async function collectGitChanges(pi: ExtensionAPI, cwd: string): Promise<
 
 	let totalDiffChars = 0;
 	let next = 0;
-	const warnings: string[] = [];
+	let diffsOmitted = false;
 	const workers = Array.from({ length: Math.min(DIFF_CONCURRENCY, changes.length) }, async () => {
 		while (true) {
 			const index = next++;
@@ -229,6 +205,7 @@ export async function collectGitChanges(pi: ExtensionAPI, cwd: string): Promise<
 			const remaining = MAX_TOTAL_DIFF_CHARS - totalDiffChars;
 			if (remaining <= 0) {
 				change.diffOverride = "[Diff omitted: total Git diff display limit reached]";
+				diffsOmitted = true;
 				continue;
 			}
 			const result = await diffForFile(root, change.rel, change.sourceLabel ?? "changed", Math.min(MAX_FILE_DIFF_CHARS, remaining));
@@ -243,15 +220,21 @@ export async function collectGitChanges(pi: ExtensionAPI, cwd: string): Promise<
 			const available = MAX_TOTAL_DIFF_CHARS - totalDiffChars;
 			if (available <= 0) {
 				change.diffOverride = "[Diff omitted: total Git diff display limit reached]";
-			} else {
-				change.diffOverride = text.length > available ? `${text.slice(0, available)}\n[Diff truncated: total display limit reached]` : text;
+				diffsOmitted = true;
+			} else if (text.length > available) {
+				change.diffOverride = `${text.slice(0, available)}\n[Diff truncated: total display limit reached]`;
 				totalDiffChars += change.diffOverride.length;
+				diffsOmitted = true;
+			} else {
+				change.diffOverride = text;
+				totalDiffChars += text.length;
 			}
 		}
 	});
 	await Promise.all(workers);
-	if (changes.some((change) => change.diffOverride?.includes("total") && change.diffOverride.includes("display limit"))) {
+	const warnings: string[] = [];
+	if (diffsOmitted) {
 		warnings.push("Some diffs were omitted after reaching the 32 MiB display limit");
 	}
-	return { root, changes, warnings };
+	return { changes, warnings };
 }

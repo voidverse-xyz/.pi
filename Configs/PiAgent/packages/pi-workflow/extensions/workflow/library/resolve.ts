@@ -7,10 +7,14 @@
  *
  * Listing peeks each file's meta; parse failures are listed as invalid rather
  * than hidden, so a broken saved workflow is discoverable.
+ *
+ * By-path resolution (resolveByPath) is trust-gated and cwd-confined: it is
+ * disabled entirely when the project is not trusted, and the resolved file
+ * must live inside the project directory.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { WorkflowLayout } from "../journal/layout.ts";
 import { extractMeta } from "../script/meta.ts";
 
@@ -78,9 +82,14 @@ export function resolveByName(name: string, layout: WorkflowLayout, projectTrust
 }
 
 /** Resolve a workflow script by path (absolute or cwd-relative, .js only). */
-export function resolveByPath(scriptPath: string, cwd: string): ResolvedSource {
+export function resolveByPath(scriptPath: string, cwd: string, projectTrusted: boolean): ResolvedSource {
+	if (!projectTrusted) throw new Error("By-path workflow scripts are disabled — project not trusted.");
 	if (!scriptPath.endsWith(".js")) throw new Error(`scriptPath must point to a .js file (got ${JSON.stringify(scriptPath)}).`);
 	const file = isAbsolute(scriptPath) ? scriptPath : resolve(cwd, scriptPath);
+	const rel = relative(cwd, file);
+	if (rel.startsWith("..") || isAbsolute(rel)) {
+		throw new Error(`scriptPath must resolve to a file inside the project directory (got ${JSON.stringify(scriptPath)}).`);
+	}
 	if (!existsSync(file)) throw new Error(`Workflow script not found: ${file}`);
 	const base = file.slice(file.lastIndexOf("/") + 1, -3);
 	return { source: readFileSync(file, "utf8"), fallbackName: NAME_RE.test(base) ? base : "inline" };

@@ -46,27 +46,6 @@ export function buildPickerRows(roster: RosterEntry[], archived: ArchivedAgentIn
 	return rows;
 }
 
-export function isSelectable(row: PickerRow): boolean {
-	return row.kind === "agent" || row.kind === "archived" || row.kind === "archive-header";
-}
-
-export function pickerRowText(row: PickerRow): string {
-	switch (row.kind) {
-		case "agent": {
-			const { entry } = row;
-			const pct = entry.vitals.ctxPercent !== null ? ` · ${Math.round(entry.vitals.ctxPercent)}% ctx` : " · ctx ?";
-			const badge = row.unread > 0 ? ` · ${MAIL_ICON} ${row.unread}` : "";
-			return `${STATE_GLYPHS[entry.state]} ${entry.label || entry.address} · ${entry.state} · ${formatTokens(entry.vitals.tokens)} tok${pct}${badge}`;
-		}
-		case "archive-header":
-			return `${row.expanded ? "" : ""} .archive (${row.count})`;
-		case "archived": {
-			const when = row.info.retiredAt ? ` · retired ${row.info.retiredAt.slice(0, 10)}` : "";
-			return `   ${row.info.label || row.info.address}${when}`;
-		}
-	}
-}
-
 /** SelectList item for a row: label column = who, description column = state. */
 export function pickerRowItem(row: PickerRow): SelectItem {
 	switch (row.kind) {

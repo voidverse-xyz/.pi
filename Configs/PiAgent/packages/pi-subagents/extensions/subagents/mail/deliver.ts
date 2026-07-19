@@ -19,7 +19,6 @@ import {
 	MAIN_ADDRESS,
 	makeEnvelope,
 	parseAddress,
-	USER_ADDRESS,
 } from "./envelope.ts";
 import { writeEnvelope } from "./mailbox.ts";
 import type { AgentState } from "../store/registry.ts";
@@ -140,6 +139,3 @@ export class Deliverer {
 		return { delivered: false, disposition: "bounced", envelopeId: errorEnvelope.id, bounceReason: reason };
 	}
 }
-
-/** Convenience re-export for callers building addresses. */
-export { MAIN_ADDRESS, USER_ADDRESS };
