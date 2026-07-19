@@ -1,7 +1,7 @@
 # void-agent
 
-Void Agent is a self-contained presentation package for Pi. It bundles its `void-agent`
-theme with the UI extension and leaves Pi's registered tool definitions untouched,
+Void Agent is a self-contained presentation package for Pi. It bundles a family of
+color themes with the UI extension and leaves Pi's registered tool definitions untouched,
 preserving configured shells, safety/sandbox wrappers, mutation previews, diffs, and
 expansion behavior.
 
@@ -33,6 +33,22 @@ token stats.)
 
 Calling either command without an argument toggles its setting. Both settings persist across reloads and restarts.
 
+## Themes
+
+The package ships several palettes that all share the exact same role mapping, so the
+UI layout and behavior are identical across them — only the colors change:
+
+- `void-agent` (default — Catppuccin Mocha)
+- `void-agent-gruvbox`, `void-agent-tokyo-night`, `void-agent-nord`,
+  `void-agent-one-dark`, `void-agent-catppuccin` (Macchiato), `void-agent-kanagawa`
+
+Pi discovers these automatically (via the package's `pi.themes` entry) and owns theme
+selection: switch between them from Pi's native theme picker, which persists your
+choice in `settings.theme`. On the very first run the extension seeds `void-agent`
+once (so a fresh install looks "void" immediately) and then never overrides your
+selection again. The animated working block requires a truecolor theme; all bundled
+themes are truecolor.
+
 ## Verify
 
 - Live preview: `node test/preview-working-sweep.mjs`
@@ -42,5 +58,5 @@ Calling either command without an argument toggles its setting. Both settings pe
 ## Install
 
 1. Add this package path to Pi's `packages` setting.
-2. Set `"theme": "void-agent"`.
-3. Run `/reload` or restart Pi.
+2. Run `/reload` or restart Pi. The `void-agent` theme is applied automatically on
+   first run; switch palettes anytime from Pi's native theme picker.

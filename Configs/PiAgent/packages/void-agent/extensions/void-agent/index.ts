@@ -26,6 +26,13 @@ const ANIMATION_CONFIG_PATH = join(getAgentDir(), "void-agent.json");
 interface AnimationConfig {
 	workingAnimation: boolean;
 	matrix: boolean;
+	/**
+	 * Whether the one-time default theme has been applied. Pi owns theme
+	 * selection + persistence (its native picker writes settings.theme), so we
+	 * only seed `void-agent` on the very first run and never override the user's
+	 * choice afterwards — see the session_start handler.
+	 */
+	themeInitialized: boolean;
 }
 
 function loadAnimationConfig(): AnimationConfig {
@@ -34,9 +41,10 @@ function loadAnimationConfig(): AnimationConfig {
 		return {
 			workingAnimation: typeof raw.workingAnimation === "boolean" ? raw.workingAnimation : true,
 			matrix: typeof raw.matrix === "boolean" ? raw.matrix : true,
+			themeInitialized: typeof raw.themeInitialized === "boolean" ? raw.themeInitialized : false,
 		};
 	} catch {
-		return { workingAnimation: true, matrix: true };
+		return { workingAnimation: true, matrix: true, themeInitialized: false };
 	}
 }
 
@@ -507,6 +515,7 @@ export default async function voidAgent(pi: ExtensionAPI): Promise<void> {
 	const animationConfig = loadAnimationConfig();
 	let workingAnimationEnabled = animationConfig.workingAnimation;
 	let matrixEnabled = animationConfig.matrix;
+	let themeInitialized = animationConfig.themeInitialized;
 	let activeCtx: ExtensionContext | undefined;
 	let workingStartedAt: number | undefined;
 	let workingTimer: ReturnType<typeof setInterval> | undefined;
@@ -626,7 +635,7 @@ export default async function voidAgent(pi: ExtensionAPI): Promise<void> {
 				return;
 			}
 			matrixEnabled = next;
-			const persisted = saveAnimationConfig({ workingAnimation: workingAnimationEnabled, matrix: matrixEnabled });
+			const persisted = saveAnimationConfig({ workingAnimation: workingAnimationEnabled, matrix: matrixEnabled, themeInitialized });
 			refreshMatrix(ctx);
 			const master = workingAnimationEnabled ? "" : "; working animation remains off";
 			const message = `Matrix rain ${matrixEnabled ? "enabled" : "disabled"}${master}`;
@@ -658,7 +667,7 @@ export default async function voidAgent(pi: ExtensionAPI): Promise<void> {
 				return;
 			}
 			workingAnimationEnabled = next;
-			const persisted = saveAnimationConfig({ workingAnimation: workingAnimationEnabled, matrix: matrixEnabled });
+			const persisted = saveAnimationConfig({ workingAnimation: workingAnimationEnabled, matrix: matrixEnabled, themeInitialized });
 			refreshWorkingAnimation(ctx);
 			const message = workingAnimationEnabled
 				? `Working animation enabled; Matrix rain is ${matrixEnabled ? "on" : "off"}`
@@ -680,7 +689,15 @@ export default async function voidAgent(pi: ExtensionAPI): Promise<void> {
 		if (!restoreWorkingBg) {
 			ctx.ui.notify("Void Agent could not install its working-background renderer", "warning");
 		}
-		ctx.ui.setTheme("void-agent");
+		// Seed the void-agent theme once on first run so a fresh install looks
+		// "void" out of the box, then never override again — Pi's native theme
+		// picker owns selection + persistence (settings.theme) from here on, so
+		// forcing it every session would silently clobber the user's choice.
+		if (!themeInitialized) {
+			ctx.ui.setTheme("void-agent");
+			themeInitialized = true;
+			saveAnimationConfig({ workingAnimation: workingAnimationEnabled, matrix: matrixEnabled, themeInitialized });
+		}
 		ctx.ui.setHeader(() => ({ render: () => [], invalidate() {} }));
 		ctx.ui.setEditorComponent((tui, editorTheme, keybindings) =>
 			new VoidAgentEditor(tui, editorTheme, keybindings, ctx.ui.theme),
