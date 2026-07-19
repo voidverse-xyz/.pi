@@ -71,6 +71,21 @@ import { findChromium, openExternally, renderHtmlSnapshot, snapshotPathFor } fro
 import { createNavKeys } from "./keys.ts";
 import { applyScrollKeys, handleGG } from "./scroll-keys.ts";
 import type { PresentedFile } from "./files.ts";
+import {
+	browseRelPath,
+	buildRows,
+	classifyContent,
+	clampVisible,
+	computeMatchLines,
+	firstMatchFrom,
+	formatBytes,
+	nextMatchLine,
+	nextRegionStart,
+	regionIndexAt,
+	type Row,
+	sortDirEntries,
+	stepSelection,
+} from "./panel-logic.ts";
 import { htmlToText, renderableKind, type RenderableKind } from "./rendered.ts";
 
 const MAX_PREVIEW_BYTES = 512 * 1024;
@@ -118,18 +133,6 @@ export interface ShowFilesPanelOptions {
 
 type Focus = "list" | "preview";
 type PreviewKind = "file" | "dir" | "image" | "binary" | "missing" | "empty" | "loading";
-type Row = { kind: "group"; label: string } | { kind: "file"; file: PresentedFile };
-
-function buildRows(files: PresentedFile[]): Row[] {
-	const rows: Row[] = [];
-	let lastGroup: string | undefined;
-	for (const f of files) {
-		if (f.group && f.group !== lastGroup) rows.push({ kind: "group", label: f.group });
-		if (f.group) lastGroup = f.group;
-		rows.push({ kind: "file", file: f });
-	}
-	return rows;
-}
 
 export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	const { title, summary, files, from, ctx, tui, theme, keybindings, onDone } = opts;
@@ -379,9 +382,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	// Map an absolute path under the browse root to a mention/display path that
 	// matches the curated dir's rel (relative when it was relative, else absolute).
 	function browseRel(abs: string): string {
-		if (!browseRoot || browseRootRel === null) return abs;
-		if (abs === browseRoot) return browseRootRel;
-		return `${browseRootRel}${abs.slice(browseRoot.length)}`; // slice keeps the leading "/"
+		return browseRelPath(abs, browseRoot, browseRootRel);
 	}
 
 	// List a directory (the curated root or a descendant). Keeps the browse
@@ -412,9 +413,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 				}
 				entries.push({ name: d.name, isDir });
 			}
-			entries.sort((a, b) =>
-				a.isDir !== b.isDir ? (a.isDir ? -1 : 1) : a.name.toLowerCase().localeCompare(b.name.toLowerCase()),
-			);
+			sortDirEntries(entries);
 			if (token !== loadToken) return;
 			dirEntries = entries;
 			previewKind = "dir";
@@ -460,23 +459,24 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 				await handle.close();
 			}
 			if (token !== loadToken) return;
-			if (mime) {
+			const kind = classifyContent({ isImage: mime !== undefined, size, hasNul: buf.includes(0), maxBytes: MAX_PREVIEW_BYTES });
+			if (kind === "image") {
 				// Parse dimensions from the header only (cheap); the card shows path,
 				// type, dimensions, and size — see the image branch in previewColumn.
 				// A dimension-parse failure must NOT drop us to "missing" — the card is
 				// still useful with dims unknown, so it's guarded independently.
 				let dims: { widthPx: number; heightPx: number } | null = null;
 				try {
-					dims = getImageDimensions(buf.toString("base64"), mime) ?? null;
+					dims = getImageDimensions(buf.toString("base64"), mime!) ?? null;
 				} catch {
 					dims = null;
 				}
-				imageInfo = { mime, bytes: size, dims };
+				imageInfo = { mime: mime!, bytes: size, dims };
 				previewKind = "image";
-			} else if (size > MAX_PREVIEW_BYTES) {
+			} else if (kind === "toolarge") {
 				fileLines = [`(file too large to preview — ${(size / 1024).toFixed(0)} KB)`];
 				previewKind = "file";
-			} else if (buf.includes(0)) {
+			} else if (kind === "binary") {
 				previewKind = "binary";
 			} else {
 				fileText = buf.toString("utf8");
@@ -575,9 +575,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	}
 
 	function keepDirCursorVisible() {
-		const h = previewContentH();
-		if (dirCursor < previewScroll) previewScroll = dirCursor;
-		if (dirCursor >= previewScroll + h) previewScroll = dirCursor - h + 1;
+		previewScroll = clampVisible(dirCursor, previewScroll, previewContentH());
 	}
 
 	function moveDirCursor(delta: number) {
@@ -630,22 +628,12 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	// ── list navigation ──────────────────────────────────────────────────────────
 
 	function keepListVisible() {
-		if (listSelected < listScroll) listScroll = listSelected;
-		if (listSelected >= listScroll + contentH) listScroll = listSelected - contentH + 1;
+		listScroll = clampVisible(listSelected, listScroll, contentH);
 	}
 
 	function moveList(delta: number) {
 		if (viewRows.length === 0) return;
-		const dir = delta < 0 ? -1 : 1;
-		let idx = listSelected;
-		let remaining = Math.abs(delta);
-		while (remaining > 0) {
-			let next = idx + dir;
-			while (next >= 0 && next < viewRows.length && viewRows[next]!.kind === "group") next += dir;
-			if (next < 0 || next >= viewRows.length) break;
-			idx = next;
-			remaining--;
-		}
+		const idx = stepSelection(viewRows, listSelected, delta);
 		if (idx !== listSelected) {
 			listSelected = idx;
 			keepListVisible();
@@ -684,22 +672,17 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		previewSearch = q;
 		matchLines = [];
 		if (!q || previewKind !== "file" || rendered) return;
-		const needle = q.toLowerCase();
-		for (let i = 0; i < fileLines.length; i++) {
-			if (fileLines[i]!.toLowerCase().includes(needle)) matchLines.push(i);
-		}
-		if (matchLines.length > 0) {
-			cursorLine = matchLines.find((l) => l >= origin) ?? matchLines[0]!;
+		matchLines = computeMatchLines(fileLines, q);
+		const first = firstMatchFrom(matchLines, origin);
+		if (first !== undefined) {
+			cursorLine = first;
 			previewScroll = Math.max(0, cursorLine - 3);
 			keepCursorVisible();
 		}
 	}
 
 	function jumpMatch(dir: 1 | -1) {
-		if (matchLines.length === 0) return;
-		let target: number | undefined;
-		if (dir > 0) target = matchLines.find((l) => l > cursorLine) ?? matchLines[0];
-		else target = [...matchLines].reverse().find((l) => l < cursorLine) ?? matchLines[matchLines.length - 1];
+		const target = nextMatchLine(matchLines, cursorLine, dir);
 		if (target === undefined) return;
 		cursorLine = target;
 		previewScroll = Math.max(0, cursorLine - 3);
@@ -884,9 +867,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	}
 
 	function keepCursorVisible() {
-		const h = previewContentH();
-		if (cursorLine < previewScroll) previewScroll = cursorLine;
-		if (cursorLine >= previewScroll + h) previewScroll = cursorLine - h + 1;
+		previewScroll = clampVisible(cursorLine, previewScroll, previewContentH());
 	}
 
 	function moveCursor(delta: number) {
@@ -898,20 +879,13 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	function regionAt(line0: number): { idx: number; note?: string } | null {
 		const file = previewFile;
 		if (!file) return null;
-		for (let i = 0; i < file.regions.length; i++) {
-			const r = file.regions[i]!;
-			if (line0 + 1 >= r.start && line0 + 1 <= r.end) return { idx: i, note: r.note };
-		}
-		return null;
+		return regionIndexAt(file.regions, line0);
 	}
 
 	function jumpRegion(dir: 1 | -1) {
 		const file = previewFile;
-		if (!file || file.regions.length === 0) return;
-		const starts = file.regions.map((r) => Math.min(r.start - 1, Math.max(0, fileLines.length - 1)));
-		let target: number | undefined;
-		if (dir > 0) target = starts.find((s) => s > cursorLine) ?? starts[0];
-		else target = [...starts].reverse().find((s) => s < cursorLine) ?? starts[starts.length - 1];
+		if (!file) return;
+		const target = nextRegionStart(file.regions, fileLines.length, cursorLine, dir);
 		if (target === undefined) return;
 		cursorLine = target;
 		previewScroll = Math.max(0, cursorLine - 3);
@@ -1274,12 +1248,6 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		}
 		while (out.length < contentH) out.push(pad("", width));
 		return out;
-	}
-
-	function formatBytes(n: number): string {
-		if (n < 1024) return `${n} B`;
-		if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-		return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 	}
 
 	// The image "card": path, type, dimensions, and size, plus an honest line about
