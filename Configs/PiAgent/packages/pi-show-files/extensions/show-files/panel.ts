@@ -42,39 +42,31 @@
  *
  * Layout/scroll/exact-height machinery follows pi-browse's panel (closure state,
  * pull-based render); the note editor follows pi-ask-user's embedded Editor.
+ *
+ * The preview/browse state record lives in preview-state.ts; content loading
+ * lives in preview-loader.ts; directory-browse navigation lives in dir-browser.ts.
  */
 
-import { open, readFile, readdir, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
-import {
-	copyToClipboard,
-	DynamicBorder,
-	getLanguageFromPath,
-	getMarkdownTheme,
-	highlightCode,
-} from "@earendil-works/pi-coding-agent";
+import { copyToClipboard, DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import {
 	Editor,
 	type EditorTheme,
 	fuzzyMatch,
 	getCapabilities,
-	getImageDimensions,
 	Markdown,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { appendToEditor, dirMention, type EditorUi, fileMention, linesMention } from "./add-to-chat.ts";
-import { findChromium, openExternally, renderHtmlSnapshot, snapshotPathFor } from "./browser.ts";
+import { createDirBrowser } from "./dir-browser.ts";
 import { createNavKeys } from "./keys.ts";
 import { applyScrollKeys, handleGG } from "./scroll-keys.ts";
 import type { PresentedFile } from "./files.ts";
 import {
-	browseRelPath,
 	buildRows,
-	classifyContent,
 	clampVisible,
 	computeMatchLines,
 	firstMatchFrom,
@@ -83,31 +75,15 @@ import {
 	nextRegionStart,
 	regionIndexAt,
 	type Row,
-	sortDirEntries,
 	stepSelection,
 } from "./panel-logic.ts";
-import { htmlToText, renderableKind, type RenderableKind } from "./rendered.ts";
+import { createPreviewLoader } from "./preview-loader.ts";
+import { createPreviewState } from "./preview-state.ts";
+import { htmlToText } from "./rendered.ts";
 
-const MAX_PREVIEW_BYTES = 512 * 1024;
-const ICON_LOADING = ""; // nf-fa-spinner
-const ICON_SUCCESS = ""; // nf-fa-check
-const ICON_WARNING = ""; // nf-fa-warning
-// Only the file header is needed to read image dimensions — avoid base64-ing a
-// whole (possibly multi-MB) image just to show a metadata card.
-const IMAGE_HEADER_BYTES = 128 * 1024;
-
-// Images are presented as a metadata card (path · type · dimensions · size), not
-// inline pixels: this panel is a full-screen TUI *overlay*, and the overlay
-// compositor rewrites each line's segments (padding + resets), which corrupts
-// the kitty/iTerm2 graphics escape sequences. Inline terminal images only
-// survive in the base transcript, not here. See the image branch in previewColumn.
-const IMAGE_MIME: Record<string, string> = {
-	png: "image/png",
-	jpg: "image/jpeg",
-	jpeg: "image/jpeg",
-	gif: "image/gif",
-	webp: "image/webp",
-};
+const ICON_LOADING = ""; // nf-fa-spinner
+const ICON_SUCCESS = ""; // nf-fa-check
+const ICON_WARNING = ""; // nf-fa-warning
 
 export interface ShowFilesOutcome {
 	/** rel paths whose preview the user deliberately entered. */
@@ -132,7 +108,6 @@ export interface ShowFilesPanelOptions {
 }
 
 type Focus = "list" | "preview";
-type PreviewKind = "file" | "dir" | "image" | "binary" | "missing" | "empty" | "loading";
 
 export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	const { title, summary, files, from, ctx, tui, theme, keybindings, onDone } = opts;
@@ -145,68 +120,15 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	let focus: Focus = "list";
 	let pendingG = false;
 
-	// Preview state
-	let previewFile: PresentedFile | null = null;
-	let previewKind: PreviewKind = "empty";
-	let fileLines: string[] = [];
-	let dirEntries: Array<{ name: string; isDir: boolean }> = [];
-	let previewScroll = 0;
-	let cursorLine = 0;
-	let selAnchor: number | null = null;
-	let loadToken = 0;
-	// Metadata for the image card (dimensions may be null if the header is unreadable).
-	let imageInfo: { mime: string; bytes: number; dims: { widthPx: number; heightPx: number } | null } | null = null;
+	// Preview / directory drill-in / rendered-preview / HTML-snapshot / in-file
+	// search state — the record shared with the preview loader and the directory
+	// browser (see preview-state.ts for the field-by-field documentation).
+	const state = createPreviewState();
 
-	// Directory drill-in. A curated directory is a *constrained* browse root: you
-	// can descend into it and pop back up, but never above it. browseRoot/­RootRel
-	// pin the boundary + mention base; currentDir is the listing on screen; the
-	// stack remembers where to land on the way back up. A child file opened while
-	// browsing sets browsedChild so Esc/h returns to the listing (not the curated
-	// list). curatedDir keeps the agent's original dir item (title/description) for
-	// the root; descended dirs use a synthetic PresentedFile.
-	let browseRoot: string | null = null;
-	let browseRootRel: string | null = null;
-	let curatedDir: PresentedFile | null = null;
-	let currentDir: string | null = null;
-	let dirCursor = 0;
-	let browseStack: Array<{ dir: string; cursor: number }> = [];
-	let browsedChild = false;
-	let browseReturnCursor = 0;
-
-	type BrowseRow = { kind: "up" } | { kind: "entry"; name: string; isDir: boolean };
-
-	// Rendered-preview state (markdown/HTML, `r` toggles rendered↔raw)
-	let fileText = "";
-	// ANSI-colored source lines for raw previews. This uses the same Pi
-	// highlighter as fenced code in chat, while fileLines stays untouched for
-	// searching, selections, yanking, and line-number accuracy.
-	let highlightedLines: string[] = [];
-	let renderableAs: RenderableKind | null = null;
-	let rendered = false;
-	let mdComp: Markdown | null = null; // lazy; caches per width internally
-	let renderedCache: { width: number; lines: string[] } | null = null; // html path
-	let renderedCount = 0; // display lines at the last rendered paint (for scroll clamp)
-
-	// HTML browser-snapshot state. A rendered HTML preview kicks off a headless
-	// Chromium screenshot (local-only, network blocked) so the user can `o`-open a
-	// faithful render; the snapshot itself can't paint inline (overlay), so the
-	// rendered view stays the best-effort text with a banner about the snapshot.
-	// chromiumProbe: undefined = not looked up yet, null = none found, string = path.
-	let chromiumProbe: string | null | undefined;
-	let snapToken = 0;
-	type HtmlSnap =
-		| { status: "idle" }
-		| { status: "pending" }
-		| { status: "unavailable" }
-		| { status: "failed"; error: string }
-		| { status: "done"; path: string; width?: number; height?: number };
-	let htmlSnap: HtmlSnap = { status: "idle" };
-
-	// Search state — a list filter and an in-file search coexist independently.
+	// Search state — a list filter and an in-file search coexist independently
+	// (the in-file previewSearch/matchLines live in `state`).
 	let viewRows: Row[] = rows; // effective (possibly filtered) list
 	let listFilter = "";
-	let previewSearch = "";
-	let matchLines: number[] = []; // 0-based raw lines containing previewSearch
 	let editingSearch: false | "list" | "preview" = false;
 	let searchPrev = ""; // restored on Esc
 	let searchOrigin = 0; // cursor line when the search input opened
@@ -251,7 +173,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		if (scope === "list") applyListFilter(value);
 		else if (scope === "preview") {
 			applyPreviewSearch(value, searchOrigin);
-			if (value && matchLines.length === 0) ctx.ui.notify("No matches", "info");
+			if (value && state.matchLines.length === 0) ctx.ui.notify("No matches", "info");
 		}
 		rerender();
 	};
@@ -267,29 +189,12 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		cachedLines = undefined;
 	}
 
-	function rebuildSyntaxHighlighting() {
-		highlightedLines = [];
-		const file = previewFile;
-		if (!file || previewKind !== "file") return;
-		const lang = getLanguageFromPath(file.abs);
-		if (!lang) return;
-		try {
-			const highlighted = highlightCode(fileText.replace(/\t/g, "    "), lang);
-			// A mismatch would break the raw-line cursor, gutter, and region mapping.
-			// Fall back to the existing plain rendering rather than misaligning them.
-			if (highlighted.length === fileLines.length) highlightedLines = highlighted;
-		} catch {
-			// Syntax coloring is presentation-only; raw preview must always remain usable.
-			highlightedLines = [];
-		}
-	}
-
 	function invalidate() {
 		clearRenderCache();
 		// highlightCode and Markdown bake the current theme's ANSI colors into
 		// cached output, so rebuild those caches when the TUI invalidates us.
-		rebuildSyntaxHighlighting();
-		mdComp?.invalidate();
+		loader.rebuildSyntaxHighlighting();
+		state.mdComp?.invalidate();
 	}
 
 	function rerender() {
@@ -320,310 +225,25 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		onDone({ opened: [...opened], added: [...added], note: note || undefined });
 	}
 
-	// ── preview loading ─────────────────────────────────────────────────────────
+	// ── preview loading + directory browsing (extracted modules) ────────────────
 
-	// Clears the per-preview render state. Deliberately does NOT touch the browse
-	// context (browseRoot/currentDir/stack) — loadDir/loadChildFile reuse it while
-	// staying inside a directory; only loadPreview resets the browse context.
-	function resetPreviewState() {
-		previewScroll = 0;
-		cursorLine = 0;
-		selAnchor = null;
-		fileLines = [];
-		dirEntries = [];
-		imageInfo = null;
-		fileText = "";
-		highlightedLines = [];
-		renderableAs = null;
-		rendered = false;
-		mdComp = null;
-		renderedCache = null;
-		renderedCount = 0;
-		previewSearch = ""; // in-file search is per-file (the list filter persists)
-		matchLines = [];
-		htmlSnap = { status: "idle" };
-		snapToken++; // invalidate any in-flight snapshot for the previous file
-	}
+	const loader = createPreviewLoader(state, {
+		rerender,
+		notify: (msg, level) => ctx.ui.notify(msg, level),
+		browseRows: () => browser.browseRows(),
+		keepDirCursorVisible: () => browser.keepDirCursorVisible(),
+	});
+	const browser = createDirBrowser(state, {
+		previewContentH,
+		rerender,
+		loadDir: (abs, cursorTo) => loader.loadDir(abs, cursorTo),
+		loadChildFile: (abs, rel) => loader.loadChildFile(abs, rel),
+		addMention,
+		opened,
+		setFocusList: () => { focus = "list"; },
+	});
 
-	// Load a curated item (from the left list). Resets the browse context; a
-	// directory becomes the browse root, a file loads its content.
-	async function loadPreview(file: PresentedFile | undefined) {
-		resetPreviewState();
-		browseRoot = null;
-		browseRootRel = null;
-		curatedDir = null;
-		currentDir = null;
-		dirCursor = 0;
-		browseStack = [];
-		browsedChild = false;
-
-		if (!file) {
-			previewFile = null;
-			previewKind = "empty";
-			rerender();
-			return;
-		}
-		previewFile = file;
-		if (file.kind === "missing") {
-			previewKind = "missing";
-			rerender();
-			return;
-		}
-		if (file.kind === "dir") {
-			browseRoot = file.abs;
-			browseRootRel = file.rel;
-			curatedDir = file;
-			await loadDir(file.abs);
-			return;
-		}
-		await loadFileContent(file);
-	}
-
-	// Map an absolute path under the browse root to a mention/display path that
-	// matches the curated dir's rel (relative when it was relative, else absolute).
-	function browseRel(abs: string): string {
-		return browseRelPath(abs, browseRoot, browseRootRel);
-	}
-
-	// List a directory (the curated root or a descendant). Keeps the browse
-	// context; only resets render state. `cursorTo` lands the selection (used when
-	// popping back up so we return to the entry we descended from).
-	async function loadDir(abs: string, cursorTo = 0) {
-		resetPreviewState();
-		browsedChild = false;
-		currentDir = abs;
-		previewKind = "loading";
-		previewFile =
-			abs === browseRoot && curatedDir
-				? curatedDir
-				: { rel: browseRel(abs), abs, kind: "dir", title: basename(abs), regions: [] };
-		const token = ++loadToken;
-		rerender();
-		try {
-			const dirents = await readdir(abs, { withFileTypes: true });
-			const entries: Array<{ name: string; isDir: boolean }> = [];
-			for (const d of dirents) {
-				let isDir = d.isDirectory();
-				if (d.isSymbolicLink()) {
-					try {
-						isDir = (await stat(join(abs, d.name))).isDirectory();
-					} catch {
-						isDir = false;
-					}
-				}
-				entries.push({ name: d.name, isDir });
-			}
-			sortDirEntries(entries);
-			if (token !== loadToken) return;
-			dirEntries = entries;
-			previewKind = "dir";
-		} catch {
-			if (token !== loadToken) return;
-			dirEntries = [];
-			previewKind = "missing";
-		}
-		dirCursor = Math.max(0, Math.min(cursorTo, browseRows().length - 1));
-		keepDirCursorVisible();
-		rerender();
-	}
-
-	// Preview a file discovered by browsing — reuses the raw-file machinery via a
-	// synthetic PresentedFile, without disturbing the browse context.
-	async function loadChildFile(abs: string, rel: string) {
-		await loadFileContent({ rel, abs, kind: "file", title: basename(abs), regions: [] });
-	}
-
-	async function loadFileContent(file: PresentedFile) {
-		resetPreviewState();
-		previewFile = file;
-		previewKind = "loading";
-		const token = ++loadToken;
-		rerender();
-		try {
-			const ext = file.abs.slice(file.abs.lastIndexOf(".") + 1).toLowerCase();
-			const mime = IMAGE_MIME[ext];
-			// Never read an arbitrarily large file merely to decide it is too large.
-			// Images need only their header; text/binary previews need at most the
-			// configured limit plus one byte to detect truncation.
-			const handle = await open(file.abs, "r");
-			let size = 0;
-			let buf: Buffer;
-			try {
-				const info = await handle.stat();
-				size = info.size;
-				const limit = mime ? IMAGE_HEADER_BYTES : MAX_PREVIEW_BYTES + 1;
-				const length = Math.min(size, limit);
-				buf = Buffer.alloc(length);
-				if (length > 0) await handle.read(buf, 0, length, 0);
-			} finally {
-				await handle.close();
-			}
-			if (token !== loadToken) return;
-			const kind = classifyContent({ isImage: mime !== undefined, size, hasNul: buf.includes(0), maxBytes: MAX_PREVIEW_BYTES });
-			if (kind === "image") {
-				// Parse dimensions from the header only (cheap); the card shows path,
-				// type, dimensions, and size — see the image branch in previewColumn.
-				// A dimension-parse failure must NOT drop us to "missing" — the card is
-				// still useful with dims unknown, so it's guarded independently.
-				let dims: { widthPx: number; heightPx: number } | null = null;
-				try {
-					dims = getImageDimensions(buf.toString("base64"), mime!) ?? null;
-				} catch {
-					dims = null;
-				}
-				imageInfo = { mime: mime!, bytes: size, dims };
-				previewKind = "image";
-			} else if (kind === "toolarge") {
-				fileLines = [`(file too large to preview — ${(size / 1024).toFixed(0)} KB)`];
-				previewKind = "file";
-			} else if (kind === "binary") {
-				previewKind = "binary";
-			} else {
-				fileText = buf.toString("utf8");
-				fileLines = fileText.split("\n");
-				previewKind = "file";
-				rebuildSyntaxHighlighting();
-				// Markdown/HTML render by default — but regions reference raw line
-				// numbers, so a spec with regions opens raw.
-				renderableAs = renderableKind(file.abs);
-				rendered = renderableAs !== null && file.regions.length === 0;
-				// Open on the agent's first highlight region, a few lines of breathing room above.
-				const first = file.regions[0];
-				if (first) {
-					cursorLine = Math.min(first.start - 1, Math.max(0, fileLines.length - 1));
-					previewScroll = Math.max(0, cursorLine - 3);
-				}
-				// Kick off a headless browser snapshot for HTML (best-effort, async).
-				if (renderableAs === "html") void startHtmlSnapshot(file);
-			}
-		} catch {
-			if (token !== loadToken) return;
-			previewKind = "missing";
-		}
-		rerender();
-	}
-
-	// Render the HTML file to a PNG with a local headless Chromium so the user can
-	// `o`-open a faithful view. Best-effort + cached by mtime (so arrowing back to
-	// the same file doesn't relaunch a browser). The result never paints inline —
-	// it drives the banner in the rendered HTML view. Guarded by snapToken so a
-	// stale in-flight snapshot for a previous file can't overwrite current state.
-	async function startHtmlSnapshot(file: PresentedFile) {
-		const token = ++snapToken;
-		htmlSnap = { status: "pending" };
-		rerender();
-		if (chromiumProbe === undefined) chromiumProbe = await findChromium();
-		if (token !== snapToken) return;
-		if (!chromiumProbe) {
-			htmlSnap = { status: "unavailable" };
-			rerender();
-			return;
-		}
-		const out = snapshotPathFor(file.abs);
-		const finishDone = async () => {
-			let dims: { widthPx: number; heightPx: number } | null = null;
-			try {
-				const buf = await readFile(out);
-				dims = getImageDimensions(buf.subarray(0, IMAGE_HEADER_BYTES).toString("base64"), "image/png") ?? null;
-			} catch {
-				dims = null;
-			}
-			if (token !== snapToken) return;
-			htmlSnap = { status: "done", path: out, width: dims?.widthPx, height: dims?.heightPx };
-			rerender();
-		};
-		// Reuse a fresh cached snapshot (newer than the source) instead of relaunching.
-		try {
-			const [png, src] = await Promise.all([stat(out), stat(file.abs)]);
-			if (png.mtimeMs >= src.mtimeMs) {
-				await finishDone();
-				return;
-			}
-		} catch {
-			// no cached snapshot yet — fall through and render one
-		}
-		if (token !== snapToken) return;
-		const res = await renderHtmlSnapshot(chromiumProbe, file.abs, out);
-		if (token !== snapToken) return;
-		if (!res.ok) {
-			htmlSnap = { status: "failed", error: res.error };
-			rerender();
-			return;
-		}
-		await finishDone();
-	}
-
-	function openInBrowser() {
-		const f = previewFile;
-		if (!f || renderableAs !== "html") {
-			ctx.ui.notify("Open in browser is for HTML files", "info");
-			return;
-		}
-		ctx.ui.notify(`Opening ${f.rel} in your browser…`, "info");
-		openExternally(f.abs).then((r) => {
-			if (!r.ok) ctx.ui.notify(`Couldn't open externally: ${r.error ?? "no opener found"}`, "error");
-		});
-	}
-
-	// The rows shown in a directory preview: a synthetic ".." when we've descended
-	// below the curated root, followed by the entries.
-	function browseRows(): BrowseRow[] {
-		const out: BrowseRow[] = [];
-		if (currentDir && browseRoot && currentDir !== browseRoot) out.push({ kind: "up" });
-		for (const e of dirEntries) out.push({ kind: "entry", name: e.name, isDir: e.isDir });
-		return out;
-	}
-
-	function keepDirCursorVisible() {
-		previewScroll = clampVisible(dirCursor, previewScroll, previewContentH());
-	}
-
-	function moveDirCursor(delta: number) {
-		const n = browseRows().length;
-		if (n === 0) return;
-		dirCursor = Math.max(0, Math.min(n - 1, dirCursor + delta));
-		keepDirCursorVisible();
-	}
-
-	// Enter/→ on a browse row: descend into a subdir, or preview a child file.
-	async function openBrowseRow(row: BrowseRow | undefined) {
-		if (!row || !currentDir) return;
-		if (row.kind === "up") {
-			browseUp();
-			return;
-		}
-		const childAbs = join(currentDir, row.name);
-		if (row.isDir) {
-			browseStack.push({ dir: currentDir, cursor: dirCursor });
-			await loadDir(childAbs);
-		} else {
-			const rel = browseRel(childAbs);
-			opened.add(rel);
-			browsedChild = true;
-			browseReturnCursor = dirCursor;
-			await loadChildFile(childAbs, rel);
-		}
-	}
-
-	// Go up one level — but never above the curated root: at the root, Esc/h/⌫
-	// simply returns focus to the left list.
-	function browseUp() {
-		if (browseStack.length > 0) {
-			const prev = browseStack.pop()!;
-			void loadDir(prev.dir, prev.cursor);
-		} else {
-			focus = "list";
-			rerender();
-		}
-	}
-
-	function addBrowseEntryToChat(row: Extract<BrowseRow, { kind: "entry" }>) {
-		if (!currentDir) return;
-		const rel = browseRel(join(currentDir, row.name));
-		addMention(row.isDir ? dirMention(rel) : fileMention(rel));
-	}
-
-	void loadPreview(selectedFile());
+	void loader.loadPreview(selectedFile());
 
 	// ── list navigation ──────────────────────────────────────────────────────────
 
@@ -637,7 +257,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		if (idx !== listSelected) {
 			listSelected = idx;
 			keepListVisible();
-			void loadPreview(selectedFile());
+			void loader.loadPreview(selectedFile());
 		}
 	}
 
@@ -646,7 +266,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		if (idxs.length === 0) return;
 		listSelected = toEnd ? idxs[idxs.length - 1]! : idxs[0]!;
 		keepListVisible();
-		void loadPreview(selectedFile());
+		void loader.loadPreview(selectedFile());
 	}
 
 	// ── search / filter ─────────────────────────────────────────────────────────
@@ -663,37 +283,37 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		listSelected = Math.max(0, idx);
 		listScroll = 0;
 		const cur = selectedFile();
-		if (cur !== prev) void loadPreview(cur);
+		if (cur !== prev) void loader.loadPreview(cur);
 	}
 
 	// Case-insensitive substring search over the raw file lines; jumps to the
 	// first match at/after `origin` (wrapping to the first overall).
 	function applyPreviewSearch(q: string, origin: number) {
-		previewSearch = q;
-		matchLines = [];
-		if (!q || previewKind !== "file" || rendered) return;
-		matchLines = computeMatchLines(fileLines, q);
-		const first = firstMatchFrom(matchLines, origin);
+		state.previewSearch = q;
+		state.matchLines = [];
+		if (!q || state.previewKind !== "file" || state.rendered) return;
+		state.matchLines = computeMatchLines(state.fileLines, q);
+		const first = firstMatchFrom(state.matchLines, origin);
 		if (first !== undefined) {
-			cursorLine = first;
-			previewScroll = Math.max(0, cursorLine - 3);
+			state.cursorLine = first;
+			state.previewScroll = Math.max(0, state.cursorLine - 3);
 			keepCursorVisible();
 		}
 	}
 
 	function jumpMatch(dir: 1 | -1) {
-		const target = nextMatchLine(matchLines, cursorLine, dir);
+		const target = nextMatchLine(state.matchLines, state.cursorLine, dir);
 		if (target === undefined) return;
-		cursorLine = target;
-		previewScroll = Math.max(0, cursorLine - 3);
+		state.cursorLine = target;
+		state.previewScroll = Math.max(0, state.cursorLine - 3);
 		keepCursorVisible();
 		rerender();
 	}
 
 	function openSearch(scope: "list" | "preview") {
 		editingSearch = scope;
-		searchPrev = scope === "list" ? listFilter : previewSearch;
-		searchOrigin = cursorLine;
+		searchPrev = scope === "list" ? listFilter : state.previewSearch;
+		searchOrigin = state.cursorLine;
 		searchEditor.setText(searchPrev);
 		rerender();
 	}
@@ -701,7 +321,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	function enterPreview() {
 		const file = selectedFile();
 		if (!file) return;
-		if (previewKind === "loading" || previewKind === "empty") return;
+		if (state.previewKind === "loading" || state.previewKind === "empty") return;
 		focus = "preview";
 		opened.add(file.rel);
 		rerender();
@@ -746,9 +366,9 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	// mention when there is one, otherwise the accumulated added mentions. Text
 	// itself is `y` (yank) — see yankFromPreview.
 	function copyFromPreview() {
-		const file = previewFile;
-		if (previewKind === "file" && !rendered && selAnchor !== null && file) {
-			const mention = linesMention(file.rel, selAnchor + 1, cursorLine + 1);
+		const file = state.previewFile;
+		if (state.previewKind === "file" && !state.rendered && state.selAnchor !== null && file) {
+			const mention = linesMention(file.rel, state.selAnchor + 1, state.cursorLine + 1);
 			copyText(mention, `Copied mention: ${mention}`);
 			return;
 		}
@@ -759,35 +379,35 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	// lines if a selection is active, else the highlighted region under the cursor,
 	// else the current line. Rendered previews yank the file's source text.
 	function yankFromPreview(): void {
-		const file = previewFile;
-		if (previewKind === "file" && rendered) {
-			copyText(fileText, `Copied ${file?.rel ?? "file"} text`);
+		const file = state.previewFile;
+		if (state.previewKind === "file" && state.rendered) {
+			copyText(state.fileText, `Copied ${file?.rel ?? "file"} text`);
 			return;
 		}
-		if (previewKind !== "file" || fileLines.length === 0) {
+		if (state.previewKind !== "file" || state.fileLines.length === 0) {
 			ctx.ui.notify("Nothing to yank here", "info");
 			return;
 		}
 		let lo: number;
 		let hi: number;
-		if (selAnchor !== null) {
-			lo = Math.min(selAnchor, cursorLine);
-			hi = Math.max(selAnchor, cursorLine);
+		if (state.selAnchor !== null) {
+			lo = Math.min(state.selAnchor, state.cursorLine);
+			hi = Math.max(state.selAnchor, state.cursorLine);
 		} else {
-			const here = regionAt(cursorLine);
+			const here = regionAt(state.cursorLine);
 			if (here) {
 				const r = file!.regions[here.idx]!;
 				lo = r.start - 1;
 				hi = r.end - 1;
 			} else {
-				lo = cursorLine;
-				hi = cursorLine;
+				lo = state.cursorLine;
+				hi = state.cursorLine;
 			}
 		}
 		lo = Math.max(0, lo);
-		hi = Math.min(fileLines.length - 1, hi);
+		hi = Math.min(state.fileLines.length - 1, hi);
 		const n = hi - lo + 1;
-		copyText(fileLines.slice(lo, hi + 1).join("\n"), `Copied ${n} line${n !== 1 ? "s" : ""} of text`);
+		copyText(state.fileLines.slice(lo, hi + 1).join("\n"), `Copied ${n} line${n !== 1 ? "s" : ""} of text`);
 	}
 
 	function handleListInput(data: string): void {
@@ -862,33 +482,33 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	// Fixed rows the rendered HTML view spends on its snapshot banner. Derived from
 	// htmlBannerLines() itself (width-independent count) so the two never drift.
 	function renderedBannerRows(): number {
-		if (!(previewKind === "file" && rendered && renderableAs === "html")) return 0;
+		if (!(state.previewKind === "file" && state.rendered && state.renderableAs === "html")) return 0;
 		return htmlBannerLines(9999).length;
 	}
 
 	function keepCursorVisible() {
-		previewScroll = clampVisible(cursorLine, previewScroll, previewContentH());
+		state.previewScroll = clampVisible(state.cursorLine, state.previewScroll, previewContentH());
 	}
 
 	function moveCursor(delta: number) {
-		const max = Math.max(0, fileLines.length - 1);
-		cursorLine = Math.max(0, Math.min(max, cursorLine + delta));
+		const max = Math.max(0, state.fileLines.length - 1);
+		state.cursorLine = Math.max(0, Math.min(max, state.cursorLine + delta));
 		keepCursorVisible();
 	}
 
 	function regionAt(line0: number): { idx: number; note?: string } | null {
-		const file = previewFile;
+		const file = state.previewFile;
 		if (!file) return null;
 		return regionIndexAt(file.regions, line0);
 	}
 
 	function jumpRegion(dir: 1 | -1) {
-		const file = previewFile;
+		const file = state.previewFile;
 		if (!file) return;
-		const target = nextRegionStart(file.regions, fileLines.length, cursorLine, dir);
+		const target = nextRegionStart(file.regions, state.fileLines.length, state.cursorLine, dir);
 		if (target === undefined) return;
-		cursorLine = target;
-		previewScroll = Math.max(0, cursorLine - 3);
+		state.cursorLine = target;
+		state.previewScroll = Math.max(0, state.cursorLine - 3);
 		keepCursorVisible();
 		rerender();
 	}
@@ -899,19 +519,19 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	// the user is looking at a specific spot, so the mention should point at it.
 	function addLinesToChat(file: PresentedFile) {
 		let mention: string;
-		if (selAnchor !== null) {
-			mention = linesMention(file.rel, selAnchor + 1, cursorLine + 1);
-			selAnchor = null;
+		if (state.selAnchor !== null) {
+			mention = linesMention(file.rel, state.selAnchor + 1, state.cursorLine + 1);
+			state.selAnchor = null;
 		} else {
-			const here = regionAt(cursorLine);
+			const here = regionAt(state.cursorLine);
 			const r = here ? file.regions[here.idx]! : null;
-			mention = r ? linesMention(file.rel, r.start, r.end) : linesMention(file.rel, cursorLine + 1, cursorLine + 1);
+			mention = r ? linesMention(file.rel, r.start, r.end) : linesMention(file.rel, state.cursorLine + 1, state.cursorLine + 1);
 		}
 		addMention(mention);
 	}
 
 	function handlePreviewInput(data: string): void {
-		const file = previewFile;
+		const file = state.previewFile;
 		// Tab always leaves to the curated list.
 		if (keys.tab(data) || keys.shiftTab(data)) {
 			pendingG = false;
@@ -930,7 +550,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		}
 		// A directory preview is a constrained browser — it owns Enter / arrows /
 		// up-navigation. (q, m, tab above still apply.)
-		if (previewKind === "dir") {
+		if (state.previewKind === "dir") {
 			handleDirInput(data);
 			return;
 		}
@@ -948,9 +568,9 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		// listing; an ordinary preview returns to the curated list.
 		if (keys.left(data) || data === "\x7f" || data === "\b") {
 			pendingG = false;
-			if (browsedChild && currentDir) {
-				browsedChild = false;
-				void loadDir(currentDir, browseReturnCursor);
+			if (state.browsedChild && state.currentDir) {
+				state.browsedChild = false;
+				void loader.loadDir(state.currentDir, state.browseReturnCursor);
 			} else {
 				focus = "list";
 			}
@@ -961,30 +581,30 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			pendingG = false;
 			// Esc cascade: clear search → clear selection → (browsed child: back to
 			// its listing) → back to the curated list.
-			if (previewSearch) applyPreviewSearch("", 0);
-			else if (selAnchor !== null) selAnchor = null;
-			else if (browsedChild && currentDir) {
-				browsedChild = false;
-				void loadDir(currentDir, browseReturnCursor);
+			if (state.previewSearch) applyPreviewSearch("", 0);
+			else if (state.selAnchor !== null) state.selAnchor = null;
+			else if (state.browsedChild && state.currentDir) {
+				state.browsedChild = false;
+				void loader.loadDir(state.currentDir, state.browseReturnCursor);
 			} else focus = "list";
 			rerender();
 			return;
 		}
 
 		// Rendered markdown/HTML: display-line scrolling, no line-level actions.
-		if (previewKind === "file" && rendered) {
+		if (state.previewKind === "file" && state.rendered) {
 			if (data === "r") {
 				pendingG = false;
-				rendered = false;
-				previewScroll = 0;
-				cursorLine = 0;
-				selAnchor = null;
+				state.rendered = false;
+				state.previewScroll = 0;
+				state.cursorLine = 0;
+				state.selAnchor = null;
 				rerender();
 				return;
 			}
 			if (data === "o" || data === "O") {
 				pendingG = false;
-				openInBrowser();
+				loader.openInBrowser();
 				return;
 			}
 			if (data === "a" || data === "A") {
@@ -1003,20 +623,20 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 				return;
 			}
 			const gg = handleGG(keys.goTop(data), pendingG, () => {
-				previewScroll = 0;
+				state.previewScroll = 0;
 				rerender();
 			});
 			pendingG = gg.pendingG;
 			if (gg.handled) return;
 			// The HTML banner occupies fixed rows, so the scrollable text area is smaller.
 			const textH = Math.max(1, previewContentH() - renderedBannerRows());
-			const maxScroll = Math.max(0, renderedCount - textH);
+			const maxScroll = Math.max(0, state.renderedCount - textH);
 			const scrolled = applyScrollKeys(keys, data, {
 				toBottom: () => {
-					previewScroll = maxScroll;
+					state.previewScroll = maxScroll;
 				},
 				move: (d) => {
-					previewScroll = Math.max(0, Math.min(maxScroll, previewScroll + d));
+					state.previewScroll = Math.max(0, Math.min(maxScroll, state.previewScroll + d));
 				},
 				page: () => textH,
 				// Kept from the original ladder: half-page steps by previewContentH()/2, not textH/2.
@@ -1026,24 +646,24 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			return;
 		}
 
-		if (previewKind === "file") {
+		if (state.previewKind === "file") {
 			if (data === "r") {
 				pendingG = false;
-				if (renderableAs) {
-					rendered = true;
-					previewScroll = 0;
-					cursorLine = 0;
-					selAnchor = null;
+				if (state.renderableAs) {
+					state.rendered = true;
+					state.previewScroll = 0;
+					state.cursorLine = 0;
+					state.selAnchor = null;
 					// Raw line indices are meaningless when rendered — drop the search.
-					previewSearch = "";
-					matchLines = [];
+					state.previewSearch = "";
+					state.matchLines = [];
 					rerender();
 				}
 				return;
 			}
-			if (renderableAs === "html" && (data === "o" || data === "O")) {
+			if (state.renderableAs === "html" && (data === "o" || data === "O")) {
 				pendingG = false;
-				openInBrowser();
+				loader.openInBrowser();
 				return;
 			}
 			if (data === "/") {
@@ -1053,19 +673,19 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			}
 			if (data === "n" || data === "N") {
 				pendingG = false;
-				if (previewSearch) jumpMatch(data === "n" ? 1 : -1);
+				if (state.previewSearch) jumpMatch(data === "n" ? 1 : -1);
 				else jumpRegion(data === "n" ? 1 : -1);
 				return;
 			}
 			if (data === "p" || data === "P") {
 				pendingG = false;
-				if (previewSearch) jumpMatch(-1);
+				if (state.previewSearch) jumpMatch(-1);
 				else jumpRegion(-1);
 				return;
 			}
 			if (data === "s" || data === "v" || data === "V") {
 				pendingG = false;
-				selAnchor = selAnchor === null ? cursorLine : null;
+				state.selAnchor = state.selAnchor === null ? state.cursorLine : null;
 				rerender();
 				return;
 			}
@@ -1076,7 +696,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 				return;
 			}
 			const gg = handleGG(keys.goTop(data), pendingG, () => {
-				cursorLine = 0;
+				state.cursorLine = 0;
 				keepCursorVisible();
 				rerender();
 			});
@@ -1084,7 +704,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			if (gg.handled) return;
 			const scrolled = applyScrollKeys(keys, data, {
 				toBottom: () => {
-					cursorLine = Math.max(0, fileLines.length - 1);
+					state.cursorLine = Math.max(0, state.fileLines.length - 1);
 					keepCursorVisible();
 				},
 				move: moveCursor,
@@ -1111,7 +731,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	// is on screen). ↑↓ select, Enter/→ open/descend, h/←/Backspace/Esc go up
 	// (never above the curated root), a adds the selected entry's mention.
 	function handleDirInput(data: string): void {
-		const rows = browseRows();
+		const rows = browser.browseRows();
 		if (data === "c") {
 			pendingG = false;
 			copyMentions();
@@ -1124,9 +744,9 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		}
 		if (data === "a" || data === "A") {
 			pendingG = false;
-			const row = rows[dirCursor];
-			if (row?.kind === "entry") addBrowseEntryToChat(row);
-			else if (previewFile) addFileToChat(previewFile); // ".." selected or empty → the current dir
+			const row = rows[state.dirCursor];
+			if (row?.kind === "entry") browser.addBrowseEntryToChat(row);
+			else if (state.previewFile) addFileToChat(state.previewFile); // ".." selected or empty → the current dir
 			return;
 		}
 		if (data === "/") {
@@ -1136,27 +756,27 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		}
 		if (keys.confirm(data) || keys.right(data)) {
 			pendingG = false;
-			void openBrowseRow(rows[dirCursor]);
+			void browser.openBrowseRow(rows[state.dirCursor]);
 			return;
 		}
 		if (keys.left(data) || keys.cancel(data) || data === "\x7f" || data === "\b") {
 			pendingG = false;
-			browseUp();
+			browser.browseUp();
 			return;
 		}
 		const gg = handleGG(keys.goTop(data), pendingG, () => {
-			dirCursor = 0;
-			keepDirCursorVisible();
+			state.dirCursor = 0;
+			browser.keepDirCursorVisible();
 			rerender();
 		});
 		pendingG = gg.pendingG;
 		if (gg.handled) return;
 		const scrolled = applyScrollKeys(keys, data, {
 			toBottom: () => {
-				dirCursor = Math.max(0, rows.length - 1);
-				keepDirCursorVisible();
+				state.dirCursor = Math.max(0, rows.length - 1);
+				browser.keepDirCursorVisible();
 			},
-			move: moveDirCursor,
+			move: browser.moveDirCursor,
 			page: previewContentH,
 		});
 		if (scrolled) rerender();
@@ -1254,12 +874,12 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	// why no pixels appear here (overlay compositing corrupts graphics escapes — see
 	// the note by IMAGE_MIME). Never blank; every field the user asked for is shown.
 	function imageCardLines(inner: number): string[] {
-		const info = imageInfo;
+		const info = state.imageInfo;
 		const lines: string[] = [];
 		const push = (s: string) => lines.push(truncateToWidth(s, inner, "…"));
 		push(theme.fg("accent", theme.bold(" Image")));
 		push("");
-		push(` ${theme.fg("text", previewFile?.rel ?? "")}`);
+		push(` ${theme.fg("text", state.previewFile?.rel ?? "")}`);
 		const dims = info?.dims ? `${info.dims.widthPx}×${info.dims.heightPx} px` : "dimensions unknown";
 		const meta = [info?.mime ?? "image", dims, info ? formatBytes(info.bytes) : ""].filter(Boolean).join("  ·  ");
 		push(` ${theme.fg("muted", meta)}`);
@@ -1292,7 +912,7 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	function htmlBannerLines(inner: number): string[] {
 		const lines: string[] = [];
 		const push = (s: string) => lines.push(truncateToWidth(s, inner, "…"));
-		const s = htmlSnap;
+		const s = state.htmlSnap;
 		if (s.status === "pending") {
 			push(` ${theme.fg("muted", `${ICON_LOADING} Rendering browser snapshot…`)}`);
 		} else if (s.status === "done") {
@@ -1331,21 +951,21 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			return [...out, ...body].slice(0, contentH);
 		};
 
-		if (previewKind === "image") return fillBody(imageCardLines(inner));
-		if (previewKind === "loading") return fillBody([theme.fg("muted", " Loading…")]);
-		if (previewKind === "empty") return fillBody([theme.fg("muted", " (nothing to preview)")]);
-		if (previewKind === "binary") return fillBody([theme.fg("muted", " (binary file)")]);
-		if (previewKind === "missing")
+		if (state.previewKind === "image") return fillBody(imageCardLines(inner));
+		if (state.previewKind === "loading") return fillBody([theme.fg("muted", " Loading…")]);
+		if (state.previewKind === "empty") return fillBody([theme.fg("muted", " (nothing to preview)")]);
+		if (state.previewKind === "binary") return fillBody([theme.fg("muted", " (binary file)")]);
+		if (state.previewKind === "missing")
 			return fillBody([theme.fg("warning", " This path does not exist on disk."), pad("", inner), theme.fg("dim", " The agent may have mistyped it; ask it to double-check.")]);
 
-		if (previewKind === "dir") {
+		if (state.previewKind === "dir") {
 			// Constrained browser: a cursor selects entries; ".." (when descended)
 			// leads back up; ↑↓ move, Enter/→ open, h/←/Esc go up.
-			const browse = browseRows();
-			const visible = browse.slice(previewScroll, previewScroll + bodyH);
+			const browse = browser.browseRows();
+			const visible = browse.slice(state.previewScroll, state.previewScroll + bodyH);
 			const lines = visible.map((r, i) => {
-				const idx = previewScroll + i;
-				const isCursor = idx === dirCursor && focus === "preview";
+				const idx = state.previewScroll + i;
+				const isCursor = idx === state.dirCursor && focus === "preview";
 				// isCursor already implies focus === "preview", so the pointer is always accent.
 				const pointer = isCursor ? theme.fg("accent", "› ") : "  ";
 				if (r.kind === "up") {
@@ -1366,45 +986,45 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 
 		// rendered markdown/HTML — display lines, no gutter, no cursor/selection.
 		// HTML reserves a fixed banner at the top (snapshot status + o/r actions).
-		if (previewKind === "file" && rendered && renderableAs) {
+		if (state.previewKind === "file" && state.rendered && state.renderableAs) {
 			const w = Math.max(8, inner - 2);
 			let all: string[];
 			let banner: string[] = [];
-			if (renderableAs === "md") {
-				mdComp ??= new Markdown(fileText.trim(), 0, 0, getMarkdownTheme());
-				all = mdComp.render(w);
+			if (state.renderableAs === "md") {
+				state.mdComp ??= new Markdown(state.fileText.trim(), 0, 0, getMarkdownTheme());
+				all = state.mdComp.render(w);
 			} else {
 				banner = htmlBannerLines(inner);
-				if (!renderedCache || renderedCache.width !== w)
-					renderedCache = { width: w, lines: wrapTextWithAnsi(htmlToText(fileText), w) };
-				all = renderedCache.lines;
+				if (!state.renderedCache || state.renderedCache.width !== w)
+					state.renderedCache = { width: w, lines: wrapTextWithAnsi(htmlToText(state.fileText), w) };
+				all = state.renderedCache.lines;
 			}
 			const avail = Math.max(1, bodyH - banner.length);
-			renderedCount = all.length;
-			previewScroll = Math.max(0, Math.min(previewScroll, Math.max(0, all.length - avail)));
-			const text = all.slice(previewScroll, previewScroll + avail).map((l) => ` ${l}`);
+			state.renderedCount = all.length;
+			state.previewScroll = Math.max(0, Math.min(state.previewScroll, Math.max(0, all.length - avail)));
+			const text = all.slice(state.previewScroll, state.previewScroll + avail).map((l) => ` ${l}`);
 			return fillBody([...banner, ...text]);
 		}
 
 		// file (raw)
-		const file = previewFile;
-		const gutterW = Math.max(3, String(fileLines.length).length);
-		const lo = selAnchor !== null ? Math.min(selAnchor, cursorLine) : -1;
-		const hi = selAnchor !== null ? Math.max(selAnchor, cursorLine) : -1;
-		const matchSet = previewSearch ? new Set(matchLines) : null;
-		const visible = fileLines.slice(previewScroll, previewScroll + bodyH);
+		const file = state.previewFile;
+		const gutterW = Math.max(3, String(state.fileLines.length).length);
+		const lo = state.selAnchor !== null ? Math.min(state.selAnchor, state.cursorLine) : -1;
+		const hi = state.selAnchor !== null ? Math.max(state.selAnchor, state.cursorLine) : -1;
+		const matchSet = state.previewSearch ? new Set(state.matchLines) : null;
+		const visible = state.fileLines.slice(state.previewScroll, state.previewScroll + bodyH);
 		const lines: string[] = [];
 		for (let i = 0; i < visible.length; i++) {
-			const idx = previewScroll + i;
+			const idx = state.previewScroll + i;
 			const raw = (visible[i] ?? "").replace(/\t/g, "    ");
 			const num = String(idx + 1).padStart(gutterW);
 			const inSel = idx >= lo && idx <= hi;
 			const inRegion = file ? file.regions.some((r) => idx + 1 >= r.start && idx + 1 <= r.end) : false;
 			// Search matches read like regions but keep no background, so the two stay distinguishable.
 			const inMatch = matchSet !== null && matchSet.has(idx);
-			const isCursor = idx === cursorLine && focus === "preview";
+			const isCursor = idx === state.cursorLine && focus === "preview";
 			const numStyled = theme.fg(inSel || inRegion || inMatch || isCursor ? "accent" : "muted", num);
-			const highlighted = highlightedLines[idx];
+			const highlighted = state.highlightedLines[idx];
 			const text = truncateToWidth(highlighted ?? raw, Math.max(1, inner - gutterW - 2), "…");
 			let textStyled: string;
 			if (highlighted !== undefined) {
@@ -1464,19 +1084,19 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 			(focus === "list" ? theme.fg("accent", "▸ ") : theme.fg("dim", "  ")) +
 			(focus === "list" ? theme.fg("text", "Files") : theme.fg("dim", "Files")) +
 			truncateToWidth(filterInfo, Math.max(0, leftW - 8), "…");
-		const file = previewFile;
+		const file = state.previewFile;
 		const prevTitle = file ? file.rel : "Preview";
 		const selInfo =
-			previewKind === "file" && selAnchor !== null
-				? theme.fg("accent", `  sel ${Math.min(selAnchor, cursorLine) + 1}-${Math.max(selAnchor, cursorLine) + 1}`)
+			state.previewKind === "file" && state.selAnchor !== null
+				? theme.fg("accent", `  sel ${Math.min(state.selAnchor, state.cursorLine) + 1}-${Math.max(state.selAnchor, state.cursorLine) + 1}`)
 				: "";
 		let regionInfo = "";
-		if (previewKind === "file" && !rendered && previewSearch) {
+		if (state.previewKind === "file" && !state.rendered && state.previewSearch) {
 			// Active in-file search takes over the info slot: query + position.
-			const pos = matchLines.filter((l) => l <= cursorLine).length;
-			regionInfo = theme.fg("accent", `  /${previewSearch}  [${pos}/${matchLines.length}]`);
-		} else if (previewKind === "file" && !rendered && file && file.regions.length > 0) {
-			const cur = regionAt(cursorLine);
+			const pos = state.matchLines.filter((l) => l <= state.cursorLine).length;
+			regionInfo = theme.fg("accent", `  /${state.previewSearch}  [${pos}/${state.matchLines.length}]`);
+		} else if (state.previewKind === "file" && !state.rendered && file && file.regions.length > 0) {
+			const cur = regionAt(state.cursorLine);
 			if (cur) {
 				regionInfo = theme.fg("accent", `  [${cur.idx + 1}/${file.regions.length}]`);
 				if (cur.note) regionInfo += theme.fg("muted", ` ${cur.note}`);
@@ -1484,12 +1104,12 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 				regionInfo = theme.fg("dim", `  ${file.regions.length} region${file.regions.length !== 1 ? "s" : ""} (n/p)`);
 			}
 		}
-		if (previewKind === "file" && renderableAs)
-			regionInfo += theme.fg("dim", rendered ? "  · rendered (r: raw)" : "  · raw (r: rendered)");
+		if (state.previewKind === "file" && state.renderableAs)
+			regionInfo += theme.fg("dim", state.rendered ? "  · rendered (r: raw)" : "  · raw (r: rendered)");
 		// A directory is a constrained browser — show the cursor position within it.
-		if (previewKind === "dir") {
-			const n = browseRows().length;
-			regionInfo += theme.fg("dim", `  · browse  [${Math.min(dirCursor + 1, n)}/${n}]`);
+		if (state.previewKind === "dir") {
+			const n = browser.browseRows().length;
+			regionInfo += theme.fg("dim", `  · browse  [${Math.min(state.dirCursor + 1, n)}/${n}]`);
 		}
 		const prevLabelText = truncateToWidth(prevTitle, Math.max(4, rightW - 8), "…");
 		const prevLabel =
@@ -1504,22 +1124,22 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 	// dir browser, image, binary/missing), spelling out the keys that work there.
 	function footerHint(): string {
 		const noteInfo = note ? ` · ${ICON_SUCCESS} note` : "";
-		const hasSel = previewKind === "file" && !rendered && selAnchor !== null;
+		const hasSel = state.previewKind === "file" && !state.rendered && state.selAnchor !== null;
 		// What `a` will add at the cursor's current spot, so the hint isn't a lie.
-		const inRegion = previewKind === "file" && !rendered && regionAt(cursorLine) !== null;
+		const inRegion = state.previewKind === "file" && !state.rendered && regionAt(state.cursorLine) !== null;
 		const addLabel = hasSel ? "a add range" : inRegion ? "a add region" : "a add line";
 		// A curated dir adds its `@dir/` mention from either focus — say so.
 		const listAdd = selectedFile()?.kind === "dir" ? "a add @dir/" : "a add mention";
-		const openHtml = renderableAs === "html" ? " · o open browser" : "";
+		const openHtml = state.renderableAs === "html" ? " · o open browser" : "";
 		if (focus === "list")
 			return `↑↓ move · Enter open · / filter · ${listAdd} · c copy mention · m note${noteInfo} · q close`;
-		if (previewKind === "file" && rendered)
+		if (state.previewKind === "file" && state.rendered)
 			return `↑↓ scroll · r raw${openHtml} · a add file · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`;
-		if (previewKind === "file")
-			return `↑↓ line · n/p ${previewSearch ? "match" : "region"} · / search${renderableAs ? " · r rendered" : ""}${openHtml} · s select · ${addLabel} · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`;
-		if (previewKind === "dir")
+		if (state.previewKind === "file")
+			return `↑↓ line · n/p ${state.previewSearch ? "match" : "region"} · / search${state.renderableAs ? " · r rendered" : ""}${openHtml} · s select · ${addLabel} · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`;
+		if (state.previewKind === "dir")
 			return `↑↓ select · Enter open · h/⌫ up · a add mention · c copy mention · m note${noteInfo} · Esc up · q close`;
-		if (previewKind === "image") return `a add file · c copy mention · m note${noteInfo} · Esc back · q close`;
+		if (state.previewKind === "image") return `a add file · c copy mention · m note${noteInfo} · Esc back · q close`;
 		return `↑↓ scroll · a add · c copy mention · m note${noteInfo} · Esc back · q close`;
 	}
 
@@ -1545,12 +1165,12 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 
 		const header = buildHeader(innerW);
 		const labelRow = buildLabelRow(leftW, rightW, sep);
-		const file = previewFile;
+		const file = state.previewFile;
 
 		// Description block for the previewed file (used by previewColumn via cache).
 		descLinesCache =
 			file?.description &&
-			(previewKind === "file" || previewKind === "dir" || previewKind === "image" || previewKind === "binary" || previewKind === "missing")
+			(state.previewKind === "file" || state.previewKind === "dir" || state.previewKind === "image" || state.previewKind === "binary" || state.previewKind === "missing")
 				? wrapTextWithAnsi(file.description, Math.max(10, rightW - 2)).slice(0, 4)
 				: [];
 
