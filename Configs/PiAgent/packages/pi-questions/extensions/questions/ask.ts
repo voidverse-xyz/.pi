@@ -1,88 +1,37 @@
 /**
  * The interactive ask-user flow, factored out of index.ts. It runs only in the
  * main TUI; headless callers are rejected by the tool before reaching this panel.
+ *
+ * This file is the orchestrator: tab/cursor state, the shared editor, keyboard
+ * dispatch, validation, and answer collection. The pieces live in siblings —
+ * input-state.ts (per-input state + row geometry), file-input.ts (typed paths,
+ * stat checks, picker state machine), and render.ts (drawing).
  */
 
-import { stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Editor, type EditorTheme, Key, matchesKey } from "@earendil-works/pi-tui";
 import {
-	Editor,
-	type EditorTheme,
-	Key,
-	matchesKey,
-	truncateToWidth,
-	visibleWidth,
-	wrapTextWithAnsi,
-} from "@earendil-works/pi-tui";
+	checkFilePath,
+	collapseOrParentPickerNode,
+	ensurePickerLoaded,
+	expandPickerNode,
+	movePicker,
+	selectedPickerNode,
+	typedPath,
+} from "./file-input.ts";
 import {
-	ICON_CHECK,
-	ICON_CHECKBOX_OFF,
-	ICON_CHECKBOX_ON,
-	ICON_COMPLETE,
-	ICON_EDIT,
-	ICON_ERROR,
-	ICON_INVALID,
-	ICON_PENDING,
-	ICON_RADIO_OFF,
-	ICON_RADIO_ON,
-	ICON_SKIPPED,
-} from "./icons.ts";
-import { createRoot, flatten, loadChildren, type TreeNode } from "./picker-tree.ts";
-import type { FileKind, Input, InputAnswer, UserInputsResult } from "./schema.ts";
+	createInputState,
+	type EditTarget,
+	nextButtonRow,
+	optionRows,
+	rowCount,
+	somethingElseRow,
+} from "./input-state.ts";
+import type { TreeNode } from "./picker-tree.ts";
+import { renderPanel } from "./render.ts";
+import type { Input, InputAnswer, UserInputsResult } from "./schema.ts";
 
-interface FileStatCache {
-	raw: string;
-	abs: string;
-	status: "checking" | "ok" | "wrong-kind";
-	message?: string;
-}
-
-// Per-input mutable UI state.
-interface InputState {
-	selected: Set<number>; // chosen option indices
-	customValue: string; // "Something else" text ("" = none)
-	customSelected: boolean;
-	textValue: string;
-	cursor: number; // highlighted row within this input
-	textEdited: boolean;
-	selectionEdited: boolean;
-	pickerRoot?: TreeNode;
-	pickerRows: TreeNode[];
-	pickerSelected: number;
-	pickerScroll: number;
-	pickerLoading: boolean;
-	pickerLoadToken: number;
-	fileStatToken: number;
-	fileStat?: FileStatCache;
-}
-
-// What the shared editor/tree picker is currently capturing.
-type EditTarget =
-	| { kind: "text" | "custom" | "picker"; inputIdx: number }
-	| { kind: "notes" }
-	| null;
-
-const PICKER_ROW_CAP = 10;
 const MAX_ANSWER_CHARS = 16 * 1024;
-
-function typedPath(root: string, raw: string): { raw: string; abs: string; rel: string; display: string } {
-	const clean = raw.trim().replace(/^@/, "");
-	const abs = isAbsolute(clean) ? clean : resolve(root, clean);
-	const rel = relative(root, abs).replace(/\\/g, "/");
-	const display = rel && !rel.startsWith("..") && rel !== "" ? rel : abs;
-	return { raw: clean, abs, rel, display };
-}
-
-function fileKindError(fileKind: FileKind, isDirectory: boolean): string | null {
-	if (fileKind === "file" && isDirectory) return "Pick a file";
-	if (fileKind === "directory" && !isDirectory) return "Pick a directory";
-	return null;
-}
-
-function defaultSet(set: Set<number> | undefined): Set<number> {
-	return new Set(set ?? []);
-}
 
 /**
  * Render the interactive inputs panel and resolve with the user's answers. Requires
@@ -105,21 +54,7 @@ export function showUserInputs(
 		let notes = "";
 		let submitCursor = 1;
 
-		const states: InputState[] = inputs.map((input) => ({
-			selected: defaultSet(input.defaultSelections),
-			customValue: "",
-			customSelected: false,
-			textValue: input.defaultText ?? "",
-			cursor: 0,
-			textEdited: false,
-			selectionEdited: false,
-			pickerRows: [],
-			pickerSelected: 0,
-			pickerScroll: 0,
-			pickerLoading: false,
-			pickerLoadToken: 0,
-			fileStatToken: 0,
-		}));
+		const states = inputs.map(createInputState);
 
 		const compiledPatterns = inputs.map((input) => (input.pattern !== undefined ? new RegExp(input.pattern) : null));
 
@@ -135,29 +70,7 @@ export function showUserInputs(
 		};
 		const editor = new Editor(tui, editorTheme);
 
-		// ----- geometry helpers -----
-
-		function optionRows(idx: number): number {
-			return inputs[idx].options.length;
-		}
-		function somethingElseRow(idx: number): number {
-			return optionRows(idx);
-		}
-		// Rows the input's own content occupies (before the trailing "Next" button).
-		// text: 1 (edit). file: 2 (browse, type). radio/multi: options + "Something else".
-		function contentRows(idx: number): number {
-			const inp = inputs[idx];
-			if (inp.type === "text") return 1;
-			if (inp.type === "file") return 2;
-			return optionRows(idx) + 1;
-		}
-		// Every input ends with a focusable "Next →" (or "Review →") button row.
-		function nextButtonRow(idx: number): number {
-			return contentRows(idx);
-		}
-		function rowCount(idx: number): number {
-			return contentRows(idx) + 1;
-		}
+		// ----- derived state -----
 
 		function selectionCount(idx: number): number {
 			const s = states[idx];
@@ -201,7 +114,7 @@ export function showUserInputs(
 			}
 			const s = states[target.inputIdx];
 			if (target.kind === "picker") {
-				ensurePickerLoaded(target.inputIdx);
+				ensurePickerLoaded(rootDir, s, refresh);
 				refresh();
 				return;
 			}
@@ -248,156 +161,46 @@ export function showUserInputs(
 			closeEditor();
 		};
 
-		// ----- file picker / validation helpers -----
-
-		// Keep the picker scroll window over the selected row and within the row list.
-		function clampPickerScroll(s: InputState) {
-			if (s.pickerSelected < s.pickerScroll) s.pickerScroll = s.pickerSelected;
-			if (s.pickerSelected >= s.pickerScroll + PICKER_ROW_CAP) {
-				s.pickerScroll = s.pickerSelected - PICKER_ROW_CAP + 1;
-			}
-			s.pickerScroll = Math.max(0, Math.min(Math.max(0, s.pickerRows.length - PICKER_ROW_CAP), s.pickerScroll));
-		}
-
-		function rebuildPickerRows(idx: number) {
-			const s = states[idx];
-			s.pickerRows = s.pickerRoot ? flatten(s.pickerRoot) : [];
-			const max = Math.max(0, s.pickerRows.length - 1);
-			s.pickerSelected = Math.max(0, Math.min(max, s.pickerSelected));
-			clampPickerScroll(s);
-		}
-
-		function ensurePickerLoaded(idx: number) {
-			const s = states[idx];
-			if (!s.pickerRoot) {
-				s.pickerRoot = createRoot(rootDir);
-				rebuildPickerRows(idx);
-			}
-			if (s.pickerRoot.loaded || s.pickerLoading) return;
-			const token = ++s.pickerLoadToken;
-			s.pickerLoading = true;
-			void loadChildren(rootDir, s.pickerRoot).then(() => {
-				if (token !== s.pickerLoadToken) return;
-				s.pickerLoading = false;
-				rebuildPickerRows(idx);
-				refresh();
-			});
-		}
-
-		function selectedPickerNode(idx: number): TreeNode | undefined {
-			const s = states[idx];
-			return s.pickerRows[s.pickerSelected];
-		}
-
-		function movePicker(idx: number, delta: number) {
-			const s = states[idx];
-			const max = Math.max(0, s.pickerRows.length - 1);
-			s.pickerSelected = Math.max(0, Math.min(max, s.pickerSelected + delta));
-			clampPickerScroll(s);
-			refresh();
-		}
+		// ----- file picker / validation -----
 
 		function pickNode(idx: number, node: TreeNode) {
+			const inp = inputs[idx];
 			const s = states[idx];
 			s.textValue = node.rel || node.abs;
 			s.textEdited = true;
 			s.fileStat = undefined;
-			void checkFilePath(idx);
+			if (inp.type === "file") void checkFilePath(rootDir, inp.fileKind, s, refresh);
 			closeEditor();
 		}
 
-		async function expandPickerNode(idx: number, node: TreeNode) {
-			if (!node.isDir) return;
-			if (!node.loaded) {
-				const s = states[idx];
-				const token = ++s.pickerLoadToken;
-				s.pickerLoading = true;
-				refresh();
-				await loadChildren(rootDir, node);
-				if (token !== s.pickerLoadToken) return;
-				s.pickerLoading = false;
-			}
-			node.expanded = true;
-			rebuildPickerRows(idx);
-			refresh();
-		}
-
-		function collapseOrParentPickerNode(idx: number, node: TreeNode) {
-			const s = states[idx];
-			if (node.isDir && node.expanded) {
-				node.expanded = false;
-				rebuildPickerRows(idx);
-				refresh();
-				return;
-			}
-			if (node.parent) {
-				const parentIdx = s.pickerRows.indexOf(node.parent);
-				if (parentIdx >= 0) {
-					s.pickerSelected = parentIdx;
-					rebuildPickerRows(idx);
-					refresh();
-				}
-			}
-		}
-
 		function handlePickerInput(data: string, idx: number) {
-			ensurePickerLoaded(idx);
+			const s = states[idx];
+			ensurePickerLoaded(rootDir, s, refresh);
 			if (matchesKey(data, Key.escape)) {
 				closeEditor();
 				return;
 			}
 			if (matchesKey(data, Key.up) || data === "k") {
-				movePicker(idx, -1);
+				movePicker(s, -1, refresh);
 				return;
 			}
 			if (matchesKey(data, Key.down) || data === "j") {
-				movePicker(idx, 1);
+				movePicker(s, 1, refresh);
 				return;
 			}
-			const node = selectedPickerNode(idx);
+			const node = selectedPickerNode(s);
 			if (!node) return;
 			if (matchesKey(data, Key.right)) {
-				void expandPickerNode(idx, node);
+				void expandPickerNode(rootDir, s, node, refresh);
 				return;
 			}
 			if (matchesKey(data, Key.left)) {
-				collapseOrParentPickerNode(idx, node);
+				collapseOrParentPickerNode(s, node, refresh);
 				return;
 			}
 			if (matchesKey(data, Key.enter)) {
 				pickNode(idx, node);
 			}
-		}
-
-		function checkFilePath(idx: number): FileStatCache | undefined {
-			const inp = inputs[idx];
-			const s = states[idx];
-			if (inp.type !== "file") return undefined;
-			const raw = s.textValue.trim();
-			if (!raw) return undefined;
-			if (s.fileStat?.raw === raw) return s.fileStat;
-			const pathInfo = typedPath(rootDir, raw);
-			const token = ++s.fileStatToken;
-			s.fileStat = { raw, abs: pathInfo.abs, status: "checking" };
-			void stat(pathInfo.abs).then(
-				(info) => {
-					if (token !== s.fileStatToken) return;
-					const kindError = fileKindError(inp.fileKind, info.isDirectory());
-					s.fileStat = kindError
-						? { raw, abs: pathInfo.abs, status: "wrong-kind", message: kindError }
-						: { raw, abs: pathInfo.abs, status: "ok" };
-					refresh();
-				},
-				() => {
-					if (token !== s.fileStatToken) return;
-					// Nonexistent paths are valid: callers may be asking where to create
-					// a new file or directory. fileKind is enforced only when the path
-					// already exists and its kind can be inspected.
-					s.fileStat = { raw, abs: pathInfo.abs, status: "ok" };
-					refresh();
-				},
-			);
-			return s.fileStat;
 		}
 
 		function validationError(idx: number): string | null {
@@ -414,7 +217,7 @@ export function showUserInputs(
 			}
 
 			if (inp.type === "file") {
-				const cache = checkFilePath(idx);
+				const cache = checkFilePath(rootDir, inp.fileKind, s, refresh);
 				if (!cache || cache.status === "checking") return "Checking path…";
 				if (cache.status === "wrong-kind") return cache.message ?? "Pick a file/directory";
 				return null;
@@ -434,7 +237,7 @@ export function showUserInputs(
 			const inp = inputs[idx];
 			const s = states[idx];
 			// The trailing button row advances to the next tab (or the Submit review).
-			if (s.cursor === nextButtonRow(idx)) {
+			if (s.cursor === nextButtonRow(inp)) {
 				goNext();
 				return;
 			}
@@ -454,7 +257,7 @@ export function showUserInputs(
 			}
 
 			const row = s.cursor;
-			if (row < optionRows(idx)) {
+			if (row < optionRows(inp)) {
 				if (inp.type === "radio") {
 					s.selected.clear();
 					s.selected.add(row);
@@ -467,7 +270,7 @@ export function showUserInputs(
 				refresh();
 				return;
 			}
-			if (row === somethingElseRow(idx)) {
+			if (row === somethingElseRow(inp)) {
 				// If a custom value already exists, a bare toggle is more useful than reopening the editor.
 				if (s.customValue) {
 					s.customSelected = !s.customSelected;
@@ -544,7 +347,7 @@ export function showUserInputs(
 				return;
 			}
 			if (matchesKey(data, Key.down) || data === "j") {
-				s.cursor = Math.min(rowCount(idx) - 1, s.cursor + 1);
+				s.cursor = Math.min(rowCount(inputs[idx]) - 1, s.cursor + 1);
 				refresh();
 				return;
 			}
@@ -586,308 +389,32 @@ export function showUserInputs(
 			});
 		}
 
-		// ----- rendering -----
+		// ----- rendering (render.ts draws from a per-call snapshot of the state) -----
 
 		function render(width: number): string[] {
 			if (cachedLines && cachedWidth === width) return cachedLines;
-			const lines: string[] = [];
-			const renderWidth = Math.max(1, width);
-
-			function addWrapped(text: string) {
-				lines.push(...wrapTextWithAnsi(text, renderWidth));
-			}
-			function addWrappedWithPrefix(prefix: string, text: string) {
-				const prefixWidth = visibleWidth(prefix);
-				if (prefixWidth >= renderWidth) {
-					addWrapped(prefix + text);
-					return;
-				}
-				const wrapped = wrapTextWithAnsi(text, renderWidth - prefixWidth);
-				const continuation = " ".repeat(prefixWidth);
-				for (let i = 0; i < wrapped.length; i++) {
-					lines.push(`${i === 0 ? prefix : continuation}${wrapped[i]}`);
-				}
-			}
-
-			lines.push(theme.fg("accent", "─".repeat(renderWidth)));
-
-			// Tab bar.
-			const tabs: string[] = ["← "];
-			for (let i = 0; i < inputs.length; i++) {
-				const active = i === currentTab;
-				const skippedOptional = inputs[i].optional && !hasResponse(i);
-				const valid = isAnswered(i);
-				const invalid = hasResponse(i) && validationError(i) !== null;
-				const box = valid ? ICON_COMPLETE : skippedOptional ? ICON_SKIPPED : invalid ? ICON_INVALID : ICON_PENDING;
-				const color = valid ? "success" : skippedOptional ? "dim" : invalid ? "warning" : "muted";
-				const label = ` ${box} ${inputs[i].title} `;
-				tabs.push(`${active ? theme.bg("selectedBg", theme.fg("text", label)) : theme.fg(color, label)} `);
-			}
-			const submitText = ` ${ICON_CHECK} Submit `;
-			tabs.push(
-				`${
-					currentTab === submitTab
-						? theme.bg("selectedBg", theme.fg("text", submitText))
-						: theme.fg(canSubmit() ? "success" : "dim", submitText)
-				} →`,
+			const fitted = renderPanel(
+				{
+					inputs,
+					states,
+					theme,
+					editor,
+					editing,
+					currentTab,
+					submitCursor,
+					notes,
+					terminalRows: tui.terminal.rows,
+					hasResponse,
+					isAnswered,
+					validationError,
+					canSubmit,
+					ensurePickerLoaded: (idx) => ensurePickerLoaded(rootDir, states[idx], refresh),
+				},
+				width,
 			);
-			addWrappedWithPrefix(" ", tabs.join(""));
-			lines.push("");
-			const bodyStart = lines.length;
-
-			if (currentTab === submitTab) {
-				renderSubmit(addWrappedWithPrefix);
-			} else {
-				renderInput(currentTab, renderWidth, addWrappedWithPrefix);
-			}
-			const bodyEnd = lines.length;
-
-			lines.push("");
-			const help = editing
-				? editing.kind === "picker"
-					? "↑↓ move · →/← expand/collapse · Enter pick · Esc close"
-					: "Enter to save · Esc to go back"
-				: currentTab === submitTab
-					? "↑↓ move · Enter choose · Tab/←→ switch · Esc cancel"
-					: "↑↓ move · Space/Enter choose · Tab/←→ switch · Esc cancel";
-			addWrappedWithPrefix(" ", theme.fg("dim", help));
-			lines.push(theme.fg("accent", "─".repeat(renderWidth)));
-
-			const terminalRows = Math.max(5, tui.terminal.rows);
-			let fitted = lines;
-			if (lines.length > terminalRows) {
-				const header = lines.slice(0, bodyStart);
-				const body = lines.slice(bodyStart, bodyEnd);
-				const footer = lines.slice(bodyEnd);
-				const available = terminalRows - header.length - footer.length;
-				if (available > 0) {
-					// Keep the focused action visible when a long option list exceeds the
-					// terminal height. ANSI styling is ignored only for locating the marker.
-					const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
-					const focusLine = Math.max(0, body.findIndex((line) => /^\s*>\s/.test(plain(line))));
-					const start = Math.max(0, Math.min(body.length - available, focusLine - Math.floor(available / 2)));
-					fitted = [...header, ...body.slice(start, start + available), ...footer];
-				} else {
-					// Pathological tab wrapping: preserve the top and the help/footer.
-					fitted = [...lines.slice(0, Math.max(1, terminalRows - 2)), ...lines.slice(-2)].slice(0, terminalRows);
-				}
-			}
-
 			cachedWidth = width;
 			cachedLines = fitted;
 			return fitted;
-
-			// --- nested renderers (capture addWrappedWithPrefix / lines) ---
-
-			function typeTag(inp: Input): string {
-				if (inp.type === "text") return "text";
-				if (inp.type === "radio") return "pick one";
-				if (inp.type === "multi") return "pick any";
-				// "file" — the only remaining type; validateInputs rejects anything else.
-				return inp.fileKind === "any" ? "path" : inp.fileKind;
-			}
-
-			function optionSuffix(isDefault: boolean, isRecommended: boolean): string {
-				const defaultLabel = isDefault ? theme.fg("dim", " (default)") : "";
-				const recommendedLabel = isRecommended ? theme.fg("success", " (recommended)") : "";
-				return defaultLabel + recommendedLabel;
-			}
-
-			function renderInput(idx: number, rw: number, add: (prefix: string, text: string) => void) {
-				const inp = inputs[idx];
-				const s = states[idx];
-				add(
-					" ",
-					theme.fg("text", theme.bold(inp.title)) +
-						theme.fg("dim", `  (${typeTag(inp)})`) +
-						(inp.optional ? theme.fg("dim", "  (optional)") : ""),
-				);
-				if (inp.description) add(" ", theme.fg("muted", inp.description));
-				lines.push("");
-
-				if (inp.type === "text") {
-					if (editing && editing.kind === "text" && editing.inputIdx === idx) {
-						add(" ", theme.fg("muted", "Your answer:"));
-						for (const line of editor.render(Math.max(1, rw - 2))) lines.push(` ${line}`);
-					} else {
-						// The edit action shares a tab with the trailing Next/Review button, so it
-						// must only highlight when the cursor is actually on it (row 0).
-						const editCursor = s.cursor === 0;
-						const editPrefix = editCursor ? theme.fg("accent", "> ") : "  ";
-						const editColor = editCursor ? "accent" : "dim";
-						if (s.textValue) {
-							// Show the current value first, then the edit action beneath it, so the
-							// default (or previously entered) value reads as the answer and "Edit"
-							// is the action that changes it.
-							add("     ", theme.fg("text", s.textValue) + optionSuffix(!s.textEdited && !!inp.defaultText, false));
-							lines.push("");
-							add(editPrefix, theme.fg(editColor, `${ICON_EDIT} Edit`));
-						} else {
-							add(editPrefix, theme.fg(editColor, `${ICON_EDIT} Type your answer`));
-						}
-					}
-					renderInlineError(idx, add);
-					// Keep Edit and Next/Review adjacent (no gap) so they read as a switchable pair.
-					renderNextButton(idx, add, false);
-					return;
-				}
-
-				if (inp.type === "file") {
-					renderFileInput(idx, rw, add);
-					renderInlineError(idx, add);
-					renderNextButton(idx, add);
-					return;
-				}
-
-				// List options (radio / multi).
-				for (let i = 0; i < inp.options.length; i++) {
-					const opt = inp.options[i];
-					const cursor = s.cursor === i;
-					const chosen = s.selected.has(i);
-					const mark = inp.type === "multi" ? (chosen ? ICON_CHECKBOX_ON : ICON_CHECKBOX_OFF) : chosen ? ICON_RADIO_ON : ICON_RADIO_OFF;
-					const prefix = cursor ? theme.fg("accent", "> ") : "  ";
-					const color = cursor ? "accent" : "text";
-					const suffix = optionSuffix(!s.selectionEdited && !!inp.defaultSelections?.has(i), opt.recommended === true);
-					add(prefix, `${theme.fg(chosen ? "success" : "dim", mark)} ${theme.fg(color, opt.title)}${suffix}`);
-					if (opt.description) add("       ", theme.fg("muted", opt.description));
-				}
-
-				// "Something else" row.
-				{
-					const rowIdx = somethingElseRow(idx);
-					const cursor = s.cursor === rowIdx;
-					const chosen = s.customSelected;
-					const mark = inp.type === "multi" ? (chosen ? ICON_CHECKBOX_ON : ICON_CHECKBOX_OFF) : chosen ? ICON_RADIO_ON : ICON_RADIO_OFF;
-					const prefix = cursor ? theme.fg("accent", "> ") : "  ";
-					const label = s.customValue ? `Something else: ${s.customValue}` : "Something else…";
-					add(prefix, `${theme.fg(chosen ? "success" : "dim", mark)} ${theme.fg(cursor ? "accent" : "text", label)}`);
-					if (editing && editing.kind === "custom" && editing.inputIdx === idx) {
-						add("   ", theme.fg("muted", "Type your answer:"));
-						for (const line of editor.render(Math.max(1, rw - 4))) lines.push(`   ${line}`);
-					}
-				}
-
-				renderInlineError(idx, add);
-				renderNextButton(idx, add);
-			}
-
-			function renderFileInput(idx: number, rw: number, add: (prefix: string, text: string) => void) {
-				const s = states[idx];
-				const pickerOpen = editing?.kind === "picker" && editing.inputIdx === idx;
-				const browsePrefix = s.cursor === 0 || pickerOpen ? theme.fg("accent", "> ") : "  ";
-				add(browsePrefix, theme.fg(pickerOpen || s.cursor === 0 ? "accent" : "text", `${pickerOpen ? "▾" : "▸"} Browse…`));
-				if (pickerOpen) renderPicker(idx, rw, add);
-
-				const typePrefix = s.cursor === 1 ? theme.fg("accent", "> ") : "  ";
-				const typeLabel = s.textValue ? `${ICON_EDIT} Path` : `${ICON_EDIT} Type a path…`;
-				add(typePrefix, theme.fg(s.cursor === 1 ? "accent" : "dim", typeLabel));
-				if (editing && editing.kind === "text" && editing.inputIdx === idx) {
-					add("   ", theme.fg("muted", "Path:"));
-					for (const line of editor.render(Math.max(1, rw - 4))) lines.push(`   ${line}`);
-				} else if (s.textValue) {
-					add("     ", theme.fg("text", s.textValue) + optionSuffix(!s.textEdited && !!inputs[idx].defaultText, false));
-				}
-			}
-
-			function renderPicker(idx: number, rw: number, add: (prefix: string, text: string) => void) {
-				ensurePickerLoaded(idx);
-				const s = states[idx];
-				const visible = s.pickerRows.slice(s.pickerScroll, s.pickerScroll + PICKER_ROW_CAP);
-				if (s.pickerLoading && visible.length === 0) {
-					add("   ", theme.fg("muted", "Loading…"));
-					return;
-				}
-				if (visible.length === 0) {
-					add("   ", theme.fg("muted", "(empty directory)"));
-					return;
-				}
-				if (s.pickerScroll > 0) add("   ", theme.fg("dim", "↑ more"));
-				for (let i = 0; i < visible.length; i++) {
-					const node = visible[i]!;
-					const absIdx = s.pickerScroll + i;
-					const isCursor = absIdx === s.pickerSelected;
-					const indent = "  ".repeat(Math.max(0, node.depth - 1));
-					const typeMark = node.isDir ? (node.expanded ? "▾" : "▸") : " ";
-					const name = node.isDir ? `${node.name}/` : node.name;
-					const label = `${indent}${typeMark} ${name}`;
-					const pointer = isCursor ? theme.fg("accent", "> ") : "  ";
-					const body = isCursor ? theme.fg("accent", label) : node.isDir ? theme.fg("text", label) : theme.fg("dim", label);
-					add("   ", `${pointer}${truncateToWidth(body, Math.max(1, rw - 5), "…")}`);
-				}
-				if (s.pickerScroll + PICKER_ROW_CAP < s.pickerRows.length) add("   ", theme.fg("dim", "↓ more"));
-			}
-
-			function renderInlineError(idx: number, add: (prefix: string, text: string) => void) {
-				const err = validationError(idx);
-				if (err) {
-					lines.push("");
-					add(" ", theme.fg("warning", `${ICON_ERROR} ${err}`));
-				}
-			}
-
-			function renderNextButton(idx: number, add: (prefix: string, text: string) => void, spaced = true) {
-				const cursor = states[idx].cursor === nextButtonRow(idx);
-				// The last input advances to the Submit review; earlier ones to the next input.
-				const label = idx === inputs.length - 1 ? "Review →" : "Next →";
-				const prefix = cursor ? theme.fg("accent", "> ") : "  ";
-				if (spaced) lines.push("");
-				add(prefix, theme.fg(cursor ? "accent" : "muted", label));
-			}
-
-			function answerPreview(idx: number): string {
-				const inp = inputs[idx];
-				const s = states[idx];
-				if (inp.optional && !hasResponse(idx)) return theme.fg("dim", "(skipped — optional)");
-				if (inp.type === "text" || inp.type === "file") {
-					return s.textValue || theme.fg("warning", "(unanswered)");
-				}
-				const picks: string[] = [];
-				for (let j = 0; j < inp.options.length; j++) {
-					if (s.selected.has(j)) picks.push(inp.options[j].title);
-				}
-				if (s.customSelected && s.customValue) picks.push(`${s.customValue} (else)`);
-				return picks.length ? picks.join(", ") : theme.fg("warning", "(unanswered)");
-			}
-
-			function renderSubmit(add: (prefix: string, text: string) => void) {
-				add(" ", theme.fg("accent", theme.bold("Review & submit")));
-				lines.push("");
-				for (let i = 0; i < inputs.length; i++) {
-					const inp = inputs[i];
-					add(" ", `${theme.fg("muted", `${inp.title}: `)}${theme.fg("text", answerPreview(i))}`);
-				}
-				lines.push("");
-
-				// Optional Notes section (submitCursor row 0).
-				const noteCursor = submitCursor === 0;
-				const notePrefix = noteCursor ? theme.fg("accent", "> ") : "  ";
-				const noteLabel = notes ? `${ICON_EDIT} Notes` : `${ICON_EDIT} Add notes…`;
-				add(notePrefix, theme.fg(noteCursor ? "accent" : "dim", noteLabel));
-				if (notes && !(editing && editing.kind === "notes")) {
-					add("     ", theme.fg("muted", notes));
-				}
-				if (editing && editing.kind === "notes") {
-					add("   ", theme.fg("muted", "Your notes:"));
-					for (const line of editor.render(Math.max(1, renderWidth - 4))) lines.push(`   ${line}`);
-				}
-				lines.push("");
-
-				// Submit button (submitCursor row 1).
-				const submitFocused = submitCursor === 1;
-				const canGo = canSubmit();
-				const submitPrefix = submitFocused ? theme.fg("accent", "> ") : "  ";
-				const submitColor = submitFocused ? "accent" : canGo ? "success" : "dim";
-				add(submitPrefix, theme.fg(submitColor, `${ICON_CHECK} Submit`));
-
-				if (!canGo) {
-					const missing = inputs
-						.filter((inp, i) => !(inp.optional && !hasResponse(i)) && !hasResponse(i))
-						.map((inp) => inp.title);
-					const fixes = inputs.filter((_, i) => hasResponse(i) && validationError(i) !== null).map((inp) => inp.title);
-					if (missing.length > 0) add(" ", theme.fg("warning", `Still unanswered: ${missing.join(", ")}`));
-					if (fixes.length > 0) add(" ", theme.fg("warning", `Fix: ${fixes.join(", ")}`));
-				}
-			}
 		}
 
 		return {
