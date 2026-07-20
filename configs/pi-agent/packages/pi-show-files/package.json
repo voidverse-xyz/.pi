@@ -1,0 +1,19 @@
+{
+  "name": "pi-show-files",
+  "version": "1.0.2",
+  "type": "module",
+  "description": "show_files — an LLM-callable tool that presents an annotated, browsable set of files to the user in a native TUI.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}

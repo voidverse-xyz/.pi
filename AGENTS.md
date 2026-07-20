@@ -29,34 +29,41 @@ comments, docs, or content sent to an external service:
 
 ## Local Organization
 
-- Reusable context lives in this file.
-- Reusable skills, MCP definitions, workflows, subagents, and related agent
-  documents live in sibling directories alongside this file, including:
+This repository is both the shared reusable-material workspace and a portable Pi
+global configuration. Its root is designed to be cloned directly to
+`~/.pi/agent`. Keep `AGENTS.md` at this root with its exact uppercase filename;
+Pi loads `~/.pi/agent/AGENTS.md` as global instructions.
 
-- `Codex/` for Codex configs, local plugin sources, and plugin marketplace metadata
-- `Configs/` for non-Codex local agent tool configs and setup bundles
-- `Plans/` for reusable, project-agnostic plans and operating notes
-- `Skills/`
-- `MCP/`
-- `Workflows/`
-- `Subagents/`
+- `settings.json`, `keybindings.json`, `skills/`, `subagents/`, and `teams/` are
+  active global Pi configuration.
+- `configs/pi-agent/packages/` contains the local Pi packages enabled by relative
+  paths from root `settings.json`.
+- Machine-local and sensitive state is ignored; never commit it.
+- Name repository-owned directories with lowercase hyphen-case. Preserve the
+  published casing of vendored assets and external specification directories.
+- Reusable context lives in this file.
+- Other reusable materials live in sibling directories alongside this file:
+  - `codex/` for Codex configs, local plugin sources, and marketplace metadata
+  - `configs/` for non-Codex tool configs and setup bundles
+  - `plans/` for reusable project-agnostic plans and operating notes
+  - `skills/` for global Pi skills and reusable skill packages
+  - `mcp/` for MCP definitions and notes
+  - `workflows/` for reusable Markdown workflow procedures
+  - `subagents/` for reusable Pi subagent definitions
+  - `teams/` for independent Pi Teams copies of production definitions
 
 When the user asks about a skill, workflow, MCP definition, or subagent, check
-these sibling directories in this workspace before checking global or installed
-agent locations.
-
-When editing or updating reusable agent materials, update the sibling
-directories alongside this file, such as `Skills/`, `MCP/`, `Workflows/`, and
-`Subagents/`.
+these repository directories before checking other global or installed locations.
+When editing shared production definitions, keep matching files in `subagents/`
+and `teams/` synchronized as ordinary files; do not use symlinks or hard links.
 
 Keep reusable or project-agnostic material in the shared directories. Keep
-host-specific tool configuration under `Configs/` or `Codex/Configs/`, and do
-not add auth tokens, session logs, caches, local history, or runtime databases
-there.
+host-specific tool configuration under `configs/` or `codex/configs/`, and do
+not add auth tokens, session logs, caches, local history, or runtime databases.
 
 When creating local Codex plugins for this workspace, scaffold plugin source
-directories into `Codex/Plugins/plugins/`. For marketplace-backed plugins, use
-`Codex/Plugins/marketplace.json` as the workspace marketplace file.
+directories into `codex/plugins/plugins/`. For marketplace-backed plugins, use
+`codex/plugins/marketplace.json` as the workspace marketplace file.
 
 ## Reusable Artifact Capture
 
@@ -74,13 +81,15 @@ state. Use placeholders such as `<project-root>`, `<service-name>`,
 
 Route reusable materials by type:
 
-- Plans and operating notes go in `Plans/`.
-- Skills go in `Skills/`.
-- Workflows go in `Workflows/`.
-- Subagents or agent definitions go in `Subagents/`.
-- MCP definitions and notes go in `MCP/`.
-- Codex plugin source or patterns go in `Codex/Plugins/`.
-- Non-Codex setup/config patterns go in `Configs/`.
+- Plans and operating notes go in `plans/`.
+- Skills go in `skills/`.
+- Markdown workflow procedures go in `workflows/`; executable saved Pi workflows
+  use root `workflows/*.js` only when that library is intentionally created.
+- Subagent definitions go in `subagents/`; production definitions used by Teams
+  also receive synchronized ordinary copies in `teams/`.
+- MCP definitions and notes go in `mcp/`.
+- Codex plugin source or patterns go in `codex/plugins/`.
+- Non-Codex setup/config patterns go in `configs/`.
 
 If the project-specific artifact is not safe to preserve directly, write a short
 generic pattern or procedure instead of copying sensitive or local-only content.
@@ -117,59 +126,56 @@ paths, personal contact details, and generated logs. When an artifact also has
 reusable value beyond the project, save a sanitized generic version in this
 shared repository using the `Reusable Artifact Capture` rules above.
 
-For this shared repository, keep the top-level `Skills/`, `Plans/`, `Workflows/`,
-`Subagents/`, `MCP/`, and `Configs/` directories reusable and project-agnostic.
+For this shared repository, keep the top-level `skills/`, `plans/`, `workflows/`,
+`subagents/`, `teams/`, `mcp/`, and `configs/` directories reusable and project-agnostic.
 Do not place project-specific artifacts in a root `docs/agents/` tree here;
 instead, put them under the relevant contained project's own documentation tree,
-such as `Configs/PiAgent/docs/agents/` for PiAgent-specific work.
+such as `configs/pi-agent/docs/agents/` for PiAgent-specific work.
 
 ## Directory Map
 
-- `AGENTS.md`: instructions agents read before working in this repository.
-- `Codex/`: Codex configs, local plugin source directories, and plugin marketplace metadata.
-- `Configs/`: non-Codex local agent tool configs and setup bundles.
-- `MCP/`: reusable MCP definitions and notes.
-- `Plans/`: reusable plans, procedures, and operating notes.
-- `Skills/`: shared skill packages and source material.
-- `Subagents/`: reusable subagent definitions.
-- `Workflows/`: reusable agent workflows.
+- `AGENTS.md`: global and repository agent instructions.
+- `settings.json`: portable Pi settings with relative local-package paths.
+- `keybindings.json`: portable global Pi keybindings.
+- `skills/`: auto-discovered global Pi skills and reusable skill packages.
+- `subagents/`: global definitions for `pi-subagents`.
+- `teams/`: global definitions for `pi-teams`.
+- `codex/`: Codex configs, local plugin sources, and marketplace metadata.
+- `configs/`: non-Codex tool configs, active Pi packages, and setup materials.
+- `mcp/`: reusable MCP definitions and notes.
+- `plans/`: reusable plans, procedures, and operating notes.
+- `workflows/`: reusable Markdown workflow procedures.
 
 ## Codex Layout
 
-- `Codex/Configs/`: Codex configuration. On this host, `~/.codex/config.toml`
-  points to `Codex/Configs/config.toml`.
-- `Codex/Plugins/marketplace.json`: Codex plugin marketplace metadata when
+- `codex/configs/`: Codex configuration. On this host, `~/.codex/config.toml`
+  points to `codex/configs/config.toml`.
+- `codex/plugins/marketplace.json`: Codex plugin marketplace metadata when
   marketplace-backed plugins exist.
-- `Codex/Plugins/plugins/<plugin-name>/`: local Codex plugin source directory.
+- `codex/plugins/plugins/<plugin-name>/`: local Codex plugin source directory.
 
 ## PiAgent Layout
 
-- `Configs/PiAgent/packages/`: source of truth for the active package-backed Pi
-  extensions enabled from `~/.pi/agent/settings.json`. `Configs/Archive/PiAgent/`
-  contains older snapshots that Pi does not load.
-- `Configs/PiAgent/.pi/agent/skills/`: source of truth for the `plan-commit`
-  skill.
-  `pi-plan` provides four branch-persistent states: unrestricted Off plus
+- `configs/pi-agent/packages/` is the source of truth for active package-backed
+  Pi extensions. Root `settings.json` enables them with portable relative paths.
+- Root `skills/` is the canonical global skill library. The old inactive
+  `plan-commit` export and superseded package snapshots were removed from the
+  tracked clone and preserved locally in the migration quarantine.
+- `pi-plan` provides four branch-persistent states: unrestricted Off plus
   hard-restricted Ask, Discuss, and Plan modes via `/ask`, `/discuss`, `/plan`,
   and a `Shift+Tab` cycle. Ask is quick chat (normally 1–4 sentences) with only
   trusted read tools; Discuss has normal response length with read tools plus
   `ask_user`/`show_files`; Plan keeps tagged `plan-template: true` routing,
-  `/plan --skill <name> <task>`, and authorized `save_plan`. Plan may also use
-  only fresh ad-hoc one-shot `pi-subagents` workers whose coding tools are forced
-  to `read`/`grep`/`find`/`ls`; follow-up/control calls are scoped to workers
-  created by Plan mode. The LLM selects a project-relative Markdown path, the
-  user authorizes the exact path once per branch, and later revisions atomically
-  replace it. The shared base instructions live in `Skills/plan/`.
-  `clear-alias` (added 2026-07-07) registers `/clear` as a muscle-memory alias
-  for `/new` using `ctx.newSession()`, so existing session-switch hooks still
-  apply.
-  `command-safety` gates agent `bash` commands by category (destructive /
-  network / exec / other) with countdown confirmations and a `/safety off|on|max`
-  mode; `max` (default) confirms everything except a read-only safe-list (ls,
-  cat, grep, git status/log/diff, …), `on` confirms destructive only, `off`
-  none. It persists that mode to `~/.pi/agent/command-safety.json` (real home,
-  untracked), which is also where the startup default is configured. Only the
-  agent's `bash` tool calls are gated, not user-typed `!` commands.
+  `/plan --skill <name> <task>`, and authorized `save_plan`. Plan may use only
+  fresh ad-hoc one-shot `pi-subagents` workers whose coding tools are forced to
+  `read`/`grep`/`find`/`ls`; follow-up/control calls are scoped to Plan-created
+  workers. The shared base instructions live in `skills/plan/`.
+- `pi-clear` registers `/clear` as a muscle-memory alias for `/new` using
+  `ctx.newSession()`, so existing session-switch hooks still apply.
+- `pi-safety` gates agent `bash` commands by category with countdown
+  confirmations and `/safety off|on|max`. It persists local mode and a
+  privacy-preserving audit under ignored root runtime files. Only agent `bash`
+  tool calls are gated, not user-typed `!` commands.
   `pi-git-status` publishes cwd + Git state and `pi-model-thinking` publishes
   the selected model + thinking level through reserved `setStatus` keys.
   `pi-status-line` owns their shared above-editor row — Git pinned left and
@@ -190,10 +196,10 @@ such as `Configs/PiAgent/docs/agents/` for PiAgent-specific work.
   current-turn tool starts, cumulative session tokens, context fill, and current
   tool; long labels yield to metrics and narrow layouts move metrics to their own
   compact row.
-  `session-merge` (added 2026-07-05) provides `/merge`, a synthesis merge for
-  selected session branches: it summarizes the shared base plus branch deltas
-  into a visible custom message in a new session, optionally drafts or runs a
-  kickoff prompt, and leaves source branches intact.
+  `pi-merge` provides `/merge`, a synthesis merge for selected session branches:
+  it summarizes the shared base plus branch deltas into a visible custom message
+  in a new session, optionally drafts or runs a kickoff prompt, and leaves source
+  branches intact.
   `notify-user` (added 2026-07-05 as `user-summary`; renamed 2026-07-06)
   provides the LLM-callable `notify_user` tool: an end-of-turn notice rendered
   as a custom message with optional `title`, `successes`, `info`, `warnings`,
@@ -217,18 +223,21 @@ such as `Configs/PiAgent/docs/agents/` for PiAgent-specific work.
   best-effort inverse edit replay when the baseline predates the extension).
   Works in non-git directories; nothing here shells out to git. Bash-made
   changes are out of scope by design.
-- `Configs/PiAgent/.pi/agent/themes/`: source of truth for custom Pi themes.
-- `~/.pi/agent/extensions` is a dangling legacy symlink; no legacy extensions
-  are present. `~/.pi/agent/themes` is symlinked to
-  `Configs/PiAgent/.pi/agent/themes/`. Re-run `pi`'s `/reload` (or restart)
-  after changing a skill or theme.
+- `configs/pi-agent/packages/void-agent/themes/` supplies the tracked theme
+  family; root `settings.json` selects `void-agent-tokyo-night`.
+- Root `keybindings.json` remaps thinking-level cycling to `Alt+T` and forward
+  model cycling to `Alt+M`, leaving `Shift+Tab` for `pi-plan`.
+- Root `subagents/` and `teams/` contain synchronized production definitions.
+  Mutable extension settings and all session/runtime state remain ignored.
+- No global configuration symlink is required. Run `/reload` or restart Pi after
+  changing a package, skill, definition, keybinding, or theme.
 
 ## Working Style
 
 - If something I ask for is technically wrong or impossible, say so and propose a
   workable approach.
 - When delegated review findings are expected in the current response, follow
-  `Workflows/reviews/delegated-review-results/delegated-review-results.md`: await
+  `workflows/reviews/delegated-review-results/delegated-review-results.md`: await
   the anchored report, do not claim completion on timeout/cancellation, and put
   verdict/findings before subagent orchestration or cleanup details.
 - When giving me app or server URLs in chat, use this machine's LAN IP instead of

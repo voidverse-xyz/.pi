@@ -1,24 +1,96 @@
-# Local host-specific configuration and runtime state.
-Codex/Configs/config.toml
-Codex/Configs/*.local.toml
-Codex/Configs/auth.json
-Codex/Configs/history.jsonl
-Codex/Configs/session_index.jsonl
-Codex/Configs/*.sqlite*
-Codex/Configs/cache/
-Codex/Configs/sessions/
-Codex/Configs/archived_sessions/
-Codex/Configs/logs/
-Codex/Configs/tmp/
-Codex/Configs/.tmp/
+# Pi credentials and private provider configuration.
+/auth.json*
+/oauth.json*
+/models.json*
 
-# Local setup archives and credentials.
-/auth.json
-Configs/PiAgent/archive/*.zip
+# Pi runtime state, caches, managed installs, and migration quarantine.
+/sessions/
+/trust.json*
+/models-store.json*
+/npm/
+/git/
+/bin/
+/tools/
+/tmp/
+/pi-debug.log*
+/settings.json.bak*
+/settings.json.lock
+
+# Extension-owned mutable settings, state, and audit output.
+/safety.json
+/safety-audit.jsonl*
+/command-safety.json
+/command-safety-audit.jsonl*
+/void-agent.json
+/status-line.json
+/subagent-asklimit.json
+/subagents.json
+/teams.json
+/workflows.json
+/commit.json
+/changes-*.patch
+
+# Root runtime output.
+/*.jsonl
+/*.log
+/*.sqlite*
+/*.db*
+/*.tmp-*
+
+# Local host-specific Codex configuration and runtime state.
+codex/configs/config.toml
+codex/configs/*.local.toml
+codex/configs/auth.json
+codex/configs/history.jsonl
+codex/configs/session_index.jsonl
+codex/configs/*.sqlite*
+codex/configs/cache/
+codex/configs/sessions/
+codex/configs/archived_sessions/
+codex/configs/logs/
+codex/configs/tmp/
+codex/configs/.tmp/
+
+# Managed dependencies, virtual environments, and tool caches.
+**/node_modules/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.cache/
+**/.venv/
+**/venv/
+**/coverage/
+
+# Local agent state and setup bundles.
+/.claude/
+/archive/
+configs/pi-agent/archive/*.zip
+
+# Credentials, private keys, and SSH material.
 .ssh/
+**/id_rsa
+**/id_ed25519
+**/id_ecdsa
+**/id_dsa
 *.pem
 *.key
 *.p12
 *.pfx
+
+# Environment files; sanitized templates remain trackable.
 .env
 .env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Host and editor artifacts.
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+*.swp
+*.swo
+*.tmp
+*.bak
