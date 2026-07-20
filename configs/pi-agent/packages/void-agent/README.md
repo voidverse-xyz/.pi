@@ -9,7 +9,7 @@ expansion behavior.
 
 - borderless, full-width `#373739` prompt field with a bold `›` prompt and one outer row of breathing room above and below
 - a randomly selected animated spinner (accent-colored, options include a Claude Code-style blinking star pulse `· ✢ ✳ ✶ ✻ ✽`) and capitalized work-related label per agent run, formatted as `Building… (21m 29s · ↓ 62.3k tokens)` — hours-aware elapsed time and run-cumulative output tokens in dim parentheses, the token segment hidden until the first tokens arrive
-- the working indicator renders as a three-line full-width animated background block — a tinted padding row above and below, the status text centered on the middle row — spanning the full range from black to the theme's prompt-field gray (`userMessageBg`, falling back to a darkened accent), one style picked at random per agent run with lightly randomized timing: `breathe` (soft pulse), `aurora` (slow drifting wash), `comet` (glow sweeping the empty runway), or `shimmer` (scrolling brightness wave). Sparse theme-green Matrix character rain falls across all three rows over that background without obscuring the status label. Implemented as a presentation-only runtime patch of the built-in `WorkingStatusIndicator` renderer, restored on shutdown; truecolor themes only
+- optional working-indicator animation, disabled by default: when enabled with `/working-animation on`, the status renders as a three-line full-width animated background block — a tinted padding row above and below, the status text centered on the middle row — spanning the full range from black to the theme's prompt-field gray (`userMessageBg`, falling back to a darkened accent), one style picked at random per agent run with lightly randomized timing: `breathe` (soft pulse), `aurora` (slow drifting wash), `comet` (glow sweeping the empty runway), or `shimmer` (scrolling brightness wave). Sparse theme-green Matrix character rain can be enabled separately with `/matrix on` and falls across all three rows over that background without obscuring the status label. Implemented as a presentation-only runtime patch of the built-in `WorkingStatusIndicator` renderer, restored on shutdown; truecolor themes only
 - one dim, full-width separator after each completed tool row
 - transparent tool result backgrounds instead of colored cards
 - hidden Pi startup header
@@ -31,7 +31,7 @@ token stats.)
 - `/matrix [on|off|status]` independently controls Matrix rain while leaving the animated background block intact.
 - `/working-animation [on|off|status]` is the master switch for the three-line background block and Matrix layer. Turning it off restores Pi's standard single-row loader while keeping the custom spinner and status text.
 
-Calling either command without an argument toggles its setting. Both settings persist across reloads and restarts.
+Calling either command without an argument toggles its setting. Both settings default to off and persist across reloads and restarts.
 
 ## Themes
 
@@ -46,8 +46,8 @@ Pi discovers these automatically (via the package's `pi.themes` entry) and owns 
 selection: switch between them from Pi's native theme picker, which persists your
 choice in `settings.theme`. On the very first run the extension seeds `void-agent`
 once (so a fresh install looks "void" immediately) and then never overrides your
-selection again. The animated working block requires a truecolor theme; all bundled
-themes are truecolor.
+selection again. If enabled, the animated working block requires a truecolor theme;
+all bundled themes are truecolor.
 
 ## Verify
 

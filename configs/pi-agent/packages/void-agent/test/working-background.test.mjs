@@ -103,6 +103,16 @@ try {
 		indicator = new WorkingStatusIndicator({ requestRender() {} }, workingMessage, workingIndicator);
 	};
 
+	await runCommand("matrix", "status");
+	await runCommand("working-animation", "status");
+	assert.deepEqual(
+		notifications.slice(-2).map((item) => item.message),
+		["Matrix rain is off (waiting for /working-animation on)", "Working animation is off; Matrix rain is off"],
+		"animations default to disabled",
+	);
+	await runCommand("working-animation", "on");
+	await runCommand("matrix", "on");
+
 	// Breathe reaches both endpoints: true black and the Void Agent prompt gray.
 	await startStyle(0);
 	Date.now = () => 1_400; // midpoint random period is 2,800ms; half-period is the gray peak

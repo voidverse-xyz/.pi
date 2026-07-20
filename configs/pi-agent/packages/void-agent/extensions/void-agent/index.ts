@@ -22,6 +22,11 @@ const RESET_FG = "\x1b[39m";
 const TOOL_PATCH = Symbol.for("void-agent.tool-render-patch");
 const WORKING_TICK_MS = 200;
 const ANIMATION_CONFIG_PATH = join(getAgentDir(), "void-agent.json");
+const DEFAULT_ANIMATION_CONFIG = {
+	workingAnimation: false,
+	matrix: false,
+	themeInitialized: false,
+} satisfies AnimationConfig;
 
 interface AnimationConfig {
 	workingAnimation: boolean;
@@ -39,12 +44,12 @@ function loadAnimationConfig(): AnimationConfig {
 	try {
 		const raw = JSON.parse(readFileSync(ANIMATION_CONFIG_PATH, "utf8")) as Record<string, unknown>;
 		return {
-			workingAnimation: typeof raw.workingAnimation === "boolean" ? raw.workingAnimation : true,
-			matrix: typeof raw.matrix === "boolean" ? raw.matrix : true,
-			themeInitialized: typeof raw.themeInitialized === "boolean" ? raw.themeInitialized : false,
+			workingAnimation: typeof raw.workingAnimation === "boolean" ? raw.workingAnimation : DEFAULT_ANIMATION_CONFIG.workingAnimation,
+			matrix: typeof raw.matrix === "boolean" ? raw.matrix : DEFAULT_ANIMATION_CONFIG.matrix,
+			themeInitialized: typeof raw.themeInitialized === "boolean" ? raw.themeInitialized : DEFAULT_ANIMATION_CONFIG.themeInitialized,
 		};
 	} catch {
-		return { workingAnimation: true, matrix: true, themeInitialized: false };
+		return { ...DEFAULT_ANIMATION_CONFIG };
 	}
 }
 
