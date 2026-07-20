@@ -12,10 +12,10 @@ import type { FooterMode, SegmentId } from "./config.ts";
 type Theme = ExtensionContext["ui"]["theme"];
 
 // Nerd Font hard-drive glyph for the context-usage gauge (JetBrainsMono NF).
-const ICON_HDD = ""; // nf-fa-hdd_o (U+F0A0)
-const ICON_INPUT = ""; // nf-fa-long_arrow_up
-const ICON_OUTPUT = ""; // nf-fa-long_arrow_down
-const ICON_ACTIVITY = ""; // nf-oct-cpu — aggregate token activity
+const ICON_HDD = ""; // nf-fa-hdd_o (U+F0A0)
+const ICON_INPUT = ""; // nf-fa-long_arrow_up
+const ICON_OUTPUT = ""; // nf-fa-long_arrow_down
+const ICON_ACTIVITY = ""; // nf-oct-cpu — aggregate token activity
 
 // Reserved plain-text producer keys; buildSegmentTexts styles them and
 // composeSides chooses their footer rows.

@@ -81,9 +81,9 @@ import { createPreviewLoader } from "./preview-loader.ts";
 import { createPreviewState } from "./preview-state.ts";
 import { htmlToText } from "./rendered.ts";
 
-const ICON_LOADING = ""; // nf-fa-spinner
-const ICON_SUCCESS = ""; // nf-fa-check
-const ICON_WARNING = ""; // nf-fa-warning
+const ICON_LOADING = ""; // nf-fa-spinner
+const ICON_SUCCESS = ""; // nf-fa-check
+const ICON_WARNING = ""; // nf-fa-warning
 
 export interface ShowFilesOutcome {
 	/** rel paths whose preview the user deliberately entered. */
