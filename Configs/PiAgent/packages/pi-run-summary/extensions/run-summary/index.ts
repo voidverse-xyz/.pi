@@ -3,6 +3,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const MAX_SUMMARY_CHARS = 140;
 const SUMMARY_ICON = "•";
+const INPUT_ICON = "\uf062"; // nf-fa-arrow_up
+const OUTPUT_ICON = "\uf063"; // nf-fa-arrow_down
+const ELAPSED_ICON = "\uf017"; // nf-fa-clock_o
 const GENERIC_HEADING = /^(?:summary|result|results|done|completed|completion|changes|what changed|implementation|outcome|status)[:.]?$/i;
 
 interface RunState {
@@ -100,7 +103,7 @@ function fallbackSummary(stopReason: StopReason | undefined): string {
 export function buildCompletionNotice(run: RunState, finishedAt: number): string {
 	const duration = formatDuration(finishedAt - run.startedAt);
 	const summary = summarizeFinalResponse(run.finalText ?? "") ?? fallbackSummary(run.stopReason);
-	return `${SUMMARY_ICON} ${summary} · ${duration} · ↑${formatTokens(run.inputTokens)} · ↓${formatTokens(run.outputTokens)}`;
+	return `${SUMMARY_ICON} ${summary} · ${INPUT_ICON} ${formatTokens(run.inputTokens)} · ${OUTPUT_ICON} ${formatTokens(run.outputTokens)} · ${ELAPSED_ICON} ${duration}`;
 }
 
 export default function runSummary(pi: ExtensionAPI): void {
@@ -128,8 +131,8 @@ export default function runSummary(pi: ExtensionAPI): void {
 		const messages = event.messages.filter((message): message is AssistantMessage => message.role === "assistant");
 		for (const message of messages) {
 			const usage = (message as AssistantMessage & { usage?: AssistantMessage["usage"] }).usage;
-			// Match Pi's footer semantics: ↑ is uncached input; cache reads/writes are
-			// deliberately omitted because this extension's selected format is ↑/↓.
+			// Match Pi's footer semantics: the up-arrow value is uncached input;
+			// cache reads/writes are omitted because this format shows input/output only.
 			currentRun.inputTokens += tokenCount(usage?.input);
 			currentRun.outputTokens += tokenCount(usage?.output);
 		}
@@ -157,9 +160,10 @@ export default function runSummary(pi: ExtensionAPI): void {
 			currentRun = undefined;
 			if (ctx.mode !== "tui") return;
 
-			// Pi renders info notifications with theme.fg("dim"), which gives the
-			// requested muted treatment without patching private TUI internals.
-			ctx.ui.notify(buildCompletionNotice(candidate, Date.now()), "info");
+			// Keep Pi's info-notification chat behavior, but override its dim wrapper
+			// with the theme's brighter secondary-text color.
+			const notice = ctx.ui.theme.fg("muted", buildCompletionNotice(candidate, Date.now()));
+			ctx.ui.notify(notice, "info");
 		}, 0);
 		pendingToast.unref?.();
 	});

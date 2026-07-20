@@ -57,6 +57,11 @@ const ctx = {
 	mode: "tui",
 	isIdle: () => idle,
 	ui: {
+		theme: {
+			fg(color, text) {
+				return `<${color}>${text}</${color}>`;
+			},
+		},
 		notify(message, type = "info") {
 			notifications.push({ message, type });
 		},
@@ -106,7 +111,7 @@ try {
 	await flushTimers();
 	assert.deepEqual(notifications, [
 		{
-			message: "• Finished verification. · 1m 5s · ↑3.0k · ↓500",
+			message: "<muted>• Finished verification. ·  3.0k ·  500 ·  1m 5s</muted>",
 			type: "info",
 		},
 	]);
@@ -121,7 +126,7 @@ try {
 	await flushTimers();
 	assert.equal(
 		notifications.at(-1).message,
-		"• The agent run was stopped. · <1s · ↑15 · ↓1",
+		"<muted>• The agent run was stopped. ·  15 ·  1 ·  <1s</muted>",
 		"an empty final response clears stale prose and uses the stop-reason fallback",
 	);
 
