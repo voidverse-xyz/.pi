@@ -1,10 +1,19 @@
 # Portable Pi global configuration
 
-This repository is designed to be cloned directly to Pi's global agent directory:
+This repository is designed to be cloned as the portable Pi configuration tree:
 
 ```text
-~/.pi/agent
+~/.pi
 ```
+
+Pi's effective global agent directory is still `~/.pi/agent`; the tracked
+`agent/` shims expose the repository's settings, keybindings, context, skills,
+package sources, subagent/team definitions, and workflow library from that
+location. Runtime state and credentials under `agent/` remain ignored.
+
+The repository can also be cloned directly to `~/.pi/agent`; in that layout the
+root files are Pi's effective agent config and the nested `agent/` shims are
+dormant.
 
 It combines portable Pi configuration with reusable agent materials and the
 source of the local Pi packages enabled by `settings.json`.
@@ -23,6 +32,7 @@ source of the local Pi packages enabled by `settings.json`.
 ├── configs/pi-agent/docs/     # Package-specific plans and notes
 ├── plans/                    # Reusable plans and procedures
 ├── workflows/                # Reusable Markdown workflow procedures
+├── agent/                    # Compatibility shims when repo is cloned as ~/.pi
 ├── codex/                    # Codex configuration sources
 ├── mcp/                      # Reusable MCP definitions and notes
 └── scripts/                  # Configuration validation
@@ -37,6 +47,17 @@ directories, which the workflow loader ignores.
 
 Back up an existing Pi directory before replacing it. Do not copy its settings
 file over this repository's portable settings.
+
+Preferred whole-tree install:
+
+```bash
+mv ~/.pi ~/.pi.backup
+git clone <repository-url> ~/.pi
+chmod 700 ~/.pi ~/.pi/agent
+node ~/.pi/scripts/validate-global-config.mjs
+```
+
+Agent-dir-only install:
 
 ```bash
 mv ~/.pi/agent ~/.pi/agent.backup

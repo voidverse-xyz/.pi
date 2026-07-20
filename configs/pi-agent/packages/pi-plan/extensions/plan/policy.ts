@@ -1,3 +1,5 @@
+import { realpathSync } from "node:fs";
+
 export const SAVE_PLAN_TOOL = "save_plan";
 
 export const READ_ONLY_TOOL_NAMES = ["read", "grep", "find", "ls"] as const;
@@ -64,7 +66,15 @@ export type PlanSubagentPolicyDecision =
 	| { allowed: false; reason: string };
 
 function normalizedPath(value: string): string {
-	return value.replaceAll("\\", "/").replace(/\/+$/, "");
+	let path = value;
+	try {
+		path = realpathSync(value);
+	} catch {
+		// Synthetic paths (for example <builtin:read>) and missing test fixtures fall
+		// back to string normalization. Real extension/package paths canonicalize so
+		// ~/.pi and ~/.pi/agent shim layouts compare to the same trusted package root.
+	}
+	return path.replaceAll("\\", "/").replace(/\/+$/, "");
 }
 
 function isAgentMode(value: unknown): value is AgentMode {

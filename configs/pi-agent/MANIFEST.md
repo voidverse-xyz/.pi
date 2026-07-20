@@ -1,6 +1,6 @@
 # Pi configuration manifest
 
-Pi packages live under `packages/<name>/` and are enabled through portable relative paths in repository-root `settings.json` when the repository is cloned to `~/.pi/agent`.
+Pi packages live under `packages/<name>/` and are enabled through portable relative paths in root `settings.json` and mirrored `agent/settings.json`. The tracked `agent/` compatibility shims expose the same activation surface from Pi's effective global agent directory when the repository is cloned as `~/.pi`; when cloned directly to `~/.pi/agent`, the root files are active and the nested shims are dormant.
 
 ## Enabled extensions
 
@@ -34,12 +34,12 @@ Pi packages live under `packages/<name>/` and are enabled through portable relat
 
 ## Theme and keybindings
 
-The active theme is `void-agent-tokyo-night`, bundled at `packages/void-agent/themes/void-agent-tokyo-night.json` and selected by root `settings.json`.
+The active theme is `void-agent-tokyo-night`, bundled at `packages/void-agent/themes/void-agent-tokyo-night.json` and selected by root `settings.json` plus `agent/settings.json`.
 
-Keybindings are stored at root `keybindings.json`. `Shift+Tab` is reserved for Plan mode, thinking-level cycling uses `Alt+T`, and forward model cycling uses `Alt+M`.
+Keybindings are stored at root `keybindings.json` and mirrored in `agent/keybindings.json`. `Shift+Tab` is reserved for Plan mode, thinking-level cycling uses `Alt+T`, and forward model cycling uses `Alt+M`.
 
 ## Layout and activation
 
-Each package contains `package.json` with the `pi-package` keyword and one or more extension entry points under `extensions/`. Root `skills/` is Pi's global skill library, and root `subagents/` plus `teams/` provide production type definitions for their respective runtimes. After changing enabled packages or resources, run `/reload` in Pi or restart it.
+Each package contains `package.json` with the `pi-package` keyword and one or more extension entry points under `extensions/`. Root `skills/` is Pi's global skill library, and root `subagents/` plus `teams/` provide production type definitions for their respective runtimes. The `agent/` shims expose those same resources from the effective Pi agent directory without tracking credentials or runtime state. After changing enabled packages or resources, run `/reload` in Pi or restart it.
 
 Only reviewed portable source and configuration belong in the tracked global configuration.

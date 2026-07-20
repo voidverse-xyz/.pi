@@ -1,0 +1,33 @@
+{
+  "theme": "void-agent-tokyo-night",
+  "packages": [
+    "./configs/pi-agent/packages/pi-teams",
+    "./configs/pi-agent/packages/pi-subagents",
+    "./configs/pi-agent/packages/pi-bookmark",
+    "./configs/pi-agent/packages/pi-browse",
+    "./configs/pi-agent/packages/pi-show-files",
+    "./configs/pi-agent/packages/pi-tool-monitor",
+    "./configs/pi-agent/packages/pi-git-status",
+    "./configs/pi-agent/packages/pi-model-thinking",
+    "./configs/pi-agent/packages/pi-notify-user",
+    "./configs/pi-agent/packages/pi-status-line",
+    "./configs/pi-agent/packages/pi-codex-usage",
+    "./configs/pi-agent/packages/pi-commit",
+    "./configs/pi-agent/packages/pi-session-name",
+    "./configs/pi-agent/packages/pi-run-guard",
+    "./configs/pi-agent/packages/pi-clear",
+    "./configs/pi-agent/packages/pi-changes",
+    "./configs/pi-agent/packages/pi-questions",
+    "./configs/pi-agent/packages/pi-plan",
+    "./configs/pi-agent/packages/pi-queue",
+    "./configs/pi-agent/packages/pi-safety",
+    "./configs/pi-agent/packages/pi-merge",
+    "./configs/pi-agent/packages/void-agent",
+    "./configs/pi-agent/packages/pi-todo",
+    "./configs/pi-agent/packages/pi-workflow",
+    "./configs/pi-agent/packages/pi-run-summary"
+  ],
+  "skills": [
+    "./skills"
+  ]
+}

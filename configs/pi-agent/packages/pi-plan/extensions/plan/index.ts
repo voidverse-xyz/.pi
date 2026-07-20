@@ -7,7 +7,7 @@ import type {
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
-import { Key } from "@earendil-works/pi-tui";
+import { Key, matchesKey } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
 	applyPlanSubagentPolicy,
@@ -402,10 +402,14 @@ export default function planExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerShortcut(Key.shift("tab"), {
-		description: "Cycle Off, Ask, Discuss, and Plan modes",
-		handler: cycleMode,
-	});
+	function installTerminalShortcut(ctx: ExtensionContext): void {
+		if (!ctx.hasUI || ctx.mode !== "tui") return;
+		ctx.ui.onTerminalInput((data) => {
+			if (!matchesKey(data, Key.shift("tab"))) return undefined;
+			cycleMode(ctx);
+			return { consume: true };
+		});
+	}
 
 	pi.on("tool_call", (event) => {
 		if (mode === "off") return;
@@ -498,7 +502,10 @@ export default function planExtension(pi: ExtensionAPI): void {
 		};
 	});
 
-	pi.on("session_start", (_event, ctx) => restore(ctx));
+	pi.on("session_start", (_event, ctx) => {
+		restore(ctx);
+		installTerminalShortcut(ctx);
+	});
 	pi.on("session_tree", (_event, ctx) => restore(ctx));
 	pi.on("session_shutdown", (_event, ctx) => {
 		// Reload/session replacement inherits the current active-tool set. Restore

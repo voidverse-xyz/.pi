@@ -16,6 +16,23 @@
 /settings.json.bak*
 /settings.json.lock
 
+# Same runtime/private files when this repository is cloned one level above
+# Pi's effective agent directory (repo at ~/.pi, live config at ~/.pi/agent).
+/agent/auth.json*
+/agent/oauth.json*
+/agent/models.json*
+/agent/sessions/
+/agent/trust.json*
+/agent/models-store.json*
+/agent/npm/
+/agent/git/
+/agent/bin/
+/agent/tools/
+/agent/tmp/
+/agent/pi-debug.log*
+/agent/settings.json.bak*
+/agent/settings.json.lock
+
 # Extension-owned mutable settings, state, and audit output.
 /safety.json
 /safety-audit.jsonl*
@@ -29,6 +46,18 @@
 /workflows.json
 /commit.json
 /changes-*.patch
+/agent/safety.json
+/agent/safety-audit.jsonl*
+/agent/command-safety.json
+/agent/command-safety-audit.jsonl*
+/agent/void-agent.json
+/agent/status-line.json
+/agent/subagent-asklimit.json
+/agent/subagents.json
+/agent/teams.json
+/agent/workflows.json
+/agent/commit.json
+/agent/changes-*.patch
 
 # Root runtime output.
 /*.jsonl
@@ -36,6 +65,11 @@
 /*.sqlite*
 /*.db*
 /*.tmp-*
+/agent/*.jsonl
+/agent/*.log
+/agent/*.sqlite*
+/agent/*.db*
+/agent/*.tmp-*
 
 # Local host-specific Codex configuration and runtime state.
 codex/configs/config.toml

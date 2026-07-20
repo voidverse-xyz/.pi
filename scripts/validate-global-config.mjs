@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, readdirSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,15 +9,24 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const failures = [];
 const notes = [];
 
+const EXPECTED_PACKAGE_COUNT = 25;
+const EXPECTED_THEME = "void-agent-tokyo-night";
+const ROOT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
+const AGENT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
+
 function fail(message) {
   failures.push(message);
+}
+
+function rel(path) {
+  return path.slice(root.length + 1);
 }
 
 function readJson(path) {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
-    fail(`${path.slice(root.length + 1)} is not valid JSON: ${error.message}`);
+    fail(`${rel(path)} is not valid JSON: ${error.message}`);
     return undefined;
   }
 }
@@ -30,74 +39,120 @@ function git(args, options = {}) {
   });
 }
 
-const settings = readJson(join(root, "settings.json"));
-if (settings) {
-  const keys = Object.keys(settings).sort();
-  if (JSON.stringify(keys) !== JSON.stringify(["packages", "theme"])) {
-    fail(`settings.json must contain only "packages" and "theme"; found: ${keys.join(", ")}`);
-  }
-  if (settings.theme !== "void-agent-tokyo-night") {
-    fail(`settings.json theme must be void-agent-tokyo-night; found: ${JSON.stringify(settings.theme)}`);
-  }
+function sameJson(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function validatePackageList(settings, settingsRelPath, baseDir, packagePrefix, checkPackageFiles = true) {
   if (!Array.isArray(settings.packages)) {
-    fail("settings.json packages must be an array");
-  } else {
-    if (settings.packages.length !== 25) {
-      fail(`settings.json must enable 25 reviewed packages; found ${settings.packages.length}`);
+    fail(`${settingsRelPath} packages must be an array`);
+    return;
+  }
+  if (settings.packages.length !== EXPECTED_PACKAGE_COUNT) {
+    fail(`${settingsRelPath} must enable ${EXPECTED_PACKAGE_COUNT} reviewed packages; found ${settings.packages.length}`);
+  }
+  if (new Set(settings.packages).size !== settings.packages.length) {
+    fail(`${settingsRelPath} contains duplicate package entries`);
+  }
+  for (const packagePath of settings.packages) {
+    if (typeof packagePath !== "string") {
+      fail(`${settingsRelPath} package entry is not a string: ${JSON.stringify(packagePath)}`);
+      continue;
     }
-    if (new Set(settings.packages).size !== settings.packages.length) {
-      fail("settings.json contains duplicate package entries");
+    if (isAbsolute(packagePath) || !packagePath.startsWith(packagePrefix)) {
+      fail(`${settingsRelPath} package path is not portable and agent-dir-relative: ${packagePath}`);
+      continue;
     }
-    for (const packagePath of settings.packages) {
-      if (typeof packagePath !== "string") {
-        fail(`package entry is not a string: ${JSON.stringify(packagePath)}`);
-        continue;
-      }
-      if (isAbsolute(packagePath) || !packagePath.startsWith("./configs/pi-agent/packages/")) {
-        fail(`package path is not portable and repository-relative: ${packagePath}`);
-        continue;
-      }
-      if (packagePath.includes("_archive") || packagePath.toLowerCase().includes("/archive/")) {
-        fail(`active package points into an archive: ${packagePath}`);
-      }
-      const absolutePackage = resolve(root, packagePath);
-      let stat;
-      try {
-        stat = lstatSync(absolutePackage);
-      } catch {
-        fail(`configured package does not exist: ${packagePath}`);
-        continue;
-      }
-      if (!stat.isDirectory() || stat.isSymbolicLink()) {
-        fail(`configured package is not an ordinary directory: ${packagePath}`);
-        continue;
-      }
-      const manifest = readJson(join(absolutePackage, "package.json"));
-      if (!manifest) continue;
-      if (!Array.isArray(manifest.keywords) || !manifest.keywords.includes("pi-package")) {
-        fail(`${packagePath}/package.json is missing the pi-package keyword`);
-      }
-      for (const resourceType of ["extensions", "skills", "prompts", "themes"]) {
-        for (const resourcePath of manifest.pi?.[resourceType] ?? []) {
-          try {
-            lstatSync(resolve(absolutePackage, resourcePath));
-          } catch {
-            fail(`${packagePath} declares missing ${resourceType} resource: ${resourcePath}`);
-          }
+    if (packagePath.includes("_archive") || packagePath.toLowerCase().includes("/archive/")) {
+      fail(`${settingsRelPath} active package points into an archive: ${packagePath}`);
+    }
+    if (!checkPackageFiles) continue;
+    const absolutePackage = resolve(baseDir, packagePath);
+    let stat;
+    try {
+      stat = lstatSync(absolutePackage);
+    } catch {
+      fail(`${settingsRelPath} configured package does not exist: ${packagePath}`);
+      continue;
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      fail(`${settingsRelPath} configured package is not an ordinary directory: ${packagePath}`);
+      continue;
+    }
+    const manifest = readJson(join(absolutePackage, "package.json"));
+    if (!manifest) continue;
+    if (!Array.isArray(manifest.keywords) || !manifest.keywords.includes("pi-package")) {
+      fail(`${packagePath}/package.json is missing the pi-package keyword`);
+    }
+    for (const resourceType of ["extensions", "skills", "prompts", "themes"]) {
+      for (const resourcePath of manifest.pi?.[resourceType] ?? []) {
+        try {
+          lstatSync(resolve(absolutePackage, resourcePath));
+        } catch {
+          fail(`${packagePath} declares missing ${resourceType} resource: ${resourcePath}`);
         }
       }
     }
   }
 }
 
-const keybindings = readJson(join(root, "keybindings.json"));
-if (keybindings) {
+function validateSettingsFile({ relativePath, baseDir, allowedKeys, packagePrefix, expectedSkills, checkPackageFiles = true }) {
+  const settings = readJson(join(root, relativePath));
+  if (!settings) return undefined;
+  const keys = Object.keys(settings).sort();
+  if (!sameJson(keys, [...allowedKeys].sort())) {
+    fail(`${relativePath} must contain only ${allowedKeys.map((key) => JSON.stringify(key)).join(", ")}; found: ${keys.join(", ")}`);
+  }
+  if (settings.theme !== EXPECTED_THEME) {
+    fail(`${relativePath} theme must be ${EXPECTED_THEME}; found: ${JSON.stringify(settings.theme)}`);
+  }
+  if (expectedSkills !== undefined && !sameJson(settings.skills, expectedSkills)) {
+    fail(`${relativePath} skills must be ${JSON.stringify(expectedSkills)}; found: ${JSON.stringify(settings.skills)}`);
+  }
+  validatePackageList(settings, relativePath, baseDir, packagePrefix, checkPackageFiles);
+  return settings;
+}
+
+const rootSettings = validateSettingsFile({
+  relativePath: "settings.json",
+  baseDir: root,
+  allowedKeys: ["packages", "theme"],
+  packagePrefix: ROOT_PACKAGE_PREFIX,
+});
+// The agent/ shim is active when the repository is checked out one level above
+// Pi's effective agent dir (repo at ~/.pi, live config at ~/.pi/agent). When the
+// repository is checked out directly as ~/.pi/agent, these nested shims are
+// dormant; validate their JSON shape but not the intentionally out-of-layout
+// symlink targets.
+const agentShimActive = existsSync(join(root, "agent", "configs", "pi-agent", "packages"));
+const agentSettings = validateSettingsFile({
+  relativePath: "agent/settings.json",
+  baseDir: join(root, "agent"),
+  allowedKeys: ["packages", "skills", "theme"],
+  packagePrefix: AGENT_PACKAGE_PREFIX,
+  expectedSkills: ["./skills"],
+  checkPackageFiles: agentShimActive,
+});
+if (rootSettings && agentSettings && !sameJson(rootSettings.packages, agentSettings.packages)) {
+  fail("agent/settings.json packages must mirror root settings.json packages");
+}
+
+function validateKeybindings(relativePath) {
+  const keybindings = readJson(join(root, relativePath));
+  if (!keybindings) return undefined;
   if (keybindings["app.thinking.cycle"] !== "alt+t") {
-    fail("keybindings.json must reserve Shift+Tab by mapping app.thinking.cycle to alt+t");
+    fail(`${relativePath} must reserve Shift+Tab by mapping app.thinking.cycle to alt+t`);
   }
   if (keybindings["app.model.cycleForward"] !== "alt+m") {
-    fail("keybindings.json must map app.model.cycleForward to alt+m");
+    fail(`${relativePath} must map app.model.cycleForward to alt+m`);
   }
+  return keybindings;
+}
+
+const rootKeybindings = validateKeybindings("keybindings.json");
+const agentKeybindings = validateKeybindings("agent/keybindings.json");
+if (rootKeybindings && agentKeybindings && !sameJson(rootKeybindings, agentKeybindings)) {
+  fail("agent/keybindings.json must mirror root keybindings.json");
 }
 
 function collectSkillFiles(directory, found = []) {
@@ -105,7 +160,7 @@ function collectSkillFiles(directory, found = []) {
   try {
     entries = readdirSync(directory, { withFileTypes: true });
   } catch (error) {
-    fail(`cannot read skill directory ${directory.slice(root.length + 1)}: ${error.message}`);
+    fail(`cannot read skill directory ${rel(directory)}: ${error.message}`);
     return found;
   }
   for (const entry of entries) {
@@ -124,12 +179,12 @@ for (const skillFile of skillFiles) {
   const prefix = readFileSync(skillFile, "utf8").slice(0, 16 * 1024);
   const frontmatter = prefix.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
   if (!frontmatter || !/^name:\s*\S+/m.test(frontmatter)) {
-    fail(`${skillFile.slice(root.length + 1)} is missing frontmatter name`);
+    fail(`${rel(skillFile)} is missing frontmatter name`);
   }
   const lines = frontmatter?.split(/\r?\n/) ?? [];
   const descriptionIndex = lines.findIndex((line) => line.startsWith("description:"));
   if (descriptionIndex < 0) {
-    fail(`${skillFile.slice(root.length + 1)} is missing frontmatter description`);
+    fail(`${rel(skillFile)} is missing frontmatter description`);
     continue;
   }
   const first = lines[descriptionIndex].slice("description:".length).trim();
@@ -143,9 +198,9 @@ for (const skillFile of skillFiles) {
     normalizedDescription = body.join("\n");
   }
   if (!normalizedDescription.trim()) {
-    fail(`${skillFile.slice(root.length + 1)} has an empty frontmatter description`);
+    fail(`${rel(skillFile)} has an empty frontmatter description`);
   } else if (normalizedDescription.length > 1024) {
-    fail(`${skillFile.slice(root.length + 1)} description exceeds 1024 characters (${normalizedDescription.length})`);
+    fail(`${rel(skillFile)} description exceeds 1024 characters (${normalizedDescription.length})`);
   }
 }
 
@@ -158,7 +213,7 @@ for (const directory of ["subagents", "teams"]) {
     fail(`cannot read ${directory}/: ${error.message}`);
     continue;
   }
-  if (JSON.stringify(actual) !== JSON.stringify(expectedDefinitions)) {
+  if (!sameJson(actual, expectedDefinitions)) {
     fail(`${directory}/ definitions must be exactly: ${expectedDefinitions.join(", ")}; found: ${actual.join(", ")}`);
   }
   for (const name of actual) {
@@ -191,6 +246,20 @@ for (const requiredRoot of ["codex/", "configs/", "mcp/", "plans/", "workflows/"
     fail(`lowercase shared directory is absent from the tracked clone: ${requiredRoot}`);
   }
 }
+for (const requiredAgentEntry of [
+  "agent/AGENTS.md",
+  "agent/configs",
+  "agent/keybindings.json",
+  "agent/settings.json",
+  "agent/skills",
+  "agent/subagents",
+  "agent/teams",
+  "agent/workflows",
+]) {
+  if (!tracked.includes(requiredAgentEntry)) {
+    fail(`tracked agent-dir compatibility entry is missing: ${requiredAgentEntry}`);
+  }
+}
 for (const path of tracked) {
   if (/^(Codex|Configs|MCP|Plans|Workflows)(\/|$)/.test(path)) {
     fail(`tracked repository-owned path has obsolete capitalized directory casing: ${path}`);
@@ -212,21 +281,54 @@ const forbiddenExact = new Set([
   "teams.json",
   "workflows.json",
 ]);
+const forbiddenRuntimeDirs = /^(sessions|npm|git|bin|tools|tmp)\//;
+function isPrivateRuntimePath(path) {
+  if (forbiddenExact.has(path) || forbiddenRuntimeDirs.test(path)) return true;
+  if (!path.startsWith("agent/")) return false;
+  const nested = path.slice("agent/".length);
+  return forbiddenExact.has(nested) || forbiddenRuntimeDirs.test(nested);
+}
 for (const path of tracked) {
-  if (forbiddenExact.has(path) || /^(sessions|npm|git|bin|tools|tmp)\//.test(path)) {
+  if (isPrivateRuntimePath(path)) {
     fail(`tracked private/runtime path: ${path}`);
   }
   const ignored = spawnSync("git", ["-C", root, "check-ignore", "--no-index", "-q", path]);
   if (ignored.status === 0) fail(`tracked path matches the private/runtime ignore policy: ${path}`);
   else if (ignored.status !== 1) fail(`could not evaluate ignore policy for tracked path: ${path}`);
 }
+
+const allowedSymlinks = new Map([
+  ["agent/AGENTS.md", "../AGENTS.md"],
+  ["agent/configs", "../configs"],
+  ["agent/skills", "../skills"],
+  ["agent/subagents", "../subagents"],
+  ["agent/teams", "../teams"],
+  ["agent/workflows", "../workflows"],
+]);
 try {
   const linkedEntries = git(["ls-files", "-s"])
     .split("\n")
     .filter((line) => line.startsWith("120000 "));
-  if (linkedEntries.length > 0) fail(`tracked symlinks are not allowed:\n${linkedEntries.join("\n")}`);
+  for (const entry of linkedEntries) {
+    const path = entry.split(/\s+/).at(-1);
+    const expectedTarget = allowedSymlinks.get(path);
+    if (!expectedTarget) {
+      fail(`tracked symlink is not an approved agent-dir shim: ${entry}`);
+      continue;
+    }
+    const actualTarget = readlinkSync(join(root, path));
+    if (actualTarget !== expectedTarget) {
+      fail(`${path} must point to ${expectedTarget}; found ${actualTarget}`);
+    }
+  }
+  for (const path of allowedSymlinks.keys()) {
+    if (tracked.includes(path)) {
+      const mode = git(["ls-files", "-s", "--", path]).trim().split(/\s+/)[0];
+      if (mode !== "120000") fail(`${path} must be a relative symlink agent-dir shim`);
+    }
+  }
 } catch (error) {
-  fail(`cannot inspect tracked file modes: ${error.message}`);
+  fail(`cannot inspect tracked symlinks: ${error.message}`);
 }
 
 for (const ignoredPath of [
@@ -245,6 +347,21 @@ for (const ignoredPath of [
   "subagents.json",
   "teams.json",
   "workflows.json",
+  "agent/auth.json",
+  "agent/oauth.json",
+  "agent/models.json",
+  "agent/sessions/probe.jsonl",
+  "agent/trust.json",
+  "agent/models-store.json",
+  "agent/npm/probe",
+  "agent/git/probe",
+  "agent/bin/probe",
+  "agent/tmp/probe",
+  "agent/safety.json",
+  "agent/safety-audit.jsonl",
+  "agent/subagents.json",
+  "agent/teams.json",
+  "agent/workflows.json",
   ".claude/probe",
   ".env",
   "private/id_ed25519",
@@ -253,7 +370,8 @@ for (const ignoredPath of [
   if (result.status !== 0) fail(`expected ignored path is not covered: ${ignoredPath}`);
 }
 
-notes.push(`${settings?.packages?.length ?? 0} portable package paths`);
+notes.push(`${rootSettings?.packages?.length ?? 0} root package paths`);
+notes.push(`${agentSettings?.packages?.length ?? 0} agent-dir package paths`);
 notes.push(`${skillFiles.length} global skills`);
 notes.push(`${expectedDefinitions.length} synchronized subagent/team definitions`);
 
