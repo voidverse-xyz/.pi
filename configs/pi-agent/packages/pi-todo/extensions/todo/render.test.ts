@@ -8,6 +8,7 @@ import {
 	MARK_OPEN,
 	renderCollapsedLine,
 	renderTitleLine,
+	renderTodoLineEllipsis,
 	renderTodoWidgetLines,
 	summarizeTodos,
 	TITLE_ICON,
@@ -53,6 +54,14 @@ test("renderTodoWidgetLines: pending is dim box + plain text", () => {
 	const lines = renderTodoWidgetLines(list, theme);
 	assert.ok(lines[2]!.includes(`<dim>${MARK_OPEN}</dim>`));
 	assert.ok(lines[2]!.includes("<text>Fix mail</text>"));
+});
+
+test("renderTodoLineEllipsis: matches the todo row color", () => {
+	const lines = renderTodoWidgetLines(list, theme);
+	assert.equal(renderTodoLineEllipsis(lines[0]!, theme), "<dim>...</dim>");
+	assert.equal(renderTodoLineEllipsis(lines[1]!, theme), "<accent>...</accent>");
+	assert.equal(renderTodoLineEllipsis(lines[2]!, theme), "<text>...</text>");
+	assert.equal(renderTodoLineEllipsis(renderTitleLine(list, theme), theme), "<dim>...</dim>");
 });
 
 test("renderTodoWidgetLines: empty list renders nothing", () => {

@@ -28,7 +28,8 @@ The widget is a live factory component (not a string-array widget): pi wraps
 string-array lines in pi-tui `Text`, which drops blank lines, so the padding row —
 and full control over truncation — require a component. Every rendered line is
 ANSI-aware truncated to the component width so long items cannot overflow narrow
-terminals.
+terminals, and the inserted `...` matches the truncated todo's state color (dim
+completed, accent in-progress, normal text pending).
 
 ## Surfaces
 

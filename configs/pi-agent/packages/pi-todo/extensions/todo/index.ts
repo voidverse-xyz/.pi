@@ -38,6 +38,7 @@ import {
 	renderCollapsedLine,
 	renderTitleLine,
 	renderTodoItem,
+	renderTodoLineEllipsis,
 	renderTodoWidgetLines,
 	summarizeTodos,
 	type TodoItem,
@@ -118,7 +119,8 @@ export default function todoList(pi: ExtensionAPI) {
 			activeTui = tui;
 			return {
 				invalidate() {},
-				render: (width) => buildLines(theme).map((line) => truncateToWidth(line, width)),
+				render: (width) =>
+					buildLines(theme).map((line) => truncateToWidth(line, width, renderTodoLineEllipsis(line, theme))),
 				dispose() {
 					if (activeTui === tui) activeTui = undefined;
 				},

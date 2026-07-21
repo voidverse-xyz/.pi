@@ -51,6 +51,13 @@ export function renderTodoItem(item: TodoItem, theme: TodoRenderTheme): string {
 	}
 }
 
+/** Match a truncated row's ellipsis color to the todo state visible on that row. */
+export function renderTodoLineEllipsis(line: string, theme: TodoRenderTheme, ellipsis = "..."): string {
+	if (line.includes(theme.fg("accent", MARK_OPEN))) return theme.fg("accent", ellipsis);
+	if (line.includes(theme.fg("dim", MARK_OPEN))) return theme.fg("text", ellipsis);
+	return theme.fg("dim", ellipsis);
+}
+
 /**
  * pi core hard-caps string widgets at 10 lines (with a generic "(widget
  * truncated)" suffix). Budget: 1 title + 8 items + 1 padding = 10, so lists up
