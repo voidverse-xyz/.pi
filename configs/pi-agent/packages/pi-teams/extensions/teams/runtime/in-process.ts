@@ -75,8 +75,8 @@ import type { Layout } from "../store/layout.ts";
 import { resolveTypeDef } from "../typedefs/discover.ts";
 import type { TypeDefinition } from "../typedefs/parse.ts";
 import { createSubagentTools, type SubagentMailPort } from "../tools/sub-agent.ts";
-import { collapseWhitespace, flattenMessageContent } from "../text.ts";
-import { extractToolActivity } from "../tui/activity.ts";
+import { collapseWhitespace, flattenMessageContent, liveThinkingSummary } from "../text.ts";
+import { toolSummary } from "../tui/activity.ts";
 import { buildSandboxedTools } from "../sandbox/tools-filter.ts";
 import { makeCommandDenyCheck, makeSystemDenyCheck } from "../sandbox/system-deny.ts";
 import { type ConfirmFn, denyAllConfirm } from "../sandbox/safety-bridge.ts";
@@ -753,15 +753,53 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 			this.activity.set(address, { tool: "", summary: "thinking…", toolUses: 0 });
 			let failure: { stopReason: string; message: string } | null = null;
+			let thinkingText = "";
+			const activeTools = new Map<string, { tool: string; summary: string }>();
+			const publishActivity = (next: AgentActivity): void => {
+				this.activity.set(address, next);
+				this.emit({ type: "state-changed", address, state: "running" });
+			};
+			const publishThinking = (): void => {
+				const prev = this.activity.get(address);
+				if (!prev || activeTools.size > 0) return;
+				// The widget polls at 400ms, so avoid firing one runtime event per token.
+				this.activity.set(address, { ...prev, tool: "", summary: liveThinkingSummary(thinkingText) });
+			};
 			const unsubscribe = handle.session.subscribe((event) => {
-				// Track the current tool call for the tree widget.
-				if (event.type === "entry_appended") {
-					const activity = extractToolActivity((event as { entry?: unknown }).entry);
-					if (activity) {
-						const prev = this.activity.get(address);
-						this.activity.set(address, { ...activity, toolUses: (prev?.toolUses ?? 0) + 1 });
-						this.emit({ type: "state-changed", address, state: "running" });
+				if (event.type === "message_update") {
+					const streamEvent = event.assistantMessageEvent;
+					if (streamEvent.type === "thinking_start") {
+						thinkingText = "";
+						return;
 					}
+					if (streamEvent.type === "thinking_delta") {
+						thinkingText = `${thinkingText}${streamEvent.delta}`.slice(-4096);
+						publishThinking();
+						return;
+					}
+					if (streamEvent.type === "thinking_end") {
+						thinkingText = streamEvent.content.slice(-4096);
+						publishThinking();
+					}
+					return;
+				}
+				if (event.type === "tool_execution_start") {
+					const prev = this.activity.get(address);
+					if (!prev) return;
+					const tool = event.toolName;
+					const current = { tool, summary: toolSummary(tool, event.args) };
+					activeTools.set(event.toolCallId, current);
+					publishActivity({ ...prev, ...current, toolUses: prev.toolUses + 1 });
+					return;
+				}
+				if (event.type === "tool_execution_end") {
+					const prev = this.activity.get(address);
+					if (!prev) return;
+					activeTools.delete(event.toolCallId);
+					const current = [...activeTools.values()].at(-1);
+					publishActivity(current
+						? { ...prev, ...current }
+						: { ...prev, tool: "", summary: "thinking…" });
 					return;
 				}
 				if (event.type !== "agent_end") return;

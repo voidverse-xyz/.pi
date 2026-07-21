@@ -4,9 +4,9 @@
  * one row per currently-working agent shows its tool-use count and current call:
  *
  *    2 running · 1 waiting · 󰇮 3 · alt+a stop
- *   ├─ test runner ·  10 tools ·  12k tokens ·  18%
+ *   ├─ test runner ·  10 tools ·  18% ·  12k tokens
  *   │  └ Bash: npm test
- *   └─ source scout ·  3 tools ·  8.1k tokens ·  11%
+ *   └─ source scout ·  3 tools ·  11% ·  8.1k tokens
  *      └ Read: src/index.ts
  *
  * A raw component factory (rather than string-array content) preserves the
@@ -63,10 +63,10 @@ export function renderTreeLines(
 		const context = row.ctxPercent === null ? "?" : `${Math.round(row.ctxPercent)}%`;
 		const verboseMetrics = [
 			`${TOOL_ICON} ${row.toolUses} tool${row.toolUses === 1 ? "" : "s"}`,
-			`${TOKEN_ICON} ${formatTokens(row.tokens)} tokens`,
 			`${CONTEXT_ICON} ${context}`,
+			`${TOKEN_ICON} ${formatTokens(row.tokens)} tokens`,
 		].join(" · ");
-		const compactMetrics = `${TOOL_ICON} ${row.toolUses} · ${TOKEN_ICON} ${formatTokens(row.tokens)} · ${CONTEXT_ICON} ${context}`;
+		const compactMetrics = `${TOOL_ICON} ${row.toolUses} · ${CONTEXT_ICON} ${context} · ${TOKEN_ICON} ${formatTokens(row.tokens)}`;
 		const prefix = `${branch} `;
 		const suffix = ` · ${verboseMetrics}`;
 		const name = row.label || row.address;

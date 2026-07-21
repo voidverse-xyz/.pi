@@ -73,7 +73,7 @@ export async function makeWorld(name) {
 					break;
 				}
 			}
-			if (spec.delayMs) await new Promise((r) => setTimeout(r, spec.delayMs));
+			if (spec.delayMs && (spec.tools || !spec.thinking)) await new Promise((r) => setTimeout(r, spec.delayMs));
 			const usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 } };
 			const base = { role: "assistant", api: model.api, provider: model.provider, model: model.id, usage, timestamp: Date.now() };
 			if (spec.tools) {
@@ -86,11 +86,23 @@ export async function makeWorld(name) {
 				});
 				stream.push({ type: "done", reason: "toolUse", message: output });
 			} else {
-				const output = { ...base, content: [{ type: "text", text: spec.text }], stopReason: "stop" };
+				const thinking = typeof spec.thinking === "string" ? spec.thinking : "";
+				const content = [
+					...(thinking ? [{ type: "thinking", thinking }] : []),
+					{ type: "text", text: spec.text },
+				];
+				const output = { ...base, content, stopReason: "stop" };
 				stream.push({ type: "start", partial: output });
-				stream.push({ type: "text_start", contentIndex: 0, partial: output });
-				stream.push({ type: "text_delta", contentIndex: 0, delta: spec.text, partial: output });
-				stream.push({ type: "text_end", contentIndex: 0, content: spec.text, partial: output });
+				if (thinking) {
+					stream.push({ type: "thinking_start", contentIndex: 0, partial: output });
+					stream.push({ type: "thinking_delta", contentIndex: 0, delta: thinking, partial: output });
+					if (spec.delayMs) await new Promise((r) => setTimeout(r, spec.delayMs));
+					stream.push({ type: "thinking_end", contentIndex: 0, content: thinking, partial: output });
+				}
+				const textIndex = thinking ? 1 : 0;
+				stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
+				stream.push({ type: "text_delta", contentIndex: textIndex, delta: spec.text, partial: output });
+				stream.push({ type: "text_end", contentIndex: textIndex, content: spec.text, partial: output });
 				stream.push({ type: "done", reason: "stop", message: output });
 			}
 			stream.end();

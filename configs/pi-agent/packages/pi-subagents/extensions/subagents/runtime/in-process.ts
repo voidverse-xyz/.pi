@@ -74,7 +74,7 @@ import { buildSandboxedTools, selectToolNames } from "../sandbox/tools-filter.ts
 import { makeCommandDenyCheck, makeSystemDenyCheck } from "../sandbox/system-deny.ts";
 import { type ConfirmFn, denyAllConfirm } from "../sandbox/safety-bridge.ts";
 import { readTranscriptTail } from "../session-read.ts";
-import { ellipsize, labelFromSource, MAX_LABEL_CHARS } from "../text.ts";
+import { ellipsize, labelFromSource, liveThinkingSummary, MAX_LABEL_CHARS } from "../text.ts";
 import type {
 	AgentActivity,
 	AgentActivityRow,
@@ -734,8 +734,9 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 	/**
 	 * Seed the live activity row and subscribe to the session's stream events:
-	 * current tool call + count for the tree widget, live tokens/ctx refresh on
-	 * message_end, and terminal-failure capture off agent_end. Pure telemetry —
+	 * current tool call + count for the tree widget, provider-visible thinking,
+	 * live tokens/ctx refresh on message_end, and terminal-failure capture off
+	 * agent_end. Pure telemetry —
 	 * no mail or lifecycle decisions here. Returns the unsubscribe plus a getter
 	 * for the failure observed this turn (if any).
 	 */
@@ -749,12 +750,36 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			ctxPercent: startingVitals.ctxPercent,
 		});
 		let failure: TurnFailure | null = null;
+		let thinkingText = "";
 		const activeTools = new Map<string, { tool: string; summary: string }>();
 		const publishActivity = (next: AgentActivity): void => {
 			this.activity.set(address, next);
 			this.emit({ type: "state-changed", address, state: "running" });
 		};
+		const publishThinking = (): void => {
+			const prev = this.activity.get(address);
+			if (!prev || activeTools.size > 0) return;
+			// The widget polls at 400ms, so avoid firing one runtime event per token.
+			this.activity.set(address, { ...prev, tool: "", summary: liveThinkingSummary(thinkingText) });
+		};
 		const unsubscribe = handle.session.subscribe((event) => {
+			if (event.type === "message_update") {
+				const streamEvent = event.assistantMessageEvent;
+				if (streamEvent.type === "thinking_start") {
+					thinkingText = "";
+					return;
+				}
+				if (streamEvent.type === "thinking_delta") {
+					thinkingText = `${thinkingText}${streamEvent.delta}`.slice(-4096);
+					publishThinking();
+					return;
+				}
+				if (streamEvent.type === "thinking_end") {
+					thinkingText = streamEvent.content.slice(-4096);
+					publishThinking();
+				}
+				return;
+			}
 			if (event.type === "tool_execution_start") {
 				const prev = this.activity.get(address);
 				if (!prev) return;

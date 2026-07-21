@@ -68,7 +68,7 @@ await test("live activity tracks starts, finishes, exact tool uses, human label,
 	});
 	world.scripts.push({
 		match: (c) => c.address === "scout/activity" && c.lastUserText.includes("Exercise activity"),
-		reply: () => ({ delayMs: 250, text: "Activity exercised." }),
+		reply: () => ({ delayMs: 250, thinking: "Reviewing both completed writes before reporting.", text: "Activity exercised." }),
 	});
 	await activityCore.spawn({ type: "scout", id: "activity", label: "activity probe", task: "Exercise activity tracking." });
 	const running = await until(() => {
@@ -83,9 +83,11 @@ await test("live activity tracks starts, finishes, exact tool uses, human label,
 	releaseTools();
 	const thinking = await until(() => {
 		const candidate = activityCore.activitySnapshot().find((entry) => entry.address === "scout/activity");
-		return candidate?.toolUses === 2 && candidate.tool === "" && candidate.summary === "thinking…" ? candidate : null;
+		return candidate?.toolUses === 2 && candidate.tool === "" && candidate.summary === "Thinking: Reviewing both completed writes before reporting."
+			? candidate
+			: null;
 	}, 2000);
-	assert.ok(thinking, "completed tools clear the current-tool label during the next model response");
+	assert.ok(thinking, "provider-visible thinking replaces the generic placeholder during the next model response");
 	await activityCore.whenIdle();
 	await activityCore.dispose();
 });

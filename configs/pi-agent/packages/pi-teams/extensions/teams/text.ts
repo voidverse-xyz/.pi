@@ -18,6 +18,18 @@ export function collapseAndCap(text: string, max: number): string {
 	return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 }
 
+/** Build a one-line, tail-biased summary from provider-visible thinking output. */
+export function liveThinkingSummary(text: string, max = 96): string {
+	const prefix = "Thinking: ";
+	const flat = collapseWhitespace(text);
+	if (!flat) return "thinking…";
+	const budget = Math.max(1, max - prefix.length);
+	const chars = Array.from(flat);
+	if (chars.length <= budget) return `${prefix}${flat}`;
+	const tail = chars.slice(-(budget - 1)).join("").trimStart();
+	return `${prefix}…${tail}`;
+}
+
 /**
  * Flatten a session message's `content` (string or part array) to plain text.
  * With `placeholders`, non-text parts render as "[type]" markers and parts join

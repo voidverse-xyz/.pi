@@ -14,6 +14,18 @@ export function ellipsize(text: string, max: number): string {
 	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
+/** Build a one-line, tail-biased summary from provider-visible thinking output. */
+export function liveThinkingSummary(text: string, max = 96): string {
+	const prefix = "Thinking: ";
+	const flat = text.replace(/\s+/g, " ").trim();
+	if (!flat) return "thinking…";
+	const budget = Math.max(1, max - prefix.length);
+	const chars = Array.from(flat);
+	if (chars.length <= budget) return `${prefix}${flat}`;
+	const tail = chars.slice(-(budget - 1)).join("").trimStart();
+	return `${prefix}…${tail}`;
+}
+
 /**
  * Derive a display label from free task/prompt text: strip light markdown,
  * flatten whitespace, prefer the first sentence, and cap at MAX_LABEL_CHARS

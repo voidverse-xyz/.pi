@@ -51,9 +51,14 @@ function mockStream(model, context) {
 	(async () => {
 		llmCalls.push({ systemPrompt: context.systemPrompt ?? "", model: `${model.provider}/${model.id}` });
 		const text = `MOCK_REPLY_${llmCalls.length}`;
+		const thinking = llmCalls.length === 1 ? "Inspecting the requested runtime task before replying." : "";
+		const content = [
+			...(thinking ? [{ type: "thinking", thinking }] : []),
+			{ type: "text", text },
+		];
 		const output = {
 			role: "assistant",
-			content: [{ type: "text", text }],
+			content,
 			api: model.api,
 			provider: model.provider,
 			model: model.id,
@@ -62,9 +67,16 @@ function mockStream(model, context) {
 			timestamp: Date.now(),
 		};
 		stream.push({ type: "start", partial: output });
-		stream.push({ type: "text_start", contentIndex: 0, partial: output });
-		stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: output });
-		stream.push({ type: "text_end", contentIndex: 0, content: text, partial: output });
+		if (thinking) {
+			stream.push({ type: "thinking_start", contentIndex: 0, partial: output });
+			stream.push({ type: "thinking_delta", contentIndex: 0, delta: thinking, partial: output });
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			stream.push({ type: "thinking_end", contentIndex: 0, content: thinking, partial: output });
+		}
+		const textIndex = thinking ? 1 : 0;
+		stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
+		stream.push({ type: "text_delta", contentIndex: textIndex, delta: text, partial: output });
+		stream.push({ type: "text_end", contentIndex: textIndex, content: text, partial: output });
 		stream.push({ type: "done", reason: "stop", message: output });
 		stream.end();
 	})();
@@ -104,6 +116,15 @@ async function test(name, fn) {
 	console.log(`  ok  ${name}`);
 }
 
+async function until(fn, timeoutMs = 2000) {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const value = fn();
+		if (value || Date.now() >= deadline) return value;
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+}
+
 console.log("scheduler:");
 await test("FIFO + capped + double-release no-op", async () => {
 	const s = new Scheduler(2);
@@ -134,6 +155,11 @@ await test("spawn with task runs a real turn; JSONL + vitals land", async () => 
 	const result = await core.spawn({ type: "researcher", id: "q1", task: "Investigate X." });
 	assert.equal(result.address, "researcher/q1");
 	assert.equal(result.created, true);
+	const thinking = await until(() => {
+		const candidate = core.activitySnapshot().find((entry) => entry.address === "researcher/q1");
+		return candidate?.summary === "Thinking: Inspecting the requested runtime task before replying." ? candidate : null;
+	});
+	assert.ok(thinking, "provider-visible thinking replaces the generic placeholder during a live turn");
 	await core.whenIdle();
 	const dir = layout.agentInstanceDir("researcher", "q1");
 	const jsonl = readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
