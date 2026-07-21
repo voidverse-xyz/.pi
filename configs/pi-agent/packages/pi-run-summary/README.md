@@ -1,10 +1,14 @@
 # pi-run-summary
 
-Shows one muted Pi notification after the main agent fully finishes:
+Shows one compact Pi notification after the main agent fully finishes:
 
 ```text
-• Implemented the requested completion summary. ·  45.2k ·  3.1k ·  2m 14s
+• Implemented the requested completion summary.
+   45.2k ·  3.1k ·  2m 14s
 ```
+
+Terminal UIs cannot change font size per line, so the telemetry line uses the
+active theme's dim tertiary-text color to give it less visual weight.
 
 The extension:
 
@@ -30,9 +34,9 @@ The extension:
 - makes no additional model call or round trip. The hidden outcome adds only its
   instruction and a short sentence to the existing turn's token usage;
 - emits and requests summaries only in interactive TUI mode. It keeps Pi's
-  `info` notification path for the compact chat line while explicitly using the
-  active theme's `muted`
-  secondary-text color instead of the dim tertiary-text color.
+  `info` notification path, renders the outcome in the active theme's `muted`
+  secondary-text color, and puts token/time telemetry on a second line in the
+  `dim` tertiary-text color.
 
 Enable the package by adding its directory to Pi's `packages` setting, then run
 `/reload` or restart Pi.

@@ -180,7 +180,7 @@ try {
 	await flushTimers();
 	assert.deepEqual(notifications, [
 		{
-			message: "<muted>• Verified the completion-summary lifecycle. ·  3.0k ·  500 ·  1m 5s</muted>",
+			message: "<muted>• Verified the completion-summary lifecycle.</muted>\n<dim>   3.0k ·  500 ·  1m 5s</dim>",
 			type: "info",
 		},
 	]);
@@ -195,7 +195,7 @@ try {
 	await flushTimers();
 	assert.equal(
 		notifications.at(-1).message,
-		"<muted>• The agent run was stopped. ·  15 ·  1 ·  <1s</muted>",
+		"<muted>• The agent run was stopped.</muted>\n<dim>   15 ·  1 ·  <1s</dim>",
 		"an empty final response clears stale prose and uses the stop-reason fallback",
 	);
 
@@ -215,7 +215,7 @@ try {
 	await flushTimers();
 	assert.equal(
 		notifications.at(-1).message,
-		"<muted>• Latest answer wins. ·  25 ·  5 ·  1s</muted>",
+		"<muted>• Latest answer wins.</muted>\n<dim>   25 ·  5 ·  1s</dim>",
 		"a later unmarked response clears an earlier generated summary",
 	);
 
@@ -240,7 +240,7 @@ try {
 	await flushTimers();
 	assert.equal(
 		notifications.at(-1).message,
-		"<muted>• Answered without using the terminating tool preamble. ·  28 ·  6 ·  1s</muted>",
+		"<muted>• Answered without using the terminating tool preamble.</muted>\n<dim>   28 ·  6 ·  1s</dim>",
 		"a terminating tool turn cannot replace the latest non-tool outcome",
 	);
 
@@ -272,4 +272,4 @@ try {
 	Date.now = originalNow;
 }
 
-console.log("run summary ok — prompt protocol, marker stripping, lifecycle, tokens, and fallback");
+console.log("run summary ok — prompt protocol, marker stripping, lifecycle, two-line telemetry, and fallback");

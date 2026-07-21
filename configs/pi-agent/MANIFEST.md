@@ -22,7 +22,7 @@ Pi packages live under `packages/<name>/` and are enabled through portable relat
 | `pi-questions` | LLM-callable `ask_user` TUI questions with defaults and non-selecting recommendations |
 | `pi-queue` | Managed, session-persistent steer/follow-up messages with an above-working queue card and `/queue` |
 | `pi-run-guard` | Confirmation before interrupting an active run |
-| `pi-run-summary` | Muted `agent_settled` completion line with Nerd Font input/output/clock icons, per-run usage, elapsed time, and a same-turn model-authored outcome stripped from the final response before storage (deterministic no-truncation fallback) |
+| `pi-run-summary` | Two-line `agent_settled` completion notice with a muted outcome plus dim Nerd Font input/output/clock telemetry, per-run usage, elapsed time, and a same-turn model-authored outcome stripped from the final response before storage (deterministic no-truncation fallback) |
 | `pi-safety` | Main-agent Bash confirmation modes and privacy-preserving `/safety-log` |
 | `pi-session-name` | Session naming commands |
 | `pi-show-files` | LLM-callable `show_files` curated file browser |

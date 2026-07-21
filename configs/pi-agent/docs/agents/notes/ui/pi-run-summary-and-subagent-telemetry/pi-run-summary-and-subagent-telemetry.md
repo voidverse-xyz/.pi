@@ -15,18 +15,21 @@ aggregates finalized assistant usage at `agent_end`. It finalizes at an idle
 `agent_settled`, deferred by one event-loop tick so an immediate continuation can
 cancel the notification through `agent_start`.
 
-The TUI line has this shape:
+The TUI notice has this shape:
 
 ```text
-• Implemented the requested change. · 2m 14s · ↑45.2k · ↓3.1k
+• Implemented the requested change.
+   45.2k ·  3.1k ·  2m 14s
 ```
 
-A simple bullet and the locally derived outcome lead the line, so the visible
-text reads as a summary rather than a timing status. `↑` is Pi's uncached
-`usage.input` bucket and `↓` is `usage.output`; cache read and write buckets are
-deliberately omitted. The outcome comes from the first meaningful sentence of
-the final assistant response after local Markdown cleanup. There is no extra
-model call. Error, abort, and token-limit runs have honest local fallbacks.
+A simple bullet and the outcome lead the notice, so it reads as a summary rather
+than a timing status. Terminal UIs cannot vary font size per line; the telemetry
+line instead uses the theme's dim tertiary-text color to reduce its visual
+weight. `` is Pi's uncached `usage.input` bucket and `` is `usage.output`;
+cache read and write buckets are deliberately omitted. The outcome is generated
+in the existing model turn through a hidden terminal marker, with no extra model
+call. The first meaningful final-response sentence remains the deterministic
+fallback. Error, abort, and token-limit runs have honest local fallbacks.
 Non-TUI modes do not emit the notice.
 
 ## Subagent labels

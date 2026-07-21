@@ -131,7 +131,10 @@ function fallbackSummary(stopReason: StopReason | undefined): string {
 export function buildCompletionNotice(run: RunState, finishedAt: number): string {
 	const duration = formatDuration(finishedAt - run.startedAt);
 	const summary = run.generatedSummary ?? summarizeFinalResponse(run.finalText ?? "") ?? fallbackSummary(run.stopReason);
-	return `${SUMMARY_ICON} ${summary} · ${INPUT_ICON} ${formatTokens(run.inputTokens)} · ${OUTPUT_ICON} ${formatTokens(run.outputTokens)} · ${ELAPSED_ICON} ${duration}`;
+	const input = formatTokens(run.inputTokens);
+	const output = formatTokens(run.outputTokens);
+
+	return `${SUMMARY_ICON} ${summary}\n  ${INPUT_ICON} ${input} · ${OUTPUT_ICON} ${output} · ${ELAPSED_ICON} ${duration}`;
 }
 
 export default function runSummary(pi: ExtensionAPI): void {
@@ -203,9 +206,12 @@ export default function runSummary(pi: ExtensionAPI): void {
 			currentRun = undefined;
 			if (ctx.mode !== "tui") return;
 
-			// Keep Pi's info-notification chat behavior, but override its dim wrapper
-			// with the theme's brighter secondary-text color.
-			const notice = ctx.ui.theme.fg("muted", buildCompletionNotice(candidate, Date.now()));
+			// Terminals cannot vary font size within a notification. Put telemetry on
+			// its own line and use tertiary text so it has less visual weight.
+			const notice = buildCompletionNotice(candidate, Date.now())
+				.split("\n")
+				.map((line, index) => ctx.ui.theme.fg(index === 0 ? "muted" : "dim", line))
+				.join("\n");
 			ctx.ui.notify(notice, "info");
 		}, 0);
 		pendingToast.unref?.();
