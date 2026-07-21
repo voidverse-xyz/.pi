@@ -9,7 +9,7 @@ pre-trust guard for the portable global-config layout described below.
 
 - borderless, full-width `#373739` prompt field with a bold `›` prompt and one outer row of breathing room above and below
 - a randomly selected animated spinner (accent-colored, options include a Claude Code-style blinking star pulse `· ✢ ✳ ✶ ✻ ✽`) and capitalized work-related label per agent run, formatted as `Building… (21m 29s · ↓ 62.3k tokens)` — hours-aware elapsed time and run-cumulative output tokens in dim parentheses, the token segment hidden until the first tokens arrive
-- optional working-indicator animation, disabled by default: when enabled with `/working-animation on`, the status renders as a three-line full-width animated background block — a tinted padding row above and below, the status text centered on the middle row — spanning the full range from black to the theme's prompt-field gray (`userMessageBg`, falling back to a darkened accent), one style picked at random per agent run with lightly randomized timing: `breathe` (soft pulse), `aurora` (slow drifting wash), `comet` (glow sweeping the empty runway), or `shimmer` (scrolling brightness wave). Sparse theme-green Matrix character rain can be enabled separately with `/matrix on` and falls across all three rows over that background without obscuring the status label. Implemented as a presentation-only runtime patch of the built-in `WorkingStatusIndicator` renderer, restored on shutdown; truecolor themes only
+- optional working-indicator animation, disabled by default: when enabled with `/working-animation on`, the status renders as a three-line full-width animated background block — a tinted padding row above and below, the status text centered on the middle row — spanning the full range from black to the theme's prompt-field gray (`userMessageBg`, falling back to a darkened accent), one style picked at random per agent run with lightly randomized timing: `breathe` (soft pulse), `aurora` (slow drifting wash), `comet` (glow sweeping the empty runway), or `shimmer` (scrolling brightness wave). Sparse theme-green Matrix character rain can be enabled separately with `/matrix on` and falls across all three rows over that background without obscuring the status label. Implemented as a presentation-only interception through Pi's root-exported `InteractiveMode`, which decorates each built-in working indicator without resolving private files beside the executable; restored on shutdown, pinned to Pi 0.80.10, and truecolor themes only
 - one dim, full-width separator after each completed tool row
 - transparent tool result backgrounds instead of colored cards
 - hidden Pi startup header
@@ -18,8 +18,10 @@ pre-trust guard for the portable global-config layout described below.
 Tool calls and output use Pi's original renderers, including its normal expansion
 keybinding. A presentation-only runtime patch adds a divider to the existing tool-row
 component after it renders; it does not replace tool execution or tool definitions.
-The patch is restored during session shutdown and reinstalled after reload.
-Working-token counts accumulate across the whole agent run — finalized
+The tool patch uses Pi's root-exported `ToolExecutionComponent`, so npm and
+standalone builds patch the same bundled class without a private filesystem
+import. Both patches are restored during session shutdown and reinstalled after
+reload. Working-token counts accumulate across the whole agent run — finalized
 assistant messages plus the currently streaming one — using the provider's
 exact output usage when available and a chars/4 text-length estimate
 otherwise. (`pi-todo` renders its own separate status line — `✻ <LLM-set
@@ -69,14 +71,16 @@ declines trust. That message is misleading for this alias because the same resou
 are already loaded globally. The guard therefore installs a narrowly scoped,
 idempotent presentation patch that skips only this alias warning and forwards every
 other project to Pi's original warning renderer. The shim is pinned to the verified
-Pi version; on a version mismatch or missing private renderer it fails open and the
+Pi version, restores on shutdown, and migrates the older non-restoring patch during
+reload; on a version mismatch or missing private renderer it fails open and the
 warning remains visible.
 
 ## Verify
 
 - Live preview: `node test/preview-working-sweep.mjs`
 - Static preview frames: `node test/preview-working-sweep.mjs --frames`
-- Runtime renderer regression: `node test/working-background.test.mjs`
+- Working renderer regression: `node test/working-background.test.mjs`
+- Tool separator regression: `node test/tool-separator.test.mjs`
 - Config-alias trust regression: `node test/config-alias-guard.test.mjs`
 
 ## Install

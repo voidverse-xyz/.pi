@@ -11,13 +11,18 @@ import {
 const TRUST_WARNING_PATCH = Symbol.for("void-agent.config-alias-trust-warning-patch");
 const SUPPORTED_PI_VERSION = "0.80.10";
 
-type InteractiveModeInternals = {
-	sessionManager?: { getCwd?: () => string };
-	renderProjectTrustWarningIfNeeded?: () => void;
-	[key: symbol]: unknown;
+type ProjectTrustWarningRenderer = (this: InteractiveModeInternals) => void;
+
+type TrustWarningPatch = {
+	original: ProjectTrustWarningRenderer;
+	patched: ProjectTrustWarningRenderer;
 };
 
-type ProjectTrustWarningRenderer = (this: InteractiveModeInternals) => void;
+type InteractiveModeInternals = {
+	sessionManager?: { getCwd?: () => string };
+	renderProjectTrustWarningIfNeeded?: ProjectTrustWarningRenderer;
+	[TRUST_WARNING_PATCH]?: TrustWarningPatch | ProjectTrustWarningRenderer;
+};
 
 function sameFilesystemEntry(left: string, right: string): boolean {
 	try {
@@ -45,27 +50,43 @@ function getInteractiveModeCwd(mode: InteractiveModeInternals): string | undefin
  * Pi 0.80.10 has no supported API for suppressing one untrusted-project banner.
  * Patch its renderer idempotently and fail open if that private method changes.
  */
-export function installAliasTrustWarningPatch(): boolean {
-	if (VERSION !== SUPPORTED_PI_VERSION) return false;
+export function installAliasTrustWarningPatch(): (() => void) | undefined {
+	if (VERSION !== SUPPORTED_PI_VERSION) return undefined;
 	const prototype = InteractiveMode.prototype as unknown as InteractiveModeInternals;
-	if (typeof prototype[TRUST_WARNING_PATCH] === "function") return true;
+	const existing = prototype[TRUST_WARNING_PATCH];
+	if (existing && typeof existing !== "function") return () => {};
+	// Migrate a patch installed by the pre-cleanup implementation during /reload.
+	if (typeof existing === "function") {
+		prototype.renderProjectTrustWarningIfNeeded = existing;
+		delete prototype[TRUST_WARNING_PATCH];
+	}
 
-	const renderWarning = prototype.renderProjectTrustWarningIfNeeded as ProjectTrustWarningRenderer | undefined;
-	if (typeof renderWarning !== "function") return false;
+	const original = prototype.renderProjectTrustWarningIfNeeded;
+	if (typeof original !== "function") return undefined;
 
-	prototype[TRUST_WARNING_PATCH] = renderWarning;
-	prototype.renderProjectTrustWarningIfNeeded = function renderProjectTrustWarningIfNeeded(): void {
+	const patched: ProjectTrustWarningRenderer = function renderProjectTrustWarningIfNeeded(): void {
 		const cwd = getInteractiveModeCwd(this);
 		if (cwd && isGlobalConfigExposedAsProject(cwd)) return;
-		renderWarning.call(this);
+		original.call(this);
 	};
-	return true;
+	prototype.renderProjectTrustWarningIfNeeded = patched;
+	prototype[TRUST_WARNING_PATCH] = { original, patched };
+
+	return () => {
+		const state = prototype[TRUST_WARNING_PATCH];
+		if (!state || typeof state === "function" || prototype.renderProjectTrustWarningIfNeeded !== state.patched) return;
+		prototype.renderProjectTrustWarningIfNeeded = state.original;
+		delete prototype[TRUST_WARNING_PATCH];
+	};
 }
 
 export default function configAliasGuard(pi: ExtensionAPI): void {
-	installAliasTrustWarningPatch();
+	const restoreTrustWarning = installAliasTrustWarningPatch();
 	pi.on("project_trust", (event) => {
 		if (isGlobalConfigExposedAsProject(event.cwd)) return { trusted: "no" };
 		return { trusted: "undecided" };
+	});
+	pi.on("session_shutdown", () => {
+		restoreTrustWarning?.();
 	});
 }

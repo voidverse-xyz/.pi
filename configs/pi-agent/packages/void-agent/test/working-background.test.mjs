@@ -26,7 +26,6 @@ function findPiPackage() {
 
 const PI_PACKAGE = findPiPackage();
 const scratch = mkdtempSync(join(tmpdir(), "void-agent-"));
-const originalArgv1 = process.argv[1];
 const originalRandom = Math.random;
 const originalNow = Date.now;
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -35,19 +34,21 @@ let commands;
 let ctx;
 let handlers;
 let indicator;
+let interactiveModePrototype;
+let originalShowStatusIndicator;
 
 try {
-	// The extension locates Pi's private presentation components relative to the
-	// real CLI entry point, exactly as it does in a live process.
-	process.argv[1] = join(PI_PACKAGE, "dist", "cli.js");
 	process.env.PI_CODING_AGENT_DIR = scratch;
 	const { loadExtensions } = await import(join(PI_PACKAGE, "dist", "core", "extensions", "loader.js"));
 	const { loadThemeFromPath, setThemeInstance } = await import(
 		join(PI_PACKAGE, "dist", "modes", "interactive", "theme", "theme.js")
 	);
+	const { InteractiveMode } = await import(join(PI_PACKAGE, "dist", "index.js"));
 	const { WorkingStatusIndicator } = await import(
 		join(PI_PACKAGE, "dist", "modes", "interactive", "components", "status-indicator.js")
 	);
+	interactiveModePrototype = InteractiveMode.prototype;
+	originalShowStatusIndicator = interactiveModePrototype.showStatusIndicator;
 	const { visibleWidth } = await import(
 		join(PI_PACKAGE, "node_modules", "@earendil-works", "pi-tui", "dist", "index.js")
 	);
@@ -101,6 +102,10 @@ try {
 		Date.now = () => 0;
 		await call("agent_start", { type: "agent_start" });
 		indicator = new WorkingStatusIndicator({ requestRender() {} }, workingMessage, workingIndicator);
+		interactiveModePrototype.showStatusIndicator.call({
+			activeStatusIndicator: undefined,
+			statusContainer: { clear() {}, addChild() {} },
+		}, indicator);
 	};
 
 	await runCommand("matrix", "status");
@@ -208,8 +213,13 @@ try {
 	indicator.dispose();
 	await call("agent_settled", { type: "agent_settled" });
 	await call("session_shutdown", { type: "session_shutdown" });
+	assert.equal(
+		interactiveModePrototype.showStatusIndicator,
+		originalShowStatusIndicator,
+		"standalone-safe InteractiveMode patch restores on shutdown",
+	);
 
-	console.log("working background ok — animation commands, persistence, Matrix rain, colors, and layout");
+	console.log("working background ok — exported host patch, animation commands, persistence, Matrix rain, colors, and layout");
 } finally {
 	indicator?.dispose();
 	if (ctx && handlers) {
@@ -217,7 +227,10 @@ try {
 			try { await handler({ type: "agent_settled" }, ctx); } catch { /* cleanup only */ }
 		}
 	}
-	process.argv[1] = originalArgv1;
+	if (interactiveModePrototype && originalShowStatusIndicator) {
+		interactiveModePrototype.showStatusIndicator = originalShowStatusIndicator;
+		delete interactiveModePrototype[Symbol.for("void-agent.working-host-patch")];
+	}
 	Math.random = originalRandom;
 	Date.now = originalNow;
 	if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;

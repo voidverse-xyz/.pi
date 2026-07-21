@@ -3,7 +3,10 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
+	InteractiveMode,
 	type Theme,
+	ToolExecutionComponent,
+	VERSION,
 } from "@earendil-works/pi-coding-agent";
 import {
 	truncateToWidth,
@@ -11,15 +14,17 @@ import {
 	type TUI,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import { mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 
 const DIM = "\x1b[2m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 const RESET_FG = "\x1b[39m";
 const TOOL_PATCH = Symbol.for("void-agent.tool-render-patch");
+const WORKING_HOST_PATCH = Symbol.for("void-agent.working-host-patch");
+const WORKING_INDICATOR_PATCH = Symbol.for("void-agent.working-indicator-patch");
+const SUPPORTED_PI_VERSION = "0.80.10";
 const WORKING_TICK_MS = 200;
 const ANIMATION_CONFIG_PATH = join(getAgentDir(), "void-agent.json");
 const DEFAULT_ANIMATION_CONFIG = {
@@ -409,91 +414,118 @@ type ToolExecutionLike = {
 	getRenderShell(): "default" | "self";
 };
 
-const WORKING_BG_PATCH = Symbol.for("void-agent.working-bg-patch");
-
 // Current full-line background animation; set per agent run, cleared when the
-// run settles. The patched render below reads it on every frame. Note: this
-// state is process-global, not per-session — inherent to patching a shared
-// prototype, since every WorkingStatusIndicator instance renders through it.
+// run settles. The patched render below reads it on every frame. This state is
+// process-global because Pi exposes one shared InteractiveMode class to all
+// extensions, including through the standalone binary's virtual module.
 let activeLineBg: LineBgStyle | undefined;
 let activeLineBgStartedAt = 0;
 
 type RenderFn = (width: number) => string[];
+type RenderPatch = { original: RenderFn; patched: RenderFn };
 
-type PiRenderPrototype = {
+type PiRenderTarget = {
 	render: RenderFn;
-	[marker: symbol]: { original: RenderFn } | undefined;
+	[marker: symbol]: RenderPatch | undefined;
 };
 
-/**
- * Shared scaffold for patching the `render` method of a Pi CLI component
- * class: resolve `modulePath` next to the running CLI entrypoint, dynamically
- * import it, and install `wrap(original)` as the new render. A per-patch
- * `marker` symbol on the prototype keeps installation idempotent (a repeat
- * install returns a no-op restore), and the returned restore only unwinds
- * while this patch still owns `render`. Returns undefined when the module or
- * class cannot be found (e.g. Pi internals moved).
- */
-async function patchPiPrototype(
-	modulePath: string,
-	className: string,
+type WorkingIndicatorLike = PiRenderTarget & {
+	kind?: unknown;
+};
+
+type ShowStatusIndicatorFn = (this: unknown, indicator: WorkingIndicatorLike) => void;
+
+type InteractiveModeInternals = {
+	showStatusIndicator?: ShowStatusIndicatorFn;
+	[WORKING_HOST_PATCH]?: {
+		original: ShowStatusIndicatorFn;
+		patched: ShowStatusIndicatorFn;
+		indicators: Set<WorkingIndicatorLike>;
+	};
+};
+
+function patchRenderTarget(
+	target: PiRenderTarget | undefined,
 	marker: symbol,
 	wrap: (original: RenderFn) => RenderFn,
-): Promise<(() => void) | undefined> {
-	try {
-		const cliPath = realpathSync(process.argv[1] ?? "");
-		const moduleUrl = pathToFileURL(join(dirname(cliPath), modulePath)).href;
-		const module = await import(moduleUrl) as Record<string, { prototype?: PiRenderPrototype } | undefined>;
-		const prototype = module[className]?.prototype;
-		if (!prototype) return undefined;
-		if (prototype[marker]) return () => {};
+): (() => void) | undefined {
+	if (VERSION !== SUPPORTED_PI_VERSION || !target || typeof target.render !== "function") return undefined;
+	if (target[marker]) return () => {};
 
-		const original = prototype.render;
-		const patched = wrap(original);
-		prototype.render = patched;
-		prototype[marker] = { original };
+	const original = target.render;
+	const patched = wrap(original);
+	target.render = patched;
+	target[marker] = { original, patched };
 
-		return () => {
-			if (prototype.render !== patched) return;
-			prototype.render = original;
-			delete prototype[marker];
-		};
-	} catch {
-		return undefined;
-	}
+	return () => {
+		const state = target[marker];
+		if (!state || target.render !== state.patched) return;
+		target.render = state.original;
+		delete target[marker];
+	};
+}
+
+function wrapWorkingRender(original: RenderFn): RenderFn {
+	return function (this: unknown, width: number): string[] {
+		const lines = original.call(this, width);
+		const style = activeLineBg;
+		if (!style || width <= 0) return lines;
+		const t = Math.max(0, Date.now() - activeLineBgStartedAt);
+		// Repaint the content rows and wrap them in tinted padding rows so the
+		// indicator becomes a three-line background block with the status text
+		// centered. The loader's leading blank spacer row stays untinted.
+		const content = collapseStatusLines(lines.filter((line) => line !== ""));
+		const textWidth = visibleWidth(truncateToWidth(content, width, ""));
+		const top = paintPaddingLine(width, style, t, textWidth, 0);
+		const bottom = paintPaddingLine(width, style, t, textWidth, 2);
+		return ["", top, paintStatusLine(content, width, style, t), bottom];
+	};
 }
 
 /**
- * Patch WorkingStatusIndicator.render to repaint its output with the active
- * full-line background animation. The loader's own frame timer already
- * requests renders every ~80ms, which drives the animation.
+ * Pi does not export WorkingStatusIndicator, but it does export the exact
+ * InteractiveMode class used by both npm and standalone builds. Intercept each
+ * working indicator as the host installs it, then patch that instance's render
+ * method. This preserves Pi's native status-container placement without
+ * resolving private files beside the executable.
  */
-function installWorkingBgPatch(): Promise<(() => void) | undefined> {
-	return patchPiPrototype(
-		"modes/interactive/components/status-indicator.js",
-		"WorkingStatusIndicator",
-		WORKING_BG_PATCH,
-		(original) => function (this: unknown, width: number): string[] {
-			const lines = original.call(this, width);
-			const style = activeLineBg;
-			if (!style || width <= 0) return lines;
-			const t = Math.max(0, Date.now() - activeLineBgStartedAt);
-			// Repaint the content rows and wrap them in tinted padding rows so the
-			// indicator becomes a three-line background block with the status text
-			// centered. The loader's leading blank spacer row stays untinted.
-			const content = collapseStatusLines(lines.filter((line) => line !== ""));
-			const textWidth = visibleWidth(truncateToWidth(content, width, ""));
-			const top = paintPaddingLine(width, style, t, textWidth, 0);
-			const bottom = paintPaddingLine(width, style, t, textWidth, 2);
-			return ["", top, paintStatusLine(content, width, style, t), bottom];
-		},
-	);
+function installWorkingBgPatch(): (() => void) | undefined {
+	if (VERSION !== SUPPORTED_PI_VERSION) return undefined;
+	const prototype = InteractiveMode.prototype as unknown as InteractiveModeInternals;
+	if (prototype[WORKING_HOST_PATCH]) return () => {};
+
+	const original = prototype.showStatusIndicator;
+	if (typeof original !== "function") return undefined;
+
+	const indicators = new Set<WorkingIndicatorLike>();
+	const patched: ShowStatusIndicatorFn = function (indicator): void {
+		if (indicator?.kind === "working" && typeof indicator.render === "function") {
+			const restore = patchRenderTarget(indicator, WORKING_INDICATOR_PATCH, wrapWorkingRender);
+			if (restore) indicators.add(indicator);
+		}
+		original.call(this, indicator);
+	};
+
+	prototype.showStatusIndicator = patched;
+	prototype[WORKING_HOST_PATCH] = { original, patched, indicators };
+
+	return () => {
+		const state = prototype[WORKING_HOST_PATCH];
+		if (!state || prototype.showStatusIndicator !== state.patched) return;
+		prototype.showStatusIndicator = state.original;
+		for (const indicator of state.indicators) {
+			const renderState = indicator[WORKING_INDICATOR_PATCH];
+			if (!renderState || indicator.render !== renderState.patched) continue;
+			indicator.render = renderState.original;
+			delete indicator[WORKING_INDICATOR_PATCH];
+		}
+		delete prototype[WORKING_HOST_PATCH];
+	};
 }
 
-function installToolSeparatorPatch(): Promise<(() => void) | undefined> {
-	return patchPiPrototype(
-		"modes/interactive/components/tool-execution.js",
-		"ToolExecutionComponent",
+function installToolSeparatorPatch(): (() => void) | undefined {
+	return patchRenderTarget(
+		ToolExecutionComponent.prototype as unknown as PiRenderTarget,
 		TOOL_PATCH,
 		(original) => function (this: ToolExecutionLike, width: number): string[] {
 			const lines = original.call(this, width);
@@ -514,9 +546,9 @@ function installToolSeparatorPatch(): Promise<(() => void) | undefined> {
 	);
 }
 
-export default async function voidAgent(pi: ExtensionAPI): Promise<void> {
-	const restoreToolRenderer = await installToolSeparatorPatch();
-	const restoreWorkingBg = await installWorkingBgPatch();
+export default function voidAgent(pi: ExtensionAPI): void {
+	const restoreToolRenderer = installToolSeparatorPatch();
+	const restoreWorkingBg = installWorkingBgPatch();
 	const animationConfig = loadAnimationConfig();
 	let workingAnimationEnabled = animationConfig.workingAnimation;
 	let matrixEnabled = animationConfig.matrix;

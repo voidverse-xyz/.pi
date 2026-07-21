@@ -29,6 +29,7 @@ const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const trustWarningPatch = Symbol.for("void-agent.config-alias-trust-warning-patch");
 let interactiveModePrototype;
 let originalWarningRenderer;
+let forwardingWarningRenderer;
 
 try {
 	const agentDir = join(scratch, "agent");
@@ -46,9 +47,10 @@ try {
 	interactiveModePrototype = InteractiveMode.prototype;
 	originalWarningRenderer = interactiveModePrototype.renderProjectTrustWarningIfNeeded;
 	let forwardedWarnings = 0;
-	interactiveModePrototype.renderProjectTrustWarningIfNeeded = () => {
+	forwardingWarningRenderer = () => {
 		forwardedWarnings++;
 	};
+	interactiveModePrototype.renderProjectTrustWarningIfNeeded = forwardingWarningRenderer;
 
 	const { loadExtensions } = await import(join(PI_PACKAGE, "dist", "core", "extensions", "loader.js"));
 	const loaded = await loadExtensions([EXTENSION], scratch);
@@ -68,6 +70,15 @@ try {
 	assert.equal(forwardedWarnings, 0, "the misleading alias warning is suppressed");
 	patchedWarningRenderer.call({ sessionManager: { getCwd: () => ordinaryCwd } });
 	assert.equal(forwardedWarnings, 1, "unrelated project warnings still use Pi's renderer");
+
+	for (const handler of loaded.extensions[0].handlers.get("session_shutdown") ?? []) {
+		await handler({ type: "session_shutdown" }, {});
+	}
+	assert.equal(
+		interactiveModePrototype.renderProjectTrustWarningIfNeeded,
+		forwardingWarningRenderer,
+		"private trust-warning renderer restores on shutdown",
+	);
 
 	console.log("config alias guard tests passed");
 } finally {

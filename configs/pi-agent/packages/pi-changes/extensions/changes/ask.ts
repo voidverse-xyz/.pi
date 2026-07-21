@@ -24,16 +24,29 @@ const REVIEW_TIMEOUT_MS = 120_000;
 const MAX_STDOUT_CHARS = 4 * 1024 * 1024;
 const MAX_ANSWER_CHARS = 128 * 1024;
 
-/** Re-invoke the current `pi` binary/script (handles bun single-file builds). */
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
-	const currentScript = process.argv[1];
-	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-		return { command: process.execPath, args: [currentScript, ...args] };
+export interface PiInvocationRuntime {
+	execPath: string;
+	currentScript: string | undefined;
+	scriptExists(filePath: string): boolean;
+}
+
+/** Re-invoke the current `pi` binary/script, including Bun single-file builds. */
+export function getPiInvocation(
+	args: string[],
+	runtime?: PiInvocationRuntime,
+): { command: string; args: string[] } {
+	const activeRuntime = runtime ?? {
+		execPath: process.execPath,
+		currentScript: process.argv[1],
+		scriptExists: fs.existsSync,
+	};
+	const execName = path.basename(activeRuntime.execPath).toLowerCase();
+	const isGenericRuntime = /^(node|nodejs|bun)(\.exe)?$/.test(execName);
+	if (!isGenericRuntime) return { command: activeRuntime.execPath, args };
+
+	if (activeRuntime.currentScript && activeRuntime.scriptExists(activeRuntime.currentScript)) {
+		return { command: activeRuntime.execPath, args: [activeRuntime.currentScript, ...args] };
 	}
-	const execName = path.basename(process.execPath).toLowerCase();
-	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-	if (!isGenericRuntime) return { command: process.execPath, args };
 	return { command: "pi", args };
 }
 
