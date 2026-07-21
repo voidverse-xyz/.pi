@@ -2,7 +2,7 @@
   "name": "pi-run-summary",
   "version": "1.0.0",
   "type": "module",
-  "description": "Muted end-of-run notifications with elapsed time, Pi's per-run uncached-input/output counters, and a local final-response summary.",
+  "description": "Muted end-of-run notifications with elapsed time, per-run token counters, and a same-turn model-authored outcome summary.",
   "keywords": [
     "pi-package"
   ],

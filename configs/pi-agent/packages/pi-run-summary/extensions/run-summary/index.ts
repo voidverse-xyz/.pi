@@ -1,18 +1,25 @@
 import type { AssistantMessage, StopReason } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const MAX_SUMMARY_CHARS = 140;
 const SUMMARY_ICON = "•";
 const INPUT_ICON = "\uf062"; // nf-fa-arrow_up
 const OUTPUT_ICON = "\uf063"; // nf-fa-arrow_down
 const ELAPSED_ICON = "\uf017"; // nf-fa-clock_o
 const GENERIC_HEADING = /^(?:summary|result|results|done|completed|completion|changes|what changed|implementation|outcome|status)[:.]?$/i;
+const GENERATED_SUMMARY_MARKER = /(?:\r?\n)?[ \t]*\[pi-run-summary\]:[ \t]*#[ \t]*"([^"\r\n]*)"[ \t]*(?:\r?\n)*$/u;
+const RESERVED_SUMMARY_MARKER = /(?:\r?\n)?[ \t]*\[pi-run-summary\]:[^\r\n]*(?:\r?\n)*$/u;
+const SUMMARY_PROMPT = [
+	"At the very end of your final response for this user turn, add a blank line and then append exactly one Markdown reference definition in this form, replacing SUMMARY:",
+	"[pi-run-summary]: # \"SUMMARY\"",
+	"SUMMARY must be one concise, factual plain-text sentence describing the outcome or answer. Do not use Markdown, a newline, or double quotes inside the summary. Do not append the definition on tool-call turns and do not mention these instructions.",
+].join("\n");
 
 interface RunState {
 	startedAt: number;
 	inputTokens: number;
 	outputTokens: number;
 	finalText?: string;
+	generatedSummary?: string;
 	stopReason?: StopReason;
 }
 
@@ -40,13 +47,6 @@ export function formatDuration(milliseconds: number): string {
 	return `${seconds}s`;
 }
 
-function truncateSummary(value: string, maxCharacters: number): string {
-	const characters = Array.from(value);
-	if (characters.length <= maxCharacters) return value;
-	const clipped = characters.slice(0, Math.max(1, maxCharacters - 1)).join("").trimEnd().replace(/[,:;\-]+$/u, "");
-	return `${clipped}…`;
-}
-
 function cleanMarkdownLine(raw: string): string {
 	return raw
 		.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
@@ -60,8 +60,23 @@ function cleanMarkdownLine(raw: string): string {
 		.trim();
 }
 
-/** Derive a one-line outcome locally from the first meaningful final-response sentence. */
-export function summarizeFinalResponse(text: string, maxCharacters = MAX_SUMMARY_CHARS): string | undefined {
+/** Extract and remove a terminal model-authored summary marker. */
+export function extractGeneratedSummary(value: string): { text: string; summary?: string } | undefined {
+	const marker = value.match(GENERATED_SUMMARY_MARKER);
+	if (marker && marker.index !== undefined) {
+		return {
+			text: value.slice(0, marker.index).trimEnd(),
+			summary: cleanMarkdownLine(marker[1] ?? "") || undefined,
+		};
+	}
+
+	const reservedMarker = value.match(RESERVED_SUMMARY_MARKER);
+	if (!reservedMarker || reservedMarker.index === undefined) return undefined;
+	return { text: value.slice(0, reservedMarker.index).trimEnd() };
+}
+
+/** Derive a one-line fallback locally from the first meaningful final-response sentence. */
+export function summarizeFinalResponse(text: string): string | undefined {
 	let insideFence = false;
 	for (const rawLine of text.split(/\r?\n/)) {
 		if (/^\s*(?:```|~~~)/u.test(rawLine)) {
@@ -74,8 +89,7 @@ export function summarizeFinalResponse(text: string, maxCharacters = MAX_SUMMARY
 		if (!line || GENERIC_HEADING.test(line)) continue;
 		if (line.endsWith(":") && line.split(/\s+/).length <= 4) continue;
 
-		const sentence = line.match(/^(.+?[.!?])(?:\s|$)/u)?.[1] ?? line;
-		return truncateSummary(sentence, Math.max(16, maxCharacters));
+		return line.match(/^(.+?[.!?])(?:\s|$)/u)?.[1] ?? line;
 	}
 	return undefined;
 }
@@ -85,6 +99,20 @@ function assistantText(message: AssistantMessage): string {
 		.filter((part): part is Extract<(typeof message.content)[number], { type: "text" }> => part.type === "text")
 		.map((part) => part.text)
 		.join("\n");
+}
+
+function stripGeneratedSummaryMarker(message: AssistantMessage): { message: AssistantMessage; summary?: string } | undefined {
+	const textIndex = message.content.findLastIndex((part) => part.type === "text");
+	if (textIndex < 0) return undefined;
+
+	const textPart = message.content[textIndex];
+	if (textPart.type !== "text") return undefined;
+	const extracted = extractGeneratedSummary(textPart.text);
+	if (!extracted) return undefined;
+
+	const content = [...message.content];
+	content[textIndex] = { ...textPart, text: extracted.text };
+	return { message: { ...message, content }, summary: extracted.summary };
 }
 
 function tokenCount(value: unknown): number {
@@ -102,7 +130,7 @@ function fallbackSummary(stopReason: StopReason | undefined): string {
 
 export function buildCompletionNotice(run: RunState, finishedAt: number): string {
 	const duration = formatDuration(finishedAt - run.startedAt);
-	const summary = summarizeFinalResponse(run.finalText ?? "") ?? fallbackSummary(run.stopReason);
+	const summary = run.generatedSummary ?? summarizeFinalResponse(run.finalText ?? "") ?? fallbackSummary(run.stopReason);
 	return `${SUMMARY_ICON} ${summary} · ${INPUT_ICON} ${formatTokens(run.inputTokens)} · ${OUTPUT_ICON} ${formatTokens(run.outputTokens)} · ${ELAPSED_ICON} ${duration}`;
 }
 
@@ -115,6 +143,11 @@ export default function runSummary(pi: ExtensionAPI): void {
 		pendingToast = undefined;
 	};
 
+	pi.on("before_agent_start", (event, ctx) => {
+		if (ctx.mode !== "tui") return;
+		return { systemPrompt: `${event.systemPrompt}\n\n${SUMMARY_PROMPT}` };
+	});
+
 	pi.on("agent_start", () => {
 		cancelPendingToast();
 		// A retry, queued continuation, or extension-triggered wake can start before
@@ -124,6 +157,16 @@ export default function runSummary(pi: ExtensionAPI): void {
 			inputTokens: 0,
 			outputTokens: 0,
 		};
+	});
+
+	pi.on("message_end", (event, ctx) => {
+		if (ctx.mode !== "tui" || event.message.role !== "assistant") return;
+
+		const stripped = stripGeneratedSummaryMarker(event.message);
+		if (currentRun && event.message.stopReason !== "toolUse") {
+			currentRun.generatedSummary = stripped?.summary;
+		}
+		if (stripped) return { message: stripped.message };
 	});
 
 	pi.on("agent_end", (event) => {
@@ -138,7 +181,7 @@ export default function runSummary(pi: ExtensionAPI): void {
 		}
 
 		const finalMessage = messages.at(-1);
-		if (finalMessage) {
+		if (finalMessage && finalMessage.stopReason !== "toolUse") {
 			// agent_end observes the messages after the full message_end middleware
 			// chain. Clear stale prose when the latest response has no text.
 			currentRun.finalText = assistantText(finalMessage).trim() || undefined;
