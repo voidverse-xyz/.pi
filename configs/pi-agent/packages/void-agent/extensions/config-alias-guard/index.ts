@@ -9,7 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 const TRUST_WARNING_PATCH = Symbol.for("void-agent.config-alias-trust-warning-patch");
-const SUPPORTED_PI_VERSION = "0.80.10";
+const SUPPORTED_PI_VERSIONS = new Set(["0.80.10", "0.81.0"]);
 
 type ProjectTrustWarningRenderer = (this: InteractiveModeInternals) => void;
 
@@ -47,11 +47,12 @@ function getInteractiveModeCwd(mode: InteractiveModeInternals): string | undefin
 }
 
 /**
- * Pi 0.80.10 has no supported API for suppressing one untrusted-project banner.
+ * Verified Pi releases have no supported API for suppressing one
+ * untrusted-project banner.
  * Patch its renderer idempotently and fail open if that private method changes.
  */
 export function installAliasTrustWarningPatch(): (() => void) | undefined {
-	if (VERSION !== SUPPORTED_PI_VERSION) return undefined;
+	if (!SUPPORTED_PI_VERSIONS.has(VERSION)) return undefined;
 	const prototype = InteractiveMode.prototype as unknown as InteractiveModeInternals;
 	const existing = prototype[TRUST_WARNING_PATCH];
 	if (existing && typeof existing !== "function") return () => {};

@@ -24,7 +24,7 @@ const RESET_FG = "\x1b[39m";
 const TOOL_PATCH = Symbol.for("void-agent.tool-render-patch");
 const WORKING_HOST_PATCH = Symbol.for("void-agent.working-host-patch");
 const WORKING_INDICATOR_PATCH = Symbol.for("void-agent.working-indicator-patch");
-const SUPPORTED_PI_VERSION = "0.80.10";
+const SUPPORTED_PI_VERSIONS = new Set(["0.80.10", "0.81.0"]);
 const WORKING_TICK_MS = 200;
 const ANIMATION_CONFIG_PATH = join(getAgentDir(), "void-agent.json");
 const DEFAULT_ANIMATION_CONFIG = {
@@ -449,7 +449,7 @@ function patchRenderTarget(
 	marker: symbol,
 	wrap: (original: RenderFn) => RenderFn,
 ): (() => void) | undefined {
-	if (VERSION !== SUPPORTED_PI_VERSION || !target || typeof target.render !== "function") return undefined;
+	if (!SUPPORTED_PI_VERSIONS.has(VERSION) || !target || typeof target.render !== "function") return undefined;
 	if (target[marker]) return () => {};
 
 	const original = target.render;
@@ -490,7 +490,7 @@ function wrapWorkingRender(original: RenderFn): RenderFn {
  * resolving private files beside the executable.
  */
 function installWorkingBgPatch(): (() => void) | undefined {
-	if (VERSION !== SUPPORTED_PI_VERSION) return undefined;
+	if (!SUPPORTED_PI_VERSIONS.has(VERSION)) return undefined;
 	const prototype = InteractiveMode.prototype as unknown as InteractiveModeInternals;
 	if (prototype[WORKING_HOST_PATCH]) return () => {};
 
