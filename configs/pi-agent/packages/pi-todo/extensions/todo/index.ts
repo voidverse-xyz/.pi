@@ -24,15 +24,16 @@
  * todo_write call in the replayed session messages, so it survives /reload
  * and resume without any extra persistence.
  *
- * Install as a package: packages/pi-todo/extensions/todo/index.ts
+ * Install as a package: configs/pi-agent/packages/pi-todo/extensions/todo/index.ts
  * Reload: /reload
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text, type TUI } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import {
+	buildTodoCarryoverPrompt,
 	extractLatestTodos,
 	renderCollapsedLine,
 	renderTitleLine,
@@ -47,11 +48,12 @@ import {
 
 const TOOL_NAME = "todo_write";
 const WIDGET_KEY = "todo-list";
+const CARRYOVER_MESSAGE_TYPE = "todo-carryover-context";
 const PLACEMENT = { placement: "aboveEditor" as const };
 // Claude Code uses ctrl+t, but pi core owns that (toggle thinking blocks).
 // alt+o avoids pi core's alt+d delete-word-forward binding and is free across
 // the installed extensions (alt+s teams stop, alt+a subagents stop, alt+q/alt+x
-// queue, alt+t thinking cycle, alt+m model cycle, alt+w workflow stop).
+// queue, alt+t thinking cycle, alt+m model cycle, alt+w procedure stop).
 const TOGGLE_KEY = "alt+o";
 const MAX_TODOS = 50;
 
@@ -116,7 +118,7 @@ export default function todoList(pi: ExtensionAPI) {
 			activeTui = tui;
 			return {
 				invalidate() {},
-				render: () => buildLines(theme),
+				render: (width) => buildLines(theme).map((line) => truncateToWidth(line, width)),
 				dispose() {
 					if (activeTui === tui) activeTui = undefined;
 				},
@@ -139,16 +141,19 @@ export default function todoList(pi: ExtensionAPI) {
 			"one- or two-step tasks, quick fixes, simple lookups, or a single change plus verification. During normal progress use " +
 			"operation update (the default), NEVER remove an existing todo, and keep completed todos visible. Mark a task " +
 			"in_progress BEFORE starting it and completed IMMEDIATELY after it is verified, then advance the next task in the same " +
-			"complete list. Use replace only for a direct user-requested replan and clear only after all items are completed or when " +
-			"the user directly asks to clear/abandon the checklist; destructive operations require their reason when work is unfinished.",
+			"complete list. Use replace only for a direct user-requested replan or clear user-directed task/topic pivot. Clear only " +
+			"after all items are completed, when the user directly asks to clear/abandon the checklist, or when they clearly move " +
+			"to different work; " +
+			"destructive operations require their reason when work is unfinished.",
 		promptSnippet: "todo_write — track genuinely complex work with 3+ substantive steps; normal updates preserve the full list",
 		promptGuidelines: [
-			"Use todo_write only when a task is genuinely complex and naturally decomposes into at least 3 substantive steps. Never use it for 1- or 2-step tasks, quick fixes, simple lookups, or a single change plus verification; do not invent filler steps to reach three.",
+			"Use todo_write only when a task is genuinely complex and naturally decomposes into at least 3 substantive steps. Never use it for 1- or 2-step tasks, quick fixes, simple lookups, or a single change plus verification; do not invent filler steps to reach three. Stale-list cleanup on a clear task/topic pivot is the exception and is allowed even when the new work is simple.",
+			"At the start of a new user turn, preserve the current todo list for continuations and follow-ups. When the user clearly moves to a different task or topic, remove stale work before starting: replace it with a new complete list if the new work needs 3+ substantive steps, otherwise clear it. Include a reason when replacing or clearing unfinished work.",
 			"For normal progress, call todo_write with operation `update` (or omit operation) and resend the complete list. Never remove any existing item; keep completed items visible until the checklist is explicitly cleared or replaced.",
 			"Keep exactly one todo in_progress at a time. As soon as a task is actually done (tests pass, verified), mark that same item completed in the complete list before advancing the next task; never skip the observable completed state.",
 			"Give each todo stable, unique imperative `content` ('Fix store layer') and an `activeForm` ('Fixing store layer'). Do not reword content during a normal update because content is the item identity.",
-			"If new work surfaces, add it without removing existing items. Use operation `replace` with a reason only when the user directly changes or replaces the plan; never use replace to evade marking progress complete.",
-			"Use operation `clear` only after all todos have been completed, or with a reason when the user directly requests that unfinished work be cleared or abandoned. Do not clear in the same turn that marks the final item complete; leave the completed checklist visible with the final report.",
+			"If new work surfaces within the same task, add it without removing existing items. Use operation `replace` with a reason only when the user directly changes the requested work, including a clear move to a different task or topic; never use replace to evade marking progress complete.",
+			"Use operation `clear` only after all todos have been completed, or with a reason when the user directly requests that unfinished work be cleared/abandoned or clearly moves to a different task or topic. Do not clear in the same turn that marks the final item complete; leave the completed checklist visible with the final report.",
 		],
 		parameters: TodoWriteParams,
 
@@ -169,7 +174,7 @@ export default function todoList(pi: ExtensionAPI) {
 				todos.length === 0
 					? "Todo list cleared."
 					: allDone
-						? "All todos are completed. Leave this checklist visible with the final report; clear it when later work begins or when the user asks."
+						? "All todos are completed. Leave this checklist visible with the final report; on a later user turn, clear or replace it before starting a different task or topic."
 						: "Continue tracking progress in the complete list: preserve every item, mark finished work completed, and then advance the next task.";
 			return {
 				content: [
@@ -213,6 +218,28 @@ export default function todoList(pi: ExtensionAPI) {
 				ctx.ui.notify(`Todo list hidden (${TOGGLE_KEY} to show)`, "info");
 			}
 		},
+	});
+
+	pi.on("context", (event) => {
+		const messages = event.messages.filter(
+			(message) => (message as { customType?: string }).customType !== CARRYOVER_MESSAGE_TYPE,
+		);
+		const removedPriorSnapshot = messages.length !== event.messages.length;
+		const carryoverPrompt = pi.getActiveTools().includes(TOOL_NAME) ? buildTodoCarryoverPrompt(todos) : null;
+		if (!carryoverPrompt) return removedPriorSnapshot ? { messages } : undefined;
+
+		return {
+			messages: [
+				...messages,
+				{
+					role: "custom",
+					customType: CARRYOVER_MESSAGE_TYPE,
+					content: carryoverPrompt,
+					display: false,
+					timestamp: Date.now(),
+				},
+			],
+		};
 	});
 
 	const restoreFromActiveBranch = (ctx: ExtensionContext): void => {

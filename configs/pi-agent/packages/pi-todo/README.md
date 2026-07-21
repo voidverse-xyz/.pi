@@ -26,7 +26,9 @@ non-empty, **working or idle**, so the checklist always reads as what it is.
 
 The widget is a live factory component (not a string-array widget): pi wraps
 string-array lines in pi-tui `Text`, which drops blank lines, so the padding row —
-and full control over truncation — require a component.
+and full control over truncation — require a component. Every rendered line is
+ANSI-aware truncated to the component width so long items cannot overflow narrow
+terminals.
 
 ## Surfaces
 
@@ -45,6 +47,15 @@ and full control over truncation — require a component.
 
   System-prompt guidance also keeps the completed final list visible with the final
   report instead of immediately clearing it.
+- **Task/topic pivots** — before each model call, an ephemeral lower-trust context
+  message exposes every current checklist identity so the model can distinguish a
+  continuation from a clear move to different work, including after compaction. The
+  snapshot is refreshed after tool results and disappears immediately after a clear.
+  A continuation preserves the list. A new complex task replaces it with a reason;
+  simpler new work clears it, with a reason when unfinished. Cleanup is explicitly
+  allowed even when the new request is too small to deserve its own checklist. This
+  remains a semantic model decision rather than clearing deterministically on every
+  prompt, which would incorrectly erase lists during follow-ups.
 - **`alt+o`** — the only user control: cycles expanded → collapsed → hidden
   (Claude Code uses `ctrl+t`, but pi core owns that for thinking blocks). There is
   deliberately no slash command. Collapsed keeps the title plus a one-line summary
@@ -72,9 +83,14 @@ and full control over truncation — require a component.
 
 ```
 node --test \
-  packages/pi-todo/extensions/todo/render.test.ts \
-  packages/pi-todo/extensions/todo/extension.test.mjs
+  configs/pi-agent/packages/pi-todo/extensions/todo/render.test.ts \
+  configs/pi-agent/packages/pi-todo/extensions/todo/extension.test.mjs
 ```
+
+The lifecycle tests use Pi's importable Node distribution when available (set
+`PI_SDK_DIR` when it is installed in a nonstandard location). Binary-only Pi
+installations still run a black-box RPC load test and skip only the loader-level
+lifecycle cases instead of failing the suite.
 
 This repository enables the package through
 `"./configs/pi-agent/packages/pi-todo"` in root `settings.json`. Run `/reload`
