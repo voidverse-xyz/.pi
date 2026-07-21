@@ -1,9 +1,9 @@
 # void-agent
 
-Void Agent is a self-contained presentation package for Pi. It bundles a family of
-color themes with the UI extension and leaves Pi's registered tool definitions untouched,
-preserving configured shells, safety/sandbox wrappers, mutation previews, diffs, and
-expansion behavior.
+Void Agent bundles a family of color themes with a UI extension that leaves Pi's
+registered tool definitions untouched, preserving configured shells, safety/sandbox
+wrappers, mutation previews, diffs, and expansion behavior. It also includes a small
+pre-trust guard for the portable global-config layout described below.
 
 ## UI changes
 
@@ -49,11 +49,35 @@ once (so a fresh install looks "void" immediately) and then never overrides your
 selection again. If enabled, the animated working block requires a truecolor theme;
 all bundled themes are truecolor.
 
+## Portable config alias guard
+
+When the portable global configuration is mounted into a container and the host home
+is also the workspace, the same `.pi` tree can appear once as global config and again
+as project config under different pathnames. Pi can otherwise load the package set
+twice and report conflicting tool registrations.
+
+The package's global `config-alias-guard` extension compares filesystem identity for
+the project `.pi` directory and the global config root during `project_trust`. It
+declines project loading only when they are the same entry, preventing the aliased
+package set from loading twice. Unrelated projects remain undecided and follow Pi's
+normal trust policy. Do not launch the aliased home workspace with `--approve`/`-a`:
+Pi applies explicit trust overrides before `project_trust`, so that mode bypasses the
+guard and can load the duplicate project package set.
+
+Pi 0.80.10 still renders its generic untrusted-project warning after an extension
+declines trust. That message is misleading for this alias because the same resources
+are already loaded globally. The guard therefore installs a narrowly scoped,
+idempotent presentation patch that skips only this alias warning and forwards every
+other project to Pi's original warning renderer. The shim is pinned to the verified
+Pi version; on a version mismatch or missing private renderer it fails open and the
+warning remains visible.
+
 ## Verify
 
 - Live preview: `node test/preview-working-sweep.mjs`
 - Static preview frames: `node test/preview-working-sweep.mjs --frames`
 - Runtime renderer regression: `node test/working-background.test.mjs`
+- Config-alias trust regression: `node test/config-alias-guard.test.mjs`
 
 ## Install
 

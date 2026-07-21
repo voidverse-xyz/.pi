@@ -2,7 +2,7 @@
   "name": "void-agent",
   "version": "1.0.1",
   "type": "module",
-  "description": "Void Agent presentation for Pi: theme, prompt editor, working indicator, and tool-turn separators while preserving tool definitions, widgets, and status lines.",
+  "description": "Void Agent presentation for Pi, plus safe trust handling when portable global config is exposed through a workspace path alias.",
   "keywords": [
     "pi-package"
   ],
