@@ -25,7 +25,7 @@
     "./configs/pi-agent/packages/void-agent",
     "./configs/pi-agent/packages/pi-todo",
     "./configs/pi-agent/packages/pi-workflow",
-    "./configs/pi-agent/packages/pi-run-summary"
+    "./configs/pi-agent/packages/pi-turn-stats"
   ],
   "skills": [
     "./skills"

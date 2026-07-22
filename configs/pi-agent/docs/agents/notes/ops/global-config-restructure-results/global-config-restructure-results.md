@@ -53,7 +53,7 @@ A filename-only high-confidence secret scan found zero matches in the staged/int
 - Indexed direct-clone smoke test: pass
 - `pi list` from isolated `$HOME/.pi/agent`: 25 relative packages resolved
 - Resource loader from indexed snapshot: 25 extensions, 38 skills, 7 themes, 0 prompts, 0 errors/diagnostics
-- Plan, safety, show-files, todo, run-summary, and Void Agent tests: pass
+- Plan, safety, show-files, todo, turn-stats, and Void Agent tests: pass
 - `pi-subagents`: strict typecheck plus all 10 harnesses pass
 - `pi-teams`: strict typecheck plus all 11 harnesses pass
 - `pi-workflow`: 57 unit tests, strict typecheck, and all 5 harnesses pass

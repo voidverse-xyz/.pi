@@ -1,8 +1,8 @@
 {
-  "name": "pi-run-summary",
+  "name": "pi-turn-stats",
   "version": "1.0.0",
   "type": "module",
-  "description": "Muted end-of-run notifications with elapsed time, per-run token counters, and a same-turn model-authored outcome summary.",
+  "description": "Theme-aware end-of-turn notifications with elapsed time and uncached input/output token counters.",
   "keywords": [
     "pi-package"
   ],
