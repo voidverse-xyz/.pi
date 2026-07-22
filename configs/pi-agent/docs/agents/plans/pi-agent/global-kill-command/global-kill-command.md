@@ -2,17 +2,17 @@
 
 ## 1. Context
 
-Pi currently has several independent stop mechanisms: `ctx.abort()` for the main run, fleet brakes for subagents and teams, `WorkflowRun.stop()`, queue editing, and per-panel child-process cancellation. They are not coordinated. A main abort can therefore be followed by a queued continuation, mail auto-wake, scheduled child turn, workflow waiter, or isolated review/merge LLM.
+Pi currently has several independent stop mechanisms: `ctx.abort()` for the main run, fleet brakes for subagents and teams, `ProcedureRun.stop()`, queue editing, and per-panel child-process cancellation. They are not coordinated. A main abort can therefore be followed by a queued continuation, mail auto-wake, scheduled child turn, procedure waiter, or isolated review/merge LLM.
 
 The chosen implementation is a TUI-only `/kill` coordinator plus an event-bus cancellation protocol. It will synchronously latch every participating subsystem against new automatic work, discard every currently dispatch-capable prompt queue, request cancellation concurrently, abort the main run, and report a bounded result. The latches release on the next ordinary interactive prompt; explicit later commands may start only the work they directly request.
 
 ### Confirmed requirements
 
 1. `/kill` is an immediate human command with no arguments and no second confirmation.
-2. It stops the ordinary main-agent run, running/queued/waiting subagents, teams, an active workflow and its waiters, and every enabled package-owned LLM job.
+2. It stops the ordinary main-agent run, running/queued/waiting subagents, teams, an active procedure and its waiters, and every enabled package-owned LLM job.
 3. It discards Pi-native steer/follow-up/compaction queues and all persisted `pi-queue` entries rather than restoring them for later execution.
 4. It closes restart races: late mail, queued scheduler callbacks, and auto-wake pumps cannot start another LLM before the next ordinary interactive prompt.
-5. It preserves subagent/team identities, durable mail, transcripts, and workflow journals. Killing work is not retirement or deletion.
+5. It preserves subagent/team identities, durable mail, transcripts, and procedure journals. Killing work is not retirement or deletion.
 6. Cancellation is idempotent and bounded: one failed or hung participant does not block the rest, and the user receives a success/warning summary within ten seconds.
 7. The first later ordinary interactive prompt releases background automation. Existing durable mail may then be delivered under normal package policy; killed child turns are never silently replayed.
 8. Scope is the interactive TUI and the currently enabled local Pi packages. Pi-core retry-delay and already-running compaction cancellation remain a documented limitation of Pi 0.80.10.
@@ -20,7 +20,7 @@ The chosen implementation is a TUI-only `/kill` coordinator plus an event-bus ca
 
 ### Non-goals
 
-- Do not call `shutdown()`, exit Pi, retire agents, delete mail, remove sessions, or erase workflow journals.
+- Do not call `shutdown()`, exit Pi, retire agents, delete mail, remove sessions, or erase procedure journals.
 - Do not patch the globally installed Pi package or rely on its private object graph.
 - Do not promise RPC/print-mode behavior.
 - Do not kill unrelated operating-system processes; only sessions/process groups owned by participating extensions are in scope.
@@ -41,19 +41,19 @@ The chosen implementation is a TUI-only `/kill` coordinator plus an event-bus ca
 ### Cross-package coordination
 
 - `pi.events` is the supported extension-to-extension surface (`@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts:995-999`). Its emitter invokes wrapped handlers but does not await their promises (`@earendil-works/pi-coding-agent/dist/core/event-bus.js:1-20`).
-- Existing safety bridges already solve this ordering with a synchronous-claim protocol: emit a request whose `claim()` is called during `emit`, then await the claimed callback separately (`configs/pi-agent/packages/pi-workflow/extensions/workflow/sandbox/safety-bridge.ts:1-14,49-78`). `/kill` should adapt that proven pattern rather than import private package internals.
+- Existing safety bridges already solve this ordering with a synchronous-claim protocol: emit a request whose `claim()` is called during `emit`, then await the claimed callback separately (`configs/pi-agent/packages/pi-procedure/extensions/procedure/sandbox/safety-bridge.ts:1-14,49-78`). `/kill` should adapt that proven pattern rather than import private package internals.
 
 ### Agent fleets and wake pumps
 
 - Current subagent and team stop-all methods first take a status snapshot and then cancel/interrupt only entries in `running | queued | waiting` (`configs/pi-agent/packages/pi-subagents/extensions/subagents/core.ts:61-67,132-138`; `configs/pi-agent/packages/pi-teams/extensions/teams/core.ts:59-65,143-149`). They do not establish a barrier against a turn scheduled after the snapshot.
 - Both runtimes already serialize mail turns per address, track active turns, distinguish pre-stream cancellation, and provide `whenIdle()` (`configs/pi-agent/packages/pi-subagents/extensions/subagents/runtime/in-process.ts:152-170,361-403,513-525`; `configs/pi-agent/packages/pi-teams/extensions/teams/runtime/in-process.ts:551-567`). These are the right primitives to adapt into `quiesce(generation)` rather than using `dispose()` or retirement.
 - Both main-mail wake pumps commit mail only after injection and currently gate only on host-idle and shutdown (`configs/pi-agent/packages/pi-subagents/extensions/subagents/mail/wake-pump.ts:1-16,37-74`; `configs/pi-agent/packages/pi-teams/extensions/teams/mail/wake-pump.ts:1-24,45-82`). They need a reversible pause state that preserves mail and never drains merely because it was resumed.
-- Sandboxed confirmation currently ignores the tool execution `AbortSignal`; its provider timeout is ten minutes (`configs/pi-agent/packages/pi-workflow/extensions/workflow/sandbox/safety-bridge.ts:35-42,49-78`). The tool wrappers must pass their execution signal into confirmation and race it, or a waiting child can outlive the coordinator timeout.
+- Sandboxed confirmation currently ignores the tool execution `AbortSignal`; its provider timeout is ten minutes (`configs/pi-agent/packages/pi-procedure/extensions/procedure/sandbox/safety-bridge.ts:35-42,49-78`). The tool wrappers must pass their execution signal into confirmation and race it, or a waiting child can outlive the coordinator timeout.
 
-### Workflow and queues
+### Procedure and queues
 
-- `WorkflowRun.stop()` is already idempotent, rejects future `agent()` calls, and abandons a script after a five-second grace period (`configs/pi-agent/packages/pi-workflow/extensions/workflow/run.ts:1-14,37-40,167-176,234-237,406-430`).
-- Workflow agents wait on a FIFO scheduler before checking `isStopped()`, and running sessions use polling to notice stop (`configs/pi-agent/packages/pi-workflow/extensions/workflow/runner/scheduler.ts:1-48`; `configs/pi-agent/packages/pi-workflow/extensions/workflow/runner/agent-runner.ts:132-151,196-216`). An abortable scheduler acquisition and stop signal will remove queued waiters immediately and replace polling.
+- `ProcedureRun.stop()` is already idempotent, rejects future `agent()` calls, and abandons a script after a five-second grace period (`configs/pi-agent/packages/pi-procedure/extensions/procedure/run.ts:1-14,37-40,167-176,234-237,406-430`).
+- Procedure agents wait on a FIFO scheduler before checking `isStopped()`, and running sessions use polling to notice stop (`configs/pi-agent/packages/pi-procedure/extensions/procedure/runner/scheduler.ts:1-48`; `configs/pi-agent/packages/pi-procedure/extensions/procedure/runner/agent-runner.ts:132-151,196-216`). An abortable scheduler acquisition and stop signal will remove queued waiters immediately and replace polling.
 - `pi-queue` reconstructs state by replaying custom operations and dispatches by removing/persisting an entry before `sendUserMessage` (`configs/pi-agent/packages/pi-queue/extensions/queue/index.ts:18-31,40-110,190-220`). A single replayable `clear` operation provides crash-safe all-entry deletion; a generation latch closes dispatch races.
 
 ### Other owned LLM work
@@ -61,13 +61,13 @@ The chosen implementation is a TUI-only `/kill` coordinator plus an event-bus ca
 - `pi-changes` already exposes an `AnswerState.kill()` and terminates a detached process group with TERM then KILL (`configs/pi-agent/packages/pi-changes/extensions/changes/ask.ts:85-93,105-166`). It needs only extension-scope registration so `/kill` can reach the active answer.
 - `pi-commit` uses a direct `complete()` call with an `AbortSignal` for descriptions (`configs/pi-agent/packages/pi-commit/extensions/commit/describe.ts:13-46`) and a separate child `pi` for review chat, but that child currently terminates only the immediate process (`configs/pi-agent/packages/pi-commit/extensions/commit/chat.ts:116-168`). It should adapt the process-group termination already proven by `pi-changes`.
 - `pi-merge` owns a child `pi` with timeout and TERM/KILL logic but no extension-scope handle and no detached process group (`configs/pi-agent/packages/pi-merge/extensions/merge/index.ts:452-492`). It needs a registry plus an epoch guard so a killed synthesis cannot later create a session.
-- A repository-wide search found no other enabled TypeScript package calling direct model completion, creating an isolated `AgentSession`, or spawning child `pi` processes beyond subagents, teams, workflow, changes, commit, and merge.
+- A repository-wide search found no other enabled TypeScript package calling direct model completion, creating an isolated `AgentSession`, or spawning child `pi` processes beyond subagents, teams, procedure, changes, commit, and merge.
 
 ## 3. Design
 
 ### 3.1 Coordinator package and protocol
 
-Add a new `pi-kill` package, adapting the command/package skeleton from `configs/pi-agent/packages/pi-clear/` and the synchronous-claim idiom from the workflow safety bridge.
+Add a new `pi-kill` package, adapting the command/package skeleton from `configs/pi-agent/packages/pi-clear/` and the synchronous-claim idiom from the procedure safety bridge.
 
 Use two versioned channels:
 
@@ -139,17 +139,17 @@ Do not call `dispose()` or retirement. Handles, registry records, sessions, tran
 
 Extend sandbox ports so wrapped `bash`/`edit`/`write` execution passes its tool `AbortSignal` into `ConfirmFn`. `makeSafetyConfirm` races the provider promise against that signal and fails closed on abort. This lets the runtime settle even if a human confirmation provider remains unresolved.
 
-### 3.4 Workflow stop barrier
+### 3.4 Procedure stop barrier
 
-Give each `WorkflowRun` one `AbortController`:
+Give each `ProcedureRun` one `AbortController`:
 
 - `stop()` sets the existing stopped flag and aborts the controller exactly once.
 - `Scheduler.acquire(signal)` removes and rejects a queued waiter when aborted rather than waiting for a future slot.
 - Running agent sessions subscribe once to the stop signal and abort immediately; remove the current polling interval.
 - Sandbox confirmations receive and race the tool signal as in subagents/teams.
-- `WorkflowRun.whenSettled()` resolves only after `execute()` has written its terminal journal outcome and disposed running sessions.
+- `ProcedureRun.whenSettled()` resolves only after `execute()` has written its terminal journal outcome and disposed running sessions.
 
-The workflow participant latches new workflow tool starts for the kill generation, calls `active.run.stop()`, and awaits `whenSettled()`. It releases on the matching release event. Preserve the existing five-second script-unwind grace and journal a normal `stopped` outcome; do not delete resumable completed calls.
+The procedure participant latches new procedure tool starts for the kill generation, calls `active.run.stop()`, and awaits `whenSettled()`. It releases on the matching release event. Preserve the existing five-second script-unwind grace and journal a normal `stopped` outcome; do not delete resumable completed calls.
 
 ### 3.5 Package-owned child and direct LLM registries
 
@@ -166,13 +166,13 @@ These registries only cancel current work. A later explicit `/changes`, `/commit
 Use a TUI notification, not a transcript message or extra model call:
 
 ```text
-Kill complete — main stopped · queues 4 discarded · subagents 3 · teams 2 · workflow 1 · child LLMs 1
+Kill complete — main stopped · queues 4 discarded · subagents 3 · teams 2 · procedure 1 · child LLMs 1
 ```
 
 If any component rejects or exceeds the deadline:
 
 ```text
-Kill finished with warnings — main still settling; workflow timed out. Pi retry/compaction may require Esc, reload, or waiting for Pi core.
+Kill finished with warnings — main still settling; procedure timed out. Pi retry/compaction may require Esc, reload, or waiting for Pi core.
 ```
 
 Rules:
@@ -181,7 +181,7 @@ Rules:
 - `warning` when any participant/main wait fails or times out.
 - Never say “all stopped” when confirmation is incomplete.
 - Missing optional packages simply make no claim; the coordinator remains load-order independent.
-- The ten-second coordinator deadline exceeds workflow's five-second grace and child processes' three-second TERM grace.
+- The ten-second coordinator deadline exceeds procedure's five-second grace and child processes' three-second TERM grace.
 
 ### 3.7 Hardest constraint proof: no automatic restart after kill
 
@@ -189,7 +189,7 @@ Rules:
 2. Every participant installs a generation latch synchronously through the claim callback before any await.
 3. Agent/team wake pumps are paused before their interrupted children can report completion.
 4. Agent/team runtimes reject new scheduling at entry, after each async boundary, and immediately before prompt.
-5. Workflow's stop signal removes FIFO waiters and aborts running sessions; future `agent()` calls see stopped state.
+5. Procedure's stop signal removes FIFO waiters and aborts running sessions; future `agent()` calls see stopped state.
 6. `pi-queue` is persistently cleared under a dispatch latch; Pi-native queues are synchronously cleared by `ctx.abort()` and then erased from the editor.
 7. The main agent is aborted only after all participant latches are installed.
 8. Pre-start compaction is cancelled while the coordinator latch remains active.
@@ -206,7 +206,7 @@ The only exception is a retry delay or compaction that was already active inside
 |---|---|
 | `configs/pi-agent/packages/pi-kill/package.json` | **Adapted from** `packages/pi-clear/package.json`; package metadata and extension entry. |
 | `configs/pi-agent/packages/pi-kill/README.md` | **New**; command semantics, participant protocol, queue destruction, lifecycle, and Pi-core limitations. |
-| `configs/pi-agent/packages/pi-kill/extensions/kill/protocol.ts` | **Adapted from** workflow safety-bridge claim types; channels, versioned request/release/result types, timeout error. |
+| `configs/pi-agent/packages/pi-kill/extensions/kill/protocol.ts` | **Adapted from** procedure safety-bridge claim types; channels, versioned request/release/result types, timeout error. |
 | `configs/pi-agent/packages/pi-kill/extensions/kill/coordinator.ts` | **New** pure coordinator; claim collection, generation state, concurrent bounded settlement, summary formatting. |
 | `configs/pi-agent/packages/pi-kill/extensions/kill/index.ts` | **Adapted from** `packages/pi-clear/extensions/clear/index.ts`; `/kill` registration, TUI queue clearing, input release, pre-compaction guard. |
 | `configs/pi-agent/packages/pi-kill/test/kill.test.mjs` | **New**; ordering, synchronous claims, duplicate/error/timeout handling, idempotence, release generations, summary truthfulness. |
@@ -242,18 +242,18 @@ The only exception is a retry delay or compaction that was already active inside
 | `configs/pi-agent/packages/pi-teams/test/e2e/phase2-runtime.mjs` | **Adapted**; running/queued/pre-stream barrier and identity preservation. |
 | `configs/pi-agent/packages/pi-teams/test/e2e/phase5-sandbox.mjs` | **Adapted**; waiting confirmation abort. |
 
-### Workflow and queue
+### Procedure and queue
 
 | File | Provenance and contents |
 |---|---|
-| `configs/pi-agent/packages/pi-workflow/extensions/index.ts` | **Adapted**; kill request/release participant and new-run latch. |
-| `configs/pi-agent/packages/pi-workflow/extensions/workflow/run.ts` | **Adapted**; stop controller and `whenSettled()`. |
-| `configs/pi-agent/packages/pi-workflow/extensions/workflow/runner/scheduler.ts` | **Adapted**; abortable waiter removal. |
-| `configs/pi-agent/packages/pi-workflow/extensions/workflow/runner/agent-runner.ts` | **Adapted**; signal-based stop instead of polling and abort-aware confirmation. |
-| `configs/pi-agent/packages/pi-workflow/extensions/workflow/sandbox/safety-bridge.ts` | **Adapted**; signal-aware fail-closed confirmation. |
-| `configs/pi-agent/packages/pi-workflow/extensions/workflow/sandbox/tools-filter.ts` | **Adapted**; forward tool execution signals. |
-| `configs/pi-agent/packages/pi-workflow/test/e2e/phase4-stop-sandbox.mjs` | **Adapted**; running/queued/waiting cancellation, journal settlement, no late starts. |
-| `configs/pi-agent/packages/pi-workflow/README.md` | **Adapted**; global kill behavior and resumable journal guarantee. |
+| `configs/pi-agent/packages/pi-procedure/extensions/index.ts` | **Adapted**; kill request/release participant and new-run latch. |
+| `configs/pi-agent/packages/pi-procedure/extensions/procedure/run.ts` | **Adapted**; stop controller and `whenSettled()`. |
+| `configs/pi-agent/packages/pi-procedure/extensions/procedure/runner/scheduler.ts` | **Adapted**; abortable waiter removal. |
+| `configs/pi-agent/packages/pi-procedure/extensions/procedure/runner/agent-runner.ts` | **Adapted**; signal-based stop instead of polling and abort-aware confirmation. |
+| `configs/pi-agent/packages/pi-procedure/extensions/procedure/sandbox/safety-bridge.ts` | **Adapted**; signal-aware fail-closed confirmation. |
+| `configs/pi-agent/packages/pi-procedure/extensions/procedure/sandbox/tools-filter.ts` | **Adapted**; forward tool execution signals. |
+| `configs/pi-agent/packages/pi-procedure/test/e2e/phase4-stop-sandbox.mjs` | **Adapted**; running/queued/waiting cancellation, journal settlement, no late starts. |
+| `configs/pi-agent/packages/pi-procedure/README.md` | **Adapted**; global kill behavior and resumable journal guarantee. |
 | `configs/pi-agent/packages/pi-queue/extensions/queue/index.ts` | **Adapted**; replayable clear operation, generation latch, kill participant. |
 | `configs/pi-agent/packages/pi-queue/test/kill.test.mjs` | **New**; atomic replay clear, dispatch race, persistence failure, reload. |
 | `configs/pi-agent/packages/pi-queue/README.md` | **Adapted**; `/kill` permanently discards managed entries. |
@@ -290,7 +290,7 @@ The only exception is a retry delay or compaction that was already active inside
 
 1. Enable the package in the active Pi package list and run `/reload`; no package installation or network access is required.
 2. Keep the protocol structural and event-based. Participant packages must not import source from `pi-kill`, so any one package can be removed without breaking module loading.
-3. Do not change existing `/subagents stop`, team stop keys, `/workflows stop`, Esc behavior, or package-specific UIs; `/kill` is an additional coordinator.
+3. Do not change existing `/subagents stop`, team stop keys, `/procedures stop`, Esc behavior, or package-specific UIs; `/kill` is an additional coordinator.
 4. Do not change Git state, commit, or push as part of implementation unless separately requested.
 5. Capture the generic claim/barrier/generation pattern in the reusable `plans/agent-systems/global-cancellation/` note and implementation-specific findings in `configs/pi-agent/docs/agents/notes/`.
 
@@ -317,14 +317,14 @@ The only exception is a retry delay or compaction that was already active inside
 1. From `configs/pi-agent/packages/pi-kill`, run `node --experimental-strip-types --test test/kill.test.mjs`; verify command ordering, claims-before-abort, idempotence, generations, deadline, partial failure, duplicate claims, and truthful summaries. **[R1, R6, R7]**
 2. Run subagent wake/control/sandbox suites with `node --experimental-strip-types test/e2e/phase5-wake.mjs`, `phase6-control.mjs`, and `phase8-sandbox.mjs`; then run `loadcheck.mjs`. **[R2, R4, R5, R7]**
 3. Run team runtime/sandbox/auto-wake suites with `node --experimental-strip-types test/e2e/phase2-runtime.mjs`, `phase5-sandbox.mjs`, and `phase9-auto-wake.mjs`; then run `loadcheck.mjs`. **[R2, R4, R5, R7]**
-4. Run workflow `node --experimental-strip-types test/e2e/phase4-stop-sandbox.mjs` and its existing phase1–phase3 suites, followed by `loadcheck.mjs`; verify queued scheduler waiters are removed, running/waiting sessions abort, and the journal ends `stopped`. **[R2, R4, R5]**
+4. Run procedure `node --experimental-strip-types test/e2e/phase4-stop-sandbox.mjs` and its existing phase1–phase3 suites, followed by `loadcheck.mjs`; verify queued scheduler waiters are removed, running/waiting sessions abort, and the journal ends `stopped`. **[R2, R4, R5]**
 5. Run `node --experimental-strip-types --test test/kill.test.mjs` in `pi-queue`, `pi-changes`, `pi-commit`, and `pi-merge`. **[R2, R3, R6]**
 6. In auxiliary process tests, use a harmless child that spawns a descendant; verify TERM then KILL reaches the owned process group and no descendant remains. **[R2, R9]**
 7. Test a participant that throws synchronously, one that rejects asynchronously, and one that never settles; assert the other participants and main abort still execute and the command returns a warning within ten seconds. **[R6]**
 8. Test two kill generations followed by a stale release; assert only the latest matching release resumes pumps/runtimes. **[R4, R6, R7]**
 9. Test kill during each runtime boundary: before scheduler acquisition, while queued, during async handle creation, immediately before prompt, while streaming, and while waiting on confirmation. Assert zero post-kill prompt starts. **[R2, R4, R9]**
 10. Replay a `pi-queue` session log containing enqueue → clear → later enqueue. Assert only the later entry restores; inject persistence failure and assert memory remains intact with a warning. **[R3, R6, R9]**
-11. Run all unchanged package suites for subagents, teams, workflow, queue-adjacent UI, changes, commit, and merge to catch regressions in ordinary stop, wake, review, and resume flows. **[R5]**
+11. Run all unchanged package suites for subagents, teams, procedure, queue-adjacent UI, changes, commit, and merge to catch regressions in ordinary stop, wake, review, and resume flows. **[R5]**
 12. Run every modified package's loadcheck under Node strip-types and load Pi once with all active packages; verify no duplicate command, missing import, or extension-load diagnostics. **[R8]**
 
 ### Live TUI acceptance
@@ -333,8 +333,8 @@ The only exception is a retry delay or compaction that was already active inside
 14. Start a deliberately long main response. While it streams, create native steer and follow-up messages plus several `pi-queue` entries, then enter `/kill`. Verify the response stops, native pending counts go to zero, the editor is blank, and `/queue` is empty. **[R1, R3]**
 15. Reload the same session and verify discarded `pi-queue` entries do not return. **[R3]**
 16. Prepare subagents and teams in running, concurrency-queued, pre-prompt, and waiting states; include durable unread mail and stable identities. Run `/kill` and verify every working row becomes dormant, no row retires, identities/transcripts remain, and mail remains pending. **[R2, R4, R5]**
-17. Wait longer than a normal auto-wake interval without sending input. Verify no child agent, workflow agent, main-mail pump, or queued prompt starts an LLM. **[R4]**
-18. Start a workflow with more agent calls than its concurrency cap and at least one sandbox confirmation. Run `/kill`; verify running and waiting sessions abort, queued calls never start, the workflow reaches `stopped`, and its run ID remains resumable. **[R2, R4, R5]**
+17. Wait longer than a normal auto-wake interval without sending input. Verify no child agent, procedure agent, main-mail pump, or queued prompt starts an LLM. **[R4]**
+18. Start a procedure with more agent calls than its concurrency cap and at least one sandbox confirmation. Run `/kill`; verify running and waiting sessions abort, queued calls never start, the procedure reaches `stopped`, and its run ID remains resumable. **[R2, R4, R5]**
 19. Exercise each auxiliary owner separately: a `/changes` subanswer, `/commit` description/chat, and `/merge` synthesis. Trigger kill through the coordinator test hook or dismiss the owning modal and invoke `/kill`; verify the owned request/process stops and no late result is cached, displayed as success, or used to create a merged session. **[R2, R6]**
 20. Run `/kill` twice around the same settling work. Verify no exception, duplicate mutation, or stale release, and that the second summary reports only remaining work. **[R6]**
 21. After kill, send one ordinary interactive prompt. Verify background latches release, the main prompt runs, and later normal settling may deliver preserved mail; verify no killed turn is silently reconstructed from a consumed trigger. **[R5, R7]**
@@ -342,5 +342,5 @@ The only exception is a retry delay or compaction that was already active inside
 23. Kill and then `/reload` or switch/resume sessions. Verify ephemeral latches do not strand the new runtime, persisted queues remain cleared, and durable identities/mail/journals restore correctly. **[R3, R5, R7]**
 24. Start manual compaction, invoke `/kill` while it is active, and verify the command does not falsely report complete if Pi remains busy. Then kill immediately before a threshold/overflow compaction and verify the pre-compaction guard cancels it. Record the already-active case as the documented Pi-core limitation. **[R6, R8]**
 25. Inspect active processes after every child-process scenario and after Pi reload/shutdown. Verify no owned child `pi` or descendant remains and no timers keep the process alive. **[R2, R9]**
-26. Inspect session/workflow storage after tests. Verify no agent/team registry deletion, mailbox loss, transcript deletion, journal deletion, stray temporary files, or unrelated state mutation. **[R5, R9]**
+26. Inspect session/procedure storage after tests. Verify no agent/team registry deletion, mailbox loss, transcript deletion, journal deletion, stray temporary files, or unrelated state mutation. **[R5, R9]**
 27. Review the final diff for only the files in this plan, update the project implementation note and reusable protocol note with actual verified results, and leave commit/push to a separate explicit request. **[R8, R9]**

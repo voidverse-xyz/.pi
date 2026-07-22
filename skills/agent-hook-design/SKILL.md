@@ -43,7 +43,7 @@ Choose something else when appropriate:
 
 - Persistent guidance or conventions → agent instructions/rules.
 - Reusable optional expertise → skill.
-- A multi-stage human-approved procedure → workflow.
+- A multi-stage human-approved procedure → procedure.
 - A typed capability the model should call intentionally → dedicated tool.
 - Isolation or independent review → subagent.
 

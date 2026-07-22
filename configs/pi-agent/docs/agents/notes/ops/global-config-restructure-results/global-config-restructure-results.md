@@ -6,7 +6,7 @@ The repository root now represents the portable source form of `~/.pi/agent` and
 
 ## Lowercase directory convention
 
-Repository-owned directories now use lowercase hyphen-case. The shared roots are `codex/`, `configs/`, `mcp/`, `plans/`, and `workflows/`; owned nested directories are `codex/configs/`, `codex/plugins/`, `configs/pi-agent/`, `configs/podman/`, and `configs/subagent-docs/`. `AGENTS.md` remains uppercase at the global-config root because Pi auto-discovers that exact filename.
+Repository-owned directories now use lowercase hyphen-case. The shared roots are `codex/`, `configs/`, `mcp/`, `plans/`, and `procedures/`; owned nested directories are `codex/configs/`, `codex/plugins/`, `configs/pi-agent/`, `configs/podman/`, and `configs/subagent-docs/`. `AGENTS.md` remains uppercase at the global-config root because Pi auto-discovers that exact filename.
 
 ## Active root resources
 
@@ -37,7 +37,7 @@ The quarantine is deliberately absent from the staged/indexed clone and should r
 
 - Removed Pi Plan's package-relative `Skills/plan` registration and hard-coded tagged-skill discovery. Plan mode now uses Pi's normal root global skill discovery.
 - Added missing peer dependency declarations for imports used by `pi-bookmark`, `pi-commit`, `pi-show-files`, and `pi-todo`.
-- Updated `pi-subagents`, `pi-teams`, and `pi-workflow` production initialization to pass Pi's effective `getAgentDir()` into their path authorities, so `PI_CODING_AGENT_DIR` and embedded configurations do not read or write the default live directory.
+- Updated `pi-subagents`, `pi-teams`, and `pi-procedure` production initialization to pass Pi's effective `getAgentDir()` into their path authorities, so `PI_CODING_AGENT_DIR` and embedded configurations do not read or write the default live directory.
 - Corrected the Void Agent persistence test for the existing `themeInitialized` field and shortened one over-limit skill description so resource loading has no diagnostics.
 - Refreshed active shortcut documentation and removed tracked references that could invite archived package activation.
 
@@ -56,7 +56,7 @@ A filename-only high-confidence secret scan found zero matches in the staged/int
 - Plan, safety, show-files, todo, turn-stats, and Void Agent tests: pass
 - `pi-subagents`: strict typecheck plus all 10 harnesses pass
 - `pi-teams`: strict typecheck plus all 11 harnesses pass
-- `pi-workflow`: 57 unit tests, strict typecheck, and all 5 harnesses pass
+- `pi-procedure`: 57 unit tests, strict typecheck, and all 5 harnesses pass
 - Definition parity, independent-file checks, JSON validation, ignore probes, staged diff whitespace check, and no-symlink check: pass
 
 ## Live-host bridge

@@ -48,11 +48,11 @@ Pi loads `~/.pi/agent/AGENTS.md` as global instructions.
   - `plans/` for reusable project-agnostic plans and operating notes
   - `skills/` for global Pi skills and reusable skill packages
   - `mcp/` for MCP definitions and notes
-  - `workflows/` for reusable Markdown workflow procedures
+  - `procedures/` for reusable Markdown procedures
   - `subagents/` for reusable Pi subagent definitions
   - `teams/` for independent Pi Teams copies of production definitions
 
-When the user asks about a skill, workflow, MCP definition, or subagent, check
+When the user asks about a skill, procedure, MCP definition, or subagent, check
 these repository directories before checking other global or installed locations.
 When editing shared production definitions, keep matching files in `subagents/`
 and `teams/` synchronized as ordinary files; do not use symlinks or hard links.
@@ -67,7 +67,7 @@ directories into `codex/plugins/plugins/`. For marketplace-backed plugins, use
 
 ## Reusable Artifact Capture
 
-When an agent creates or substantially improves a plan, skill, workflow,
+When an agent creates or substantially improves a plan, skill, procedure,
 subagent, MCP definition, Codex plugin pattern, setup procedure, or related
 agent material for a project, also create a generic reusable version and save it
 in this repository under the matching shared directory.
@@ -83,8 +83,8 @@ Route reusable materials by type:
 
 - Plans and operating notes go in `plans/`.
 - Skills go in `skills/`.
-- Markdown workflow procedures go in `workflows/`; executable saved Pi workflows
-  use root `workflows/*.js` only when that library is intentionally created.
+- Markdown procedures go in `procedures/`; executable saved Pi procedures
+  use root `procedures/*.js` only when that library is intentionally created.
 - Subagent definitions go in `subagents/`; production definitions used by Teams
   also receive synchronized ordinary copies in `teams/`.
 - MCP definitions and notes go in `mcp/`.
@@ -98,7 +98,7 @@ generic pattern or procedure instead of copying sensitive or local-only content.
 
 When creating a new project, working in an existing project, or refactoring a
 project, create and maintain a project-local `docs/agents/` directory. Any plan,
-skill, workflow, subagent, MCP note, implementation note, memory, review note,
+skill, procedure, subagent, MCP note, implementation note, memory, review note,
 setup note, or similar agent-generated material that is useful for the project
 must be written to disk there, not only left in chat.
 
@@ -106,7 +106,7 @@ Use this project-local layout:
 
 - `docs/agents/plans/<domain>/<plan-name>/<plan-name>.md`
 - `docs/agents/skills/<domain>/<skill-name>/<skill-name>.md`
-- `docs/agents/workflows/<domain>/<workflow-name>/<workflow-name>.md`
+- `docs/agents/procedures/<domain>/<procedure-name>/<procedure-name>.md`
 - `docs/agents/subagents/<domain>/<subagent-name>/<subagent-name>.md`
 - `docs/agents/mcp/<domain>/<mcp-name>/<mcp-name>.md`
 - `docs/agents/notes/<domain>/<note-name>/<note-name>.md`
@@ -126,7 +126,7 @@ paths, personal contact details, and generated logs. When an artifact also has
 reusable value beyond the project, save a sanitized generic version in this
 shared repository using the `Reusable Artifact Capture` rules above.
 
-For this shared repository, keep the top-level `skills/`, `plans/`, `workflows/`,
+For this shared repository, keep the top-level `skills/`, `plans/`, `procedures/`,
 `subagents/`, `teams/`, `mcp/`, and `configs/` directories reusable and project-agnostic.
 Do not place project-specific artifacts in a root `docs/agents/` tree here;
 instead, put them under the relevant contained project's own documentation tree,
@@ -144,7 +144,7 @@ such as `configs/pi-agent/docs/agents/` for PiAgent-specific work.
 - `configs/`: non-Codex tool configs, active Pi packages, and setup materials.
 - `mcp/`: reusable MCP definitions and notes.
 - `plans/`: reusable plans, procedures, and operating notes.
-- `workflows/`: reusable Markdown workflow procedures.
+- `procedures/`: reusable Markdown procedures.
 
 ## Codex Layout
 
@@ -196,6 +196,10 @@ such as `configs/pi-agent/docs/agents/` for PiAgent-specific work.
   current-turn tool starts, cumulative session tokens, context fill, and current
   tool; long labels yield to metrics and narrow layouts move metrics to their own
   compact row.
+  `pi-procedure` provides the LLM-callable `procedure` tool and `/procedures`
+  command for deterministic one-shot-agent orchestration. Its live above-editor
+  tree shows queued/running agents, current tools, and provider-visible thinking
+  summaries; `Alt+E` expands long trees and `Alt+W` stops the active run.
   `pi-merge` provides `/merge`, a synthesis merge for selected session branches:
   it summarizes the shared base plus branch deltas into a visible custom message
   in a new session, optionally drafts or runs a kickoff prompt, and leaves source
@@ -239,7 +243,7 @@ such as `configs/pi-agent/docs/agents/` for PiAgent-specific work.
 - If something I ask for is technically wrong or impossible, say so and propose a
   workable approach.
 - When delegated review findings are expected in the current response, follow
-  `workflows/reviews/delegated-review-results/delegated-review-results.md`: await
+  `procedures/reviews/delegated-review-results/delegated-review-results.md`: await
   the anchored report, do not claim completion on timeout/cancellation, and put
   verdict/findings before subagent orchestration or cleanup details.
 - When giving me app or server URLs in chat, use this machine's LAN IP instead of

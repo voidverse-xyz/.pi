@@ -423,7 +423,7 @@ elements.append(table)
 doc.build(elements)
 ```
 
-## Complex Workflows
+## Complex Procedures
 
 ### Extract Figures/Images from PDF
 

@@ -47,7 +47,7 @@ Every restricted-mode tool must match exact expected built-in or local-package p
 | Discuss | Ask tools plus trusted local `ask_user`, `show_files` |
 | Plan | read tools, previously active `ask_user`/`show_files`/`todo_write`, `save_plan`, trusted local `subagent_*` tools |
 
-Bash, general file mutation, team tools, workflow tools, and unknown custom tools are unavailable in all restricted modes.
+Bash, general file mutation, team tools, procedure tools, and unknown custom tools are unavailable in all restricted modes.
 
 ## Plan subagent enforcement
 

@@ -8,7 +8,7 @@ Follow-up plan: `configs/pi-agent/docs/agents/plans/architecture/session-scoped-
 
 The session-owned model is architecturally sound **if the intended invariant is that one Pi conversation owns its workers**. It prevents different Pi sessions in the same cwd from sharing a roster, waking or retiring each other's agents, consuming each other's mail, and surfacing each other's escalations.
 
-It is not a mailbox-only patch. The current package deliberately implements D3's opposite invariant: every main Pi session in one cwd shares the same registry, identities, teams, mailboxes, archives, and persistent agent memory. Converting that design is a moderate, intentionally breaking storage and workflow change.
+It is not a mailbox-only patch. The current package deliberately implements D3's opposite invariant: every main Pi session in one cwd shares the same registry, identities, teams, mailboxes, archives, and persistent agent memory. Converting that design is a moderate, intentionally breaking storage and procedure change.
 
 Recommendation: implement only after accepting the behavioral breaks below and settling fork, ephemeral-session, and legacy-adoption policy. For a production-safe conversion with migration and concurrency coverage, budget roughly **6–10 engineer-days**. A clean-break MVP without legacy adoption could be **3–5 days**, but risks making existing agents appear lost.
 
@@ -85,7 +85,7 @@ The seven public tool schemas can remain unchanged because the current session s
 
 ### 2. `/new` no longer carries workers forward
 
-This is intentional but breaks the current D3 workflow. Users who use `/new` to clear conversation context while retaining the same project worker pool will instead receive an empty roster.
+This is intentional but breaks the current D3 procedure. Users who use `/new` to clear conversation context while retaining the same project worker pool will instead receive an empty roster.
 
 ### 3. Forked conversation history references agents that do not exist
 
@@ -222,6 +222,6 @@ A clean-break implementation that leaves old state untouched and omits migration
 
 ## Go/no-go recommendation
 
-**Go** if simultaneous independent Pi conversations in one cwd are a normal workflow and workers should belong to their conversation. The change produces a much clearer ownership model and removes cross-session control/mail ambiguity.
+**Go** if simultaneous independent Pi conversations in one cwd are a normal procedure and workers should belong to their conversation. The change produces a much clearer ownership model and removes cross-session control/mail ambiguity.
 
 **Do not do the full conversion** if the desired product is a project-wide worker pool shared across conversations. In that case preserve D3 and instead add an atomic main-mail claim plus explicit main-session routing/host ownership. That narrower path is cheaper and retains existing persistent-agent behavior.

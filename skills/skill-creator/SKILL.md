@@ -46,14 +46,14 @@ It's OK to briefly explain terms if you're in doubt, and feel free to clarify te
 
 ### Capture Intent
 
-Start by understanding the user's intent. The current conversation might already contain a workflow the user wants to capture (e.g., they say "turn this into a skill"). If so, extract answers from the conversation history first — the tools used, the sequence of steps, corrections the user made, input/output formats observed. The user may need to fill the gaps, and should confirm before proceeding to the next step.
+Start by understanding the user's intent. The current conversation might already contain a procedure the user wants to capture (e.g., they say "turn this into a skill"). If so, extract answers from the conversation history first — the tools used, the sequence of steps, corrections the user made, input/output formats observed. The user may need to fill the gaps, and should confirm before proceeding to the next step.
 
 When the user supplies exact wording for an instruction, template, label, or policy, preserve it verbatim unless they explicitly ask for editing. Do not silently soften or expand text whose exact phrasing is part of the requirement.
 
 1. What should this skill enable Claude to do?
 2. When should this skill trigger? (what user phrases/contexts)
 3. What's the expected output format?
-4. Should we set up test cases to verify the skill works? Skills with objectively verifiable outputs (file transforms, data extraction, code generation, fixed workflow steps) benefit from test cases. Skills with subjective outputs (writing style, art) often don't need them. Suggest the appropriate default based on the skill type, but let the user decide.
+4. Should we set up test cases to verify the skill works? Skills with objectively verifiable outputs (file transforms, data extraction, code generation, fixed procedure steps) benefit from test cases. Skills with subjective outputs (writing style, art) often don't need them. Suggest the appropriate default based on the skill type, but let the user decide.
 
 ### Interview and Research
 
@@ -103,7 +103,7 @@ These word counts are approximate and you can feel free to go longer if needed.
 **Domain organization**: When a skill supports multiple domains/frameworks, organize by variant:
 ```
 cloud-deploy/
-├── SKILL.md (workflow + selection)
+├── SKILL.md (procedure + selection)
 └── references/
     ├── aws.md
     ├── gcp.md
@@ -430,7 +430,7 @@ After packaging, direct the user to the resulting `.skill` file path so they can
 
 ## Claude.ai-specific instructions
 
-In Claude.ai, the core workflow is the same (draft → test → review → improve → repeat), but because Claude.ai doesn't have subagents, some mechanics change. Here's what to adapt:
+In Claude.ai, the core procedure is the same (draft → test → review → improve → repeat), but because Claude.ai doesn't have subagents, some mechanics change. Here's what to adapt:
 
 **Running test cases**: No subagents means no parallel execution. For each test case, read the skill's SKILL.md, then follow its instructions to accomplish the test prompt yourself. Do them one at a time. This is less rigorous than independent subagents (you wrote the skill and you're also running it, so you have full context), but it's a useful sanity check — and the human review step compensates. Skip the baseline runs — just use the skill to complete the task as requested.
 
@@ -457,7 +457,7 @@ In Claude.ai, the core workflow is the same (draft → test → review → impro
 
 If you're in Cowork, the main things to know are:
 
-- You have subagents, so the main workflow (spawn test cases in parallel, run baselines, grade, etc.) all works. (However, if you run into severe problems with timeouts, it's OK to run the test prompts in series rather than parallel.)
+- You have subagents, so the main procedure (spawn test cases in parallel, run baselines, grade, etc.) all works. (However, if you run into severe problems with timeouts, it's OK to run the test prompts in series rather than parallel.)
 - You don't have a browser or display, so when generating the eval viewer, use `--static <output_path>` to write a standalone HTML file instead of starting a server. Then proffer a link that the user can click to open the HTML in their browser.
 - For whatever reason, the Cowork setup seems to disincline Claude from generating the eval viewer after running the tests, so just to reiterate: whether you're in Cowork or in Claude Code, after running tests, you should always generate the eval viewer for the human to look at examples before revising the skill yourself and trying to make corrections, using `generate_review.py` (not writing your own boutique html code). Sorry in advance but I'm gonna go all caps here: GENERATE THE EVAL VIEWER *BEFORE* evaluating inputs yourself. You want to get them in front of the human ASAP!
 - Feedback works differently: since there's no running server, the viewer's "Submit All Reviews" button will download `feedback.json` as a file. You can then read it from there (you may have to request access first).

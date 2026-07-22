@@ -22,7 +22,7 @@ Ask's length rule is a host-injected prompt rule, not a provider-level token cap
 - `/plan --skill <name> <task>` — force one tagged supplemental Plan skill for the task.
 - `/ask|discuss|plan on|off|exit|toggle|status` — explicit mode control.
 - `Shift+Tab` — cycle `Off → Ask → Discuss → Plan → Off` while Pi is idle.
-- `/skill:plan <task>` — invoke the underlying planning workflow for one task without enabling the host-enforced mode guard or `save_plan`.
+- `/skill:plan <task>` — invoke the underlying planning procedure for one task without enabling the host-enforced mode guard or `save_plan`.
 
 Routine mode transitions are silent because the footer already shows the active state. Busy-state warnings, invalid-command errors, fallback warnings, and explicit `status` responses remain visible.
 
@@ -79,11 +79,11 @@ Plan delegation is narrower than ordinary `pi-subagents` use:
 - the worker address is added to branch-local Plan state only after a successful newly-created spawn result;
 - send, steer, cancel, retire, detailed status, and explicit await targets may reference only those Plan-created addresses;
 - `subagent_await` requires explicit targets, so it cannot consume unrelated open work;
-- teams and workflows remain blocked.
+- teams and procedures remain blocked.
 
 One-shot workers also receive only the subagent runtime's `report` companion tool; they cannot spawn nested agents or message peers.
 
-`todo_write` changes only the session checklist and remains available so Plan mode can track and clear complex planning work without granting project-file mutation. Bash, general mutation tools, teams, workflows, and unknown custom tools remain unavailable to the main agent.
+`todo_write` changes only the session checklist and remains available so Plan mode can track and clear complex planning work without granting project-file mutation. Bash, general mutation tools, teams, procedures, and unknown custom tools remain unavailable to the main agent.
 
 These are agent-tool guards, not an operating-system sandbox. They do not prevent user-entered `!` commands, manually invoked slash commands, subagents that were already running before a restricted mode began, other extension background work, or external processes from changing the workspace. Static symlinks are rejected for plan saving, but a concurrent external filesystem actor can still race path-based Node filesystem operations; use a read-only container or mount when that threat is in scope.
 

@@ -9,7 +9,7 @@ Build a compact, project-owned internationalization layer using platform standar
 
 ## Use this only for the right problem
 
-A maintained library is normally the better choice. Recommend the ecosystem-standard option when the user simply asks to internationalize an application: established libraries provide message extraction, ICU syntax, framework integration, locale data, tooling, and translator workflows.
+A maintained library is normally the better choice. Recommend the ecosystem-standard option when the user simply asks to internationalize an application: established libraries provide message extraction, ICU syntax, framework integration, locale data, tooling, and translator procedures.
 
 Use this skill when at least one is true:
 

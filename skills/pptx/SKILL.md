@@ -31,7 +31,7 @@ python scripts/office/unpack.py presentation.pptx unpacked/
 
 ---
 
-## Editing Workflow
+## Editing Procedure
 
 **Read [editing.md](editing.md) for full details.**
 

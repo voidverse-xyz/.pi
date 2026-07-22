@@ -30,7 +30,7 @@ The repository will become a directly cloneable Pi global configuration: cloning
 - Copy the five production type definitions from `subagents/` to `teams/` as independent regular files because the two extensions use different fixed directories and protect those libraries from linked-file mutation.
 - Move `configs/pi-agent/.pi/agent/keybindings.json` to root `keybindings.json`.
 - Add root `settings.json` containing only the selected theme and 25 relative package paths.
-- Keep reusable Markdown procedures in nested `workflows/<domain>/` directories. Reserve top-level `workflows/*.js` files for executable saved `pi-workflow` scripts; the loader ignores the nested Markdown procedures.
+- Keep reusable Markdown procedures in nested `procedures/<domain>/` directories. Reserve top-level `procedures/*.js` files for executable saved `pi-procedure` scripts; the loader ignores the nested Markdown procedures.
 
 ### Skill activation and Plan mode
 
@@ -68,7 +68,7 @@ Root `.gitignore` will exclude credentials, provider model overrides, sessions, 
 
 1. Activating all root skills increases the skill catalog compared with the old Plan-only package registration. This is intentional for sharing; verify collision and validation warnings in the isolated smoke test.
 2. Tracked `settings.json` may acquire Pi-written preference fields during normal use. Review every diff and never commit host-specific values.
-3. `workflows/` (Markdown procedures) and a future `workflows/` (saved JavaScript workflows) differ only by case. This is safe on the tested Linux baseline; cross-platform case-insensitive support needs a later naming decision before adding executable global workflow files.
+3. Markdown procedures and executable saved JavaScript procedures share the `procedures/` root. This is safe because the loader scans only top-level `.js` files and ignores the nested Markdown procedure directories.
 4. Package sources remain nested under `configs/pi-agent/packages/` to preserve existing tests and project documentation. Relative settings remove host dependence without a wider source-tree rewrite.
 
 ## Verification

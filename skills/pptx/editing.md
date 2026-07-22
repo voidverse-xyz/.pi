@@ -1,6 +1,6 @@
 # Editing Presentations
 
-## Template-Based Workflow
+## Template-Based Procedure
 
 When using an existing presentation as a template:
 

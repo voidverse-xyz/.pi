@@ -15,7 +15,7 @@ Plan: `configs/pi-agent/docs/agents/plans/architecture/session-scoped-subagents-
 - Oneshot/manual retirement intent is durable and startup-recoverable. Owner mail is quietly audited, peer bounces are idempotent, and obsolete escalation mail is removed.
 - `/agents adopt-legacy` performs verified, backup-retaining explicit adoption; startup recovers interrupted copies. `/agents rollback-legacy` works only while the scoped fingerprint is unchanged.
 - Pi's whole project-session directory, including inactive adoption backups, is a non-overridable sandbox denial.
-- Shared delegated-review workflow and bounded valid reviewer/scout definitions were added.
+- Shared delegated-review procedure and bounded valid reviewer/scout definitions were added.
 
 ## Verification
 

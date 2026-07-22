@@ -61,7 +61,7 @@ Do not auto-assign cwd-wide state. Provide a human-only adoption command:
 - atomically activate one owner scope;
 - rollback only before the new scope diverges.
 
-## Delegated review workflow
+## Delegated review procedure
 
 1. Use a narrowly scoped, bounded oneshot.
 2. Capture the task anchor.

@@ -43,7 +43,7 @@
 /subagent-asklimit.json
 /subagents.json
 /teams.json
-/workflows.json
+/procedures.json
 /commit.json
 /changes-*.patch
 /agent/safety.json
@@ -55,7 +55,7 @@
 /agent/subagent-asklimit.json
 /agent/subagents.json
 /agent/teams.json
-/agent/workflows.json
+/agent/procedures.json
 /agent/commit.json
 /agent/changes-*.patch
 

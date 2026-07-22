@@ -67,7 +67,7 @@ Unless otherwise stated by the user or existing template
 
 ## Overview
 
-A user may ask you to create, edit, or analyze the contents of an .xlsx file. You have different tools and workflows available for different tasks.
+A user may ask you to create, edit, or analyze the contents of an .xlsx file. You have different tools and procedures available for different tasks.
 
 ## Important Requirements
 
@@ -94,7 +94,7 @@ df.describe()  # Statistics
 df.to_excel('output.xlsx', index=False)
 ```
 
-## Excel File Workflows
+## Excel File Procedures
 
 ## CRITICAL: Use Formulas, Not Hardcoded Values
 
@@ -129,7 +129,7 @@ sheet['D20'] = '=AVERAGE(D2:D19)'
 
 This applies to ALL calculations - totals, percentages, ratios, differences, etc. The spreadsheet should be able to recalculate when source data changes.
 
-## Common Workflow
+## Common Procedure
 1. **Choose tool**: pandas for data, openpyxl for formulas/formatting
 2. **Create/Load**: Create new workbook or load existing file
 3. **Modify**: Add/edit data, formulas, and formatting

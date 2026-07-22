@@ -527,7 +527,7 @@ python scripts/evaluation.py \
   evaluation.xml
 ```
 
-## Complete Example Workflow
+## Complete Example Procedure
 
 Here's a complete example of creating and running an evaluation:
 

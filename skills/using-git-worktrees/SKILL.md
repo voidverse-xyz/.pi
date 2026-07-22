@@ -217,5 +217,5 @@ Branch deletion is a separate destructive decision. Do not delete the branch mer
 - Never overwrite an existing destination.
 - Never move dirty work without approval.
 - Never modify or commit `.gitignore` implicitly.
-- Never install host dependencies when the containerized workflow applies.
+- Never install host dependencies when the containerized procedure applies.
 - Never commit, push, force-remove a worktree, or delete its branch without authorization.

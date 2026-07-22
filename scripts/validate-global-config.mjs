@@ -241,7 +241,7 @@ try {
 } catch (error) {
   fail(`cannot inspect tracked files: ${error.message}`);
 }
-for (const requiredRoot of ["codex/", "configs/", "mcp/", "plans/", "workflows/"]) {
+for (const requiredRoot of ["codex/", "configs/", "mcp/", "plans/", "procedures/"]) {
   if (!tracked.some((path) => path.startsWith(requiredRoot))) {
     fail(`lowercase shared directory is absent from the tracked clone: ${requiredRoot}`);
   }
@@ -254,14 +254,14 @@ for (const requiredAgentEntry of [
   "agent/skills",
   "agent/subagents",
   "agent/teams",
-  "agent/workflows",
+  "agent/procedures",
 ]) {
   if (!tracked.includes(requiredAgentEntry)) {
     fail(`tracked agent-dir compatibility entry is missing: ${requiredAgentEntry}`);
   }
 }
 for (const path of tracked) {
-  if (/^(Codex|Configs|MCP|Plans|Workflows)(\/|$)/.test(path)) {
+  if (/^(Codex|Configs|MCP|Plans|Procedures)(\/|$)/.test(path)) {
     fail(`tracked repository-owned path has obsolete capitalized directory casing: ${path}`);
   }
   if (/^(codex\/(Configs|Plugins)|configs\/(PiAgent|Podman|Subagent-Docs))(\/|$)/.test(path)) {
@@ -279,7 +279,7 @@ const forbiddenExact = new Set([
   "safety-audit.jsonl",
   "subagents.json",
   "teams.json",
-  "workflows.json",
+  "procedures.json",
 ]);
 const forbiddenRuntimeDirs = /^(sessions|npm|git|bin|tools|tmp)\//;
 function isPrivateRuntimePath(path) {
@@ -303,7 +303,7 @@ const allowedSymlinks = new Map([
   ["agent/skills", "../skills"],
   ["agent/subagents", "../subagents"],
   ["agent/teams", "../teams"],
-  ["agent/workflows", "../workflows"],
+  ["agent/procedures", "../procedures"],
 ]);
 try {
   const linkedEntries = git(["ls-files", "-s"])
@@ -346,7 +346,7 @@ for (const ignoredPath of [
   "safety-audit.jsonl",
   "subagents.json",
   "teams.json",
-  "workflows.json",
+  "procedures.json",
   "agent/auth.json",
   "agent/oauth.json",
   "agent/models.json",
@@ -361,7 +361,7 @@ for (const ignoredPath of [
   "agent/safety-audit.jsonl",
   "agent/subagents.json",
   "agent/teams.json",
-  "agent/workflows.json",
+  "agent/procedures.json",
   ".claude/probe",
   ".env",
   "private/id_ed25519",

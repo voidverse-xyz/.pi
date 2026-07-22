@@ -30,7 +30,7 @@ language or toolchain: C/C++ (gcc/clang, CMake, Make), Rust (cargo), Go, Python,
 Java, Ruby, etc. "Dependencies," "build," and "dev server" mean whatever they
 mean for the project's stack (compilers and headers, a build system, a compiled
 binary, an interpreter, a long-running server — or just a CLI that builds and
-exits). When this workflow applies, the rule is the same regardless: the
+exits). When this procedure applies, the rule is the same regardless: the
 toolchain and build happen in the container, not on the host.
 
 ## The model
@@ -49,17 +49,17 @@ toolchain and build happen in the container, not on the host.
   *files* into the container; the reloader restarts the *process* so they take
   effect. See "Live reload" below — this is the nodemon-style auto-update.
 
-## Workflow
+## Procedure
 
 1. **Check whether this skill applies.** If Docker or Docker Compose is
-   available, use this workflow instead of host tools. Prefer Compose when it is
+   available, use this procedure instead of host tools. Prefer Compose when it is
    available.
 2. **Check for Docker files.** If `Dockerfile` and a compose file are absent,
    scaffold them (see below) before doing containerized work.
 3. **Build the image.** `docker compose build` (or let `up` build on first run).
 4. **Bring it up.** Prefer `docker compose watch`; fall back to
    `docker compose up`.
-5. **Install dependencies inside the container** for this workflow. Either bake
+5. **Install dependencies inside the container** for this procedure. Either bake
    the install into the `Dockerfile`, or run it in the running container:
    `docker compose exec <service> <install command>`. Adding a dependency means
    updating the manifest and reinstalling **in the container**, then letting the
@@ -221,11 +221,11 @@ with a session or a project, tear down what you created:
 - Don't use this skill when Docker is missing, unavailable, or not running.
 - Don't choose host tools over Docker just because the host tools are already
   installed.
-- Once this workflow applies, don't install deps or toolchains **on the host** to
+- Once this procedure applies, don't install deps or toolchains **on the host** to
   "just get it working" — `npm install`, `pip install`, `cargo build`,
   `apt install g++`, `cmake`, `go mod download`, `bundle install`, etc. belong
   in the container.
-- Once this workflow applies, don't run the dev server, compiler/build, or tests
+- Once this procedure applies, don't run the dev server, compiler/build, or tests
   directly on the host.
-- Once this workflow applies, don't skip scaffolding the Docker files and develop
+- Once this procedure applies, don't skip scaffolding the Docker files and develop
   locally as a shortcut — set the container up first.

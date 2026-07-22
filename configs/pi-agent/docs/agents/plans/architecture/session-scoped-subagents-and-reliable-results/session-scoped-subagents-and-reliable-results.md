@@ -19,7 +19,7 @@ The implementation must satisfy these requirements:
 7. A main agent can wait, cancellably and durably, for a delegated final/collect result without answering the user first.
 8. Questions, escalations, and errors from an awaited worker return early to the main agent rather than deadlocking behind the wait.
 9. Manual interruption/retirement does not produce a flood of errors for pending messages sent by the same main session; peer questions still receive a bounce.
-10. Review workflows do not claim completion until a report is actually received, and the user sees verdict/findings before orchestration details.
+10. Review procedures do not claim completion until a report is actually received, and the user sees verdict/findings before orchestration details.
 11. Every migration, crash window, timeout, cancellation, concurrent-open case, and cleanup path has executable coverage.
 
 ## 2. Grounded findings
@@ -168,7 +168,7 @@ Prevent another oversized/truncated final tool call:
 
 - Set a documented maximum for report text and serialized structured data, aligned with Pi's tool-output limits.
 - Return a clear tool error so the subagent can retry with a concise report rather than silently truncating arguments.
-- The delegated-review workflow requires a decision-first report with bounded sections and forbids raw file dumps.
+- The delegated-review procedure requires a decision-first report with bounded sections and forbids raw file dumps.
 - `subagent_await` truncates only its LLM-facing rendering; the durable envelope remains available in the session-owned audit mailbox until normal retention GC.
 
 ### 3.8 Make retirement cancellation-aware
@@ -201,9 +201,9 @@ Two-phase migration:
 
 Rollback is allowed only before the adopted scope diverges, verified by the migration ledger. After divergence, provide export/manual recovery rather than guessing at a merge.
 
-### 3.10 Make delegated-review reporting a durable workflow
+### 3.10 Make delegated-review reporting a durable procedure
 
-Create a reusable workflow and a short mandatory pointer in shared `AGENTS.md`:
+Create a reusable procedure and a short mandatory pointer in shared `AGENTS.md`:
 
 1. Use one narrowly scoped reviewer by default; add more only for independent purviews.
 2. Give the initial task a strict report contract and size bound.
@@ -267,9 +267,9 @@ Each phase ends green and is committed separately.
 - Implement detection, confirmation, lease/run-owner checks, migration ledger, inactive backup, staging verification, activation, and guarded rollback.
 - Add interrupted-migration recovery tests for every rename/copy window.
 
-### Phase 7 — Workflow, docs, and dogfood
+### Phase 7 — Procedure, docs, and dogfood
 
-- Add shared delegated-review workflow and AGENTS pointer.
+- Add shared delegated-review procedure and AGENTS pointer.
 - Tighten reviewer/scout report contracts and budgets.
 - Update README, manifest, tool descriptions, TUI spec, architecture spec, envelope contract, tool surface, type schema notes, and design log.
 - Dogfood one delegated review end to end and verify the user receives the result before any cleanup details.
@@ -304,7 +304,7 @@ Update every harness that constructs `Layout` or `Core`, with primary additions 
 - `phase4-teams-rails.mjs` — owner-local teams and persisted autonomy.
 - `phase5-sandbox.mjs` — sibling scope and backup hard denial.
 - `phase6-tui.mjs` — observer, fork notice, canceled escalation display.
-- `phase7-full-story.mjs` — full new/resume/fork + await workflow.
+- `phase7-full-story.mjs` — full new/resume/fork + await procedure.
 - `phase-lifecycle-fixes.mjs` — quiet main cancellation and peer bounce.
 - `phase-runtime-fixes.mjs` — host lease, atomic claims, crash/redelivery, await durability.
 - Add `phase-session-scope-await.mjs` if keeping these cases separate makes the existing phases unreadable.
@@ -315,8 +315,8 @@ Update every harness that constructs `Layout` or `Core`, with primary additions 
 - `configs/subagent-docs/00-design-log.md` — new confirmed decision superseding D3.
 - `01-power-matrix.md`, `02-envelope-contract.md`, `03-tool-surface.md`, `05-tui-spec.md`, `06-architecture.md` — updated contracts.
 - `configs/pi-agent/packages/pi-agents/README.md` and `configs/pi-agent/MANIFEST.md` — user-facing behavior and migration.
-- `workflows/reviews/delegated-review-results/delegated-review-results.md` (new) — reusable reporting protocol.
-- `AGENTS.md` — concise mandatory rule linking to the workflow.
+- `procedures/reviews/delegated-review-results/delegated-review-results.md` (new) — reusable reporting protocol.
+- `AGENTS.md` — concise mandatory rule linking to the procedure.
 - Global reviewer/scout type definitions — bounded output, least-privilege tool guidance, and budgets.
 
 ## 6. Hardest constraint proof: the review result reaches the user before completion is claimed
@@ -342,7 +342,7 @@ Thus the prior failure mode—main answer first, report mail next turn, then cle
 | Same-session lease stale after crash/PID reuse | Runtime ID + heartbeat + locked stale-owner recovery; retain per-agent run-owner defense. |
 | Await blocks while worker needs main input | Return early on question/escalation/error; covered by end-to-end test. |
 | Await result marked done before host append | Reuse generalized `.delivering` reconciliation with await marker. |
-| Oversized reports fail or overwhelm context | Enforce report/data limits, concise workflow, bounded rendering, durable audit copy. |
+| Oversized reports fail or overwhelm context | Enforce report/data limits, concise procedure, bounded rendering, durable audit copy. |
 | Legacy adoption duplicates pending mail | Move/copy only into inactive staging; keep backup inactive; never activate two copies. |
 | Migration interrupted mid-copy/rename | Intent/completion ledger and idempotent recovery for each window. |
 | Ephemeral persistent agent becomes unreachable | Reject persistent lifetime; temporary oneshot-only scope. |
@@ -393,7 +393,7 @@ Thus the prior failure mode—main answer first, report mail next turn, then cle
 | Anchors, final metadata, `subagent_await` durability | 2–3 days |
 | Retirement/escalation cleanup | 1–2 days |
 | Legacy adoption and rollback | 1–2 days |
-| Workflow, docs, type guidance, dogfood | 1 day |
+| Procedure, docs, type guidance, dogfood | 1 day |
 | **Combined production-safe program** | **10–15 engineer-days** |
 
 The work overlaps (especially atomic mail with await), so this is not the sum of worst cases. Fork cloning, project-wide cross-session browsing, and backward merging after scoped divergence remain explicitly outside this estimate.

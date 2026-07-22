@@ -22,7 +22,7 @@ A single command should synchronously prevent new work, stop owned in-flight wor
    - Increment generation first so new scheduling sees cancellation immediately.
    - Stop the main run or dispatcher intake.
    - Disable auto-wake/resume pumps for the generation.
-   - Cancel workers, teams, workflow agents, queued tasks, and package-owned child model calls.
+   - Cancel workers, teams, procedure agents, queued tasks, and package-owned child model calls.
    - Drain or mark queues after producers are stopped.
 
 4. **Restart prevention**

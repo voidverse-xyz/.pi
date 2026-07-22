@@ -1,6 +1,6 @@
 ---
 name: agent-instructions-authoring
-description: Create, reorganize, deduplicate, or migrate persistent instructions for coding agents—repository AGENTS.md-style guidance, directory-scoped rules, user-level defaults, and vendor-specific rule files. Use when the user asks to add agent rules, coding conventions, repository guidance, scoped instructions, or convert old prompts/commands/rules into skills or workflows. Chooses the correct artifact, verifies platform scope and precedence, keeps instructions concise and non-conflicting, preserves exact requested wording, protects private/local details, and migrates without deleting originals until validation and explicit confirmation.
+description: Create, reorganize, deduplicate, or migrate persistent instructions for coding agents—repository AGENTS.md-style guidance, directory-scoped rules, user-level defaults, and vendor-specific rule files. Use when the user asks to add agent rules, coding conventions, repository guidance, scoped instructions, or convert old prompts/commands/rules into skills or procedures. Chooses the correct artifact, verifies platform scope and precedence, keeps instructions concise and non-conflicting, preserves exact requested wording, protects private/local details, and migrates without deleting originals until validation and explicit confirmation.
 ---
 
 # Agent instructions authoring
@@ -17,12 +17,12 @@ Before writing, classify the content:
 | Guidance for one subtree/file family | Directory-scoped instruction/rule supported by the platform |
 | Personal defaults across unrelated projects | User-level instructions/config, kept machine-local when appropriate |
 | Optional reusable expertise that should trigger by task | Skill |
-| Ordered multi-stage process or approval protocol | Workflow |
+| Ordered multi-stage process or approval protocol | Procedure |
 | Isolated specialist behavior and output contract | Subagent definition |
 | Deterministic event enforcement | Hook |
 | Typed action the model intentionally calls | Tool/extension |
 
-Do not turn every command into an always-loaded rule. Do not create a skill for a convention that must apply to every edit. Avoid duplicating the same guidance across instruction, skill and workflow layers.
+Do not turn every command into an always-loaded rule. Do not create a skill for a convention that must apply to every edit. Avoid duplicating the same guidance across instruction, skill and procedure layers.
 
 ## 2. Verify scope and precedence
 
@@ -73,7 +73,7 @@ Use the broadest level that is still correct:
 
 - Repository root: project-wide build/test rules, architecture map, public/outbound policy, source-of-truth locations.
 - Subdirectory: language/framework/domain conventions that only apply there.
-- Skill/workflow reference: detailed procedures too large or optional for persistent context.
+- Skill/procedure reference: detailed procedures too large or optional for persistent context.
 - User-level: stable personal preferences that do not belong in a shared repository.
 
 Do not put project-specific memory into a global reusable instruction file. Do not put host-specific config into a repository just because the agent needs it locally.
@@ -82,7 +82,7 @@ When file-pattern scoping is supported, test positive and negative examples. Glo
 
 ## 6. Manage size and references
 
-Keep the root instruction file as an index plus critical rules. Move detailed reusable material to the designated Skills, Workflows, Plans, Subagents or project documentation directories.
+Keep the root instruction file as an index plus critical rules. Move detailed reusable material to the designated Skills, Procedures, Plans, Subagents or project documentation directories.
 
 - Link directly to the relevant file rather than through a chain of indexes.
 - Keep referenced material one level deep where practical so agents reliably discover it.
@@ -110,7 +110,7 @@ Ignore vendor-managed/built-in directories unless the task is explicitly to arch
 
 - Always-on convention → persistent instruction.
 - File-scoped convention → scoped rule/instruction if the target supports it.
-- User-invoked procedure → workflow or explicit-invocation skill.
+- User-invoked procedure → procedure or explicit-invocation skill.
 - Automatically useful domain expertise → skill with a precise description.
 - Specialist prompt → subagent definition.
 - Event automation → hook.

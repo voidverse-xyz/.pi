@@ -38,7 +38,7 @@ runtime module graph.
 - Both supported CPU architectures select a pinned digest.
 - Extension loading works with the real configured extension set.
 - Extensions use bundled package-root exports rather than private filesystem imports; version-pinned shims fail open.
-- Child-process/self-spawn workflows resolve the standalone executable.
+- Child-process/self-spawn procedures resolve the standalone executable.
 - Interactive startup, reload, session persistence, and terminal reconnect work.
 - At least five fresh-container samples are compared by median and worst case.
 

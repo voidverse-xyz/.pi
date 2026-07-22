@@ -24,8 +24,8 @@ The scan excluded dependencies and test-only mock APIs. Constants and imported s
 | `pi-queue` | `alt+x` | `configs/pi-agent/packages/pi-queue/extensions/queue/index.ts:278` | Cancel newest managed message | None |
 | `pi-queue` | `alt+q` | `configs/pi-agent/packages/pi-queue/extensions/queue/index.ts:287` | Toggle steer/follow-up mode | None |
 | `pi-todo` | `alt+o` | `configs/pi-agent/packages/pi-todo/extensions/todo/index.ts:207` | Cycle expanded/collapsed/hidden | None |
-| `pi-workflow` | `alt+w` | `configs/pi-agent/packages/pi-workflow/extensions/index.ts:143` | Stop active workflow | None |
-| `pi-workflow` | `alt+e` | `configs/pi-agent/packages/pi-workflow/extensions/index.ts:148` | Expand/collapse a truncated workflow tree | None |
+| `pi-procedure` | `alt+w` | `configs/pi-agent/packages/pi-procedure/extensions/index.ts:143` | Stop active procedure | None |
+| `pi-procedure` | `alt+e` | `configs/pi-agent/packages/pi-procedure/extensions/index.ts:148` | Expand/collapse a truncated procedure tree | None |
 
 The other currently configured packages do not call `registerShortcut`.
 

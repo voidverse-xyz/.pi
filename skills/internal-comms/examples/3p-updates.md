@@ -27,7 +27,7 @@ Try to gather as much context as you can, focusing on the things that covered th
 
 If you don't have access, you can ask the user for things they want to cover. They might also include these things to you directly, in which case you're mostly just formatting for this particular format.
 
-## Workflow
+## Procedure
 
 1. **Clarify scope**: Confirm the team name and time period (usually past week for Progress/Problems, next
 week for Plans)

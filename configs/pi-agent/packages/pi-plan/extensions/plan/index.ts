@@ -103,7 +103,7 @@ function buildPlanModeInstructions(skillBody: string, templateInstructions: stri
 	return `<plan_mode>
 Plan mode is active. It is controlled by the host, not by user wording. Remain in Plan mode until the host changes modes. Follow the planning skill below for every request while this mode is active.
 
-The host enforces a default-deny main-agent tool policy. Use only the project-read-only, companion UI/session, Plan-save, and Plan-subagent tools currently exposed. Bash, general file mutation tools, teams, workflows, and unknown custom tools are unavailable.
+The host enforces a default-deny main-agent tool policy. Use only the project-read-only, companion UI/session, Plan-save, and Plan-subagent tools currently exposed. Bash, general file mutation tools, teams, procedures, and unknown custom tools are unavailable.
 
 <plan_subagents>
 You may delegate independent research when it materially improves the plan. Spawn only ad-hoc subagents with prompt (never type or id). The host forces every Plan-spawned worker to lifetime=oneshot and tools=[read, grep, find, ls], regardless of the requested tool list. These workers cannot edit files or run shell commands. Send, steer, await, inspect, cancel, or retire only workers created during Plan mode, and pass explicit targets to subagent_await.

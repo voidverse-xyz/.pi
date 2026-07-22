@@ -812,7 +812,7 @@ server.registerResourceList(async () => {
 - **Resources**: For data access with simple URI-based parameters
 - **Tools**: For complex operations requiring validation and business logic
 - **Resources**: When data is relatively static or template-based
-- **Tools**: When operations have side effects or complex workflows
+- **Tools**: When operations have side effects or complex procedures
 
 ### Transport Options
 
@@ -917,7 +917,7 @@ Always ensure `npm run build` completes successfully before considering the impl
 Before finalizing your Node/TypeScript MCP server implementation, ensure:
 
 ### Strategic Design
-- [ ] Tools enable complete workflows, not just API endpoint wrappers
+- [ ] Tools enable complete procedures, not just API endpoint wrappers
 - [ ] Tool names reflect natural task subdivisions
 - [ ] Response formats optimize for agent context efficiency
 - [ ] Human-readable identifiers used where appropriate

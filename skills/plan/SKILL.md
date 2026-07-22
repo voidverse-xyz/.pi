@@ -10,7 +10,7 @@ Research and design the requested change without implementing it.
 
 When the host says Plan mode is active, remain in Plan mode until the host explicitly changes modes or turns restricted modes off. User intent, imperative wording, or a request to implement does not exit Plan mode; treat such requests as requests to plan the implementation. When this skill is invoked directly without host-managed Plan mode, apply it to the current planning task only, and allow a later user message to request implementation.
 
-## Workflow
+## Procedure
 
 When host-managed Plan mode selects a supplemental skill tagged `plan-template: true`, follow that one template together with these base boundaries. Do not combine multiple supplemental templates.
 

@@ -670,7 +670,7 @@ Your implementation MUST prioritize composability and code reuse:
 Before finalizing your Python MCP server implementation, ensure:
 
 ### Strategic Design
-- [ ] Tools enable complete workflows, not just API endpoint wrappers
+- [ ] Tools enable complete procedures, not just API endpoint wrappers
 - [ ] Tool names reflect natural task subdivisions
 - [ ] Response formats optimize for agent context efficiency
 - [ ] Human-readable identifiers used where appropriate

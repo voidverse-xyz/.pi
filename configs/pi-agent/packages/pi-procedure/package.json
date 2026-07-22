@@ -1,0 +1,19 @@
+{
+	"name": "pi-procedure",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Claude Code-style procedure orchestration: an LLM-callable `procedure` tool that runs a deterministic JS script fanning out one-shot subagents via agent()/parallel()/pipeline()/phase()/log(), with a journal-backed resume, saved procedures (/procedures), a live expandable progress tree with agent thinking/tool activity above the editor (alt+e), and an alt+w stop brake. Subagent tool calls are pi-safety gated over procedure:confirm-request.",
+	"keywords": [
+		"pi-package"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	}
+}

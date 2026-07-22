@@ -214,7 +214,7 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 	};
 	pi.events.on("teams:confirm-request", handleConfirmRequest);
 	pi.events.on("subagents:confirm-request", handleConfirmRequest);
-	pi.events.on("workflow:confirm-request", handleConfirmRequest);
+	pi.events.on("procedure:confirm-request", handleConfirmRequest);
 
 	pi.registerCommand("safety", {
 		description: "Set main-agent Bash safety: off | on | max",

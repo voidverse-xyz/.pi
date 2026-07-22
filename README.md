@@ -8,7 +8,7 @@ This repository is designed to be cloned as the portable Pi configuration tree:
 
 Pi's effective global agent directory is still `~/.pi/agent`; the tracked
 `agent/` shims expose the repository's settings, keybindings, context, skills,
-package sources, subagent/team definitions, and workflow library from that
+package sources, subagent/team definitions, and procedure library from that
 location. Runtime state and credentials under `agent/` remain ignored.
 
 The repository can also be cloned directly to `~/.pi/agent`; in that layout the
@@ -31,7 +31,7 @@ source of the local Pi packages enabled by `settings.json`.
 ├── configs/pi-agent/packages/ # Active local Pi packages
 ├── configs/pi-agent/docs/     # Package-specific plans and notes
 ├── plans/                    # Reusable plans and procedures
-├── workflows/                # Reusable Markdown workflow procedures
+├── procedures/                # Reusable Markdown procedures
 ├── agent/                    # Compatibility shims when repo is cloned as ~/.pi
 ├── codex/                    # Codex configuration sources
 ├── mcp/                      # Reusable MCP definitions and notes
@@ -39,9 +39,9 @@ source of the local Pi packages enabled by `settings.json`.
 ```
 
 Pi ignores the extra reusable-material trees unless a package or setting refers
-to them. Root `workflows/*.js` is reserved for executable saved `pi-workflow`
-scripts; reusable Markdown procedures live in nested `workflows/<domain>/`
-directories, which the workflow loader ignores.
+to them. Root `procedures/*.js` is reserved for executable saved `pi-procedure`
+scripts; reusable Markdown procedures live in nested `procedures/<domain>/`
+directories, which the procedure loader ignores.
 
 ## Fresh installation
 
