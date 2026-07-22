@@ -20,12 +20,11 @@ import {
 	typedPath,
 } from "./file-input.ts";
 import {
+	activateChoiceRow,
 	createInputState,
 	type EditTarget,
 	nextButtonRow,
-	optionRows,
 	rowCount,
-	somethingElseRow,
 } from "./input-state.ts";
 import type { TreeNode } from "./picker-tree.ts";
 import { renderPanel } from "./render.ts";
@@ -256,30 +255,15 @@ export function showUserInputs(
 				return;
 			}
 
-			const row = s.cursor;
-			if (row < optionRows(inp)) {
-				if (inp.type === "radio") {
-					s.selected.clear();
-					s.selected.add(row);
-					s.customSelected = false;
-				} else {
-					if (s.selected.has(row)) s.selected.delete(row);
-					else s.selected.add(row);
-				}
-				s.selectionEdited = true;
+			const action = activateChoiceRow(inp, s);
+			if (action === "selection-changed") {
 				refresh();
 				return;
 			}
-			if (row === somethingElseRow(inp)) {
-				// If a custom value already exists, a bare toggle is more useful than reopening the editor.
-				if (s.customValue) {
-					s.customSelected = !s.customSelected;
-					s.selectionEdited = true;
-					if (s.customSelected && inp.type === "radio") s.selected.clear();
-					refresh();
-				} else {
-					openEditor({ kind: "custom", inputIdx: idx });
-				}
+			if (action === "edit-custom") {
+				// Always reopen with the saved value so "Something else" is editable
+				// after choosing another option or returning to this row later.
+				openEditor({ kind: "custom", inputIdx: idx });
 			}
 		}
 

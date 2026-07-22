@@ -67,3 +67,31 @@ export function nextButtonRow(inp: Input): number {
 export function rowCount(inp: Input): number {
 	return contentRows(inp) + 1;
 }
+
+export type ChoiceRowAction = "selection-changed" | "edit-custom" | null;
+
+/** Apply a radio/multi option row, or request the custom-value editor. */
+export function activateChoiceRow(inp: Input, state: InputState): ChoiceRowAction {
+	if (inp.type !== "radio" && inp.type !== "multi") return null;
+	const row = state.cursor;
+	if (row < optionRows(inp)) {
+		if (inp.type === "radio") {
+			state.selected.clear();
+			state.selected.add(row);
+			state.customSelected = false;
+		} else if (state.selected.has(row)) {
+			state.selected.delete(row);
+		} else {
+			state.selected.add(row);
+		}
+		state.selectionEdited = true;
+		return "selection-changed";
+	}
+	if (row === somethingElseRow(inp)) {
+		state.customSelected = true;
+		state.selectionEdited = true;
+		if (inp.type === "radio") state.selected.clear();
+		return "edit-custom";
+	}
+	return null;
+}

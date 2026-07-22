@@ -14,10 +14,12 @@ new output file or directory. `fileKind` is enforced when an existing path can
 be inspected.
 
 Inputs support stable IDs, defaults, optional answers, descriptions, and custom
-“Something else” choices. Choice options may also be marked `recommended`; this adds
-a persistent “(recommended)” label without selecting the option. Defaults remain
-separate because they preselect answers. One call may contain up to ten inputs and
-fifty options per choice input; individual text answers are limited to 16 KiB.
+“Something else” choices. Selecting “Something else” always opens its text editor;
+returning to it reopens the previous text for editing, even after another option was
+selected. Choice options may also be marked `recommended`; this adds a persistent
+“(recommended)” label without selecting the option. Defaults remain separate because
+they preselect answers. One call may contain up to ten inputs and fifty options per
+choice input; individual text answers are limited to 16 KiB.
 
 The tool intentionally requires Pi's interactive TUI. Legacy IPC forwarding was
 removed because it targeted the archived subprocess subagent system. A headless agent

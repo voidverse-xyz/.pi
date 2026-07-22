@@ -1,6 +1,7 @@
 {
   "name": "pi-questions",
   "version": "1.0.0",
+  "type": "module",
   "description": "Interactive ask_user tool for validated text, single-choice, multi-choice, and file questions in Pi's TUI.",
   "keywords": [
     "pi-package"
