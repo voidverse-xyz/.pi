@@ -338,7 +338,7 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 			finish(ACTIONS[actionSelectedIndex]!.value as ReviewAction);
 			return;
 		}
-		if (keys.cancel(data)) {
+		if (data === "q" || keys.cancel(data)) {
 			pendingG = false;
 			finish("stop");
 			return;
@@ -361,7 +361,7 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 			if (path) openFileDetail(path);
 			return;
 		}
-		if (keys.cancel(data)) {
+		if (data === "q" || keys.cancel(data)) {
 			finish("stop");
 			return;
 		}
@@ -415,7 +415,7 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 			backToFiles();
 			return;
 		}
-		if (keys.cancel(data) || keys.left(data)) {
+		if (data === "q" || keys.cancel(data) || keys.left(data)) {
 			backToFiles();
 			return;
 		}
@@ -569,8 +569,8 @@ export function createReviewPanel(opts: ReviewPanelOptions): Component {
 
 		const footerHint =
 			contentView === "files"
-				? "Tab actions · ↑↓ · Enter view file · d all changes · Esc stop"
-				: "Tab actions · ↑↓ scroll · v unified/split · t diff/full · f files · Esc files";
+				? "Tab actions · ↑↓ · Enter view file · d all changes · q stop"
+				: "Tab actions · ↑↓ scroll · v unified/split · t diff/full · f/q files";
 		lines.push(pad(theme.fg("dim", footerHint), innerW));
 
 		if (lines.length < targetH) {

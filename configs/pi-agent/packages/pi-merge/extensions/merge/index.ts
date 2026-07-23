@@ -95,7 +95,7 @@ async function runMerge(pi: ExtensionAPI, ctx: ExtensionCommandContext, args: st
 
 	const selected = args.trim()
 		? resolveSourcesFromArgs(ctx, args)
-		: await selectSourcesInteractively(ctx);
+		: await selectSourcesInteractively(pi, ctx);
 
 	if (!selected) return;
 
@@ -230,10 +230,10 @@ function resolveSourcesFromArgs(ctx: ExtensionCommandContext, args: string): Sou
 /**
  * Open the native session-tree selector (the same UI as `/tree`) so the user can pick one
  * branch entry from the real tree view, then resolve/cancel. Reused each round to build up
- * the merge set one branch at a time. Returns the chosen entry id, or undefined on Esc.
+ * the merge set one branch at a time. Returns the chosen entry id, or undefined on q/cancel.
  */
-function pickBranchFromTree(ctx: ExtensionCommandContext, initialSelectedId?: string): Promise<string | undefined> {
-	return ctx.ui.custom<string | undefined>((tui, _theme, _kb, done) => {
+function pickBranchFromTree(pi: ExtensionAPI, ctx: ExtensionCommandContext, initialSelectedId?: string): Promise<string | undefined> {
+	return ctx.ui.custom<string | undefined>((tui, _theme, keybindings, done) => {
 		const tree = ctx.sessionManager.getTree();
 		const leafId = ctx.sessionManager.getLeafId();
 		const selector = new TreeSelectorComponent(
@@ -242,35 +242,60 @@ function pickBranchFromTree(ctx: ExtensionCommandContext, initialSelectedId?: st
 			tui.terminal.rows,
 			(entryId) => done(entryId), // onSelect (Enter)
 			() => done(undefined), // onCancel (Esc)
-			undefined, // no label editing from the merge picker
+			(entryId, label) => pi.setLabel(entryId, label),
 			initialSelectedId,
 		);
 		selector.focused = true;
-		// Label editing is disabled above, so plain j/k are free to act as arrows.
-		const forward = selector.handleInput.bind(selector);
-		selector.handleInput = (data: string) => forward(data === "j" ? "\x1b[B" : data === "k" ? "\x1b[A" : data);
-		return selector;
+		const treeList = selector.getTreeList();
+		let editingLabel = false;
+		return {
+			render: (width: number) => selector.render(width),
+			invalidate: () => selector.invalidate(),
+			handleInput(data: string) {
+				if (editingLabel) {
+					const leavesEditor =
+						keybindings.matches(data, "tui.select.confirm") ||
+						keybindings.matches(data, "tui.select.cancel");
+					selector.handleInput(data);
+					if (leavesEditor) editingLabel = false;
+					return;
+				}
+				if (keybindings.matches(data, "app.tree.editLabel")) {
+					if (treeList.getSelectedNode()) {
+						editingLabel = true;
+						selector.handleInput(data);
+					}
+					return;
+				}
+				if (data === "q" && treeList.getSearchQuery() === "") {
+					done(undefined);
+					return;
+				}
+				const mapped = data === "j" ? "\x1b[B" : data === "k" ? "\x1b[A" : data;
+				selector.handleInput(mapped);
+			},
+		};
 	});
 }
 
-async function selectSourcesInteractively(ctx: ExtensionCommandContext): Promise<SourceBranch[] | undefined> {
+async function selectSourcesInteractively(pi: ExtensionAPI, ctx: ExtensionCommandContext): Promise<SourceBranch[] | undefined> {
 	if (collectLeaves(ctx.sessionManager.getTree()).length < 2) {
 		ctx.ui.notify("This session does not have at least two branch leaves to merge", "warning");
 		return undefined;
 	}
 
-	// One branch at a time from the /tree view: Enter picks the highlighted entry, Esc finishes
+	// One branch at a time from the /tree view: Enter picks the highlighted entry, q finishes
 	// (or cancels if fewer than two are chosen). Any entry is a valid source — its branch is
 	// root→entry — so alternate tips and divergence points can both be selected.
 	const selected = new Map<string, SourceBranch>();
 	let lastPickedId: string | undefined;
 
 	while (selected.size < MAX_SELECTED_BRANCHES) {
-		const pick = await pickBranchFromTree(ctx, lastPickedId);
-		if (pick === undefined) break; // Esc — done adding (validated below)
+		const pick = await pickBranchFromTree(pi, ctx, lastPickedId);
+		if (pick === undefined) break; // q/cancel — done adding (validated below)
 
 		if (selected.has(pick)) {
-			ctx.ui.notify("That branch is already selected — pick another, or Esc to merge", "info");
+			ctx.ui.notify("That branch is already selected — pick another, or q to merge", "info");
 			continue;
 		}
 		const entry = ctx.sessionManager.getEntry(pick);
@@ -278,7 +303,7 @@ async function selectSourcesInteractively(ctx: ExtensionCommandContext): Promise
 		const source = sourceFromEntry(ctx, entry);
 		selected.set(pick, source);
 		lastPickedId = pick;
-		ctx.ui.notify(`Added "${source.preview}" — ${selected.size} selected. Pick another, or Esc to merge.`, "info");
+		ctx.ui.notify(`Added "${source.preview}" — ${selected.size} selected. Pick another, or q to merge.`, "info");
 	}
 
 	if (selected.size < 2) {
@@ -505,7 +530,7 @@ async function generateMergeContext(ctx: ExtensionCommandContext, prompt: string
 			finish(undefined);
 		}
 
-		// Esc on the loader → terminate the child and cancel.
+		// q is the primary cancel key; Escape remains the loader's standard fallback.
 		loader.onAbort = terminate;
 
 		proc.stdout?.on("data", (d: Buffer) => {
@@ -534,7 +559,18 @@ async function generateMergeContext(ctx: ExtensionCommandContext, prompt: string
 			finish(text);
 		});
 
-		return loader;
+		return {
+			render: (width: number) => loader.render(width),
+			invalidate: () => loader.invalidate(),
+			handleInput(data: string) {
+				if (data === "q") {
+					terminate();
+					return;
+				}
+				loader.handleInput(data);
+			},
+			dispose: () => loader.dispose(),
+		};
 	});
 }
 

@@ -622,8 +622,8 @@ export function createBrowsePanel(opts: BrowsePanelOptions): Component {
 				focus === "tree"
 					? "↑↓ move · → expand · ← collapse/parent · Enter open · / filter · a add · Tab preview · q close"
 					: previewKind === "file"
-						? "↑↓ line · s select · a add" + (selAnchor !== null ? " range" : " file") + " · Esc/Tab tree · q close"
-						: "↑↓ scroll · a add dir · Esc/Tab tree · q close";
+						? "↑↓ line · s select · a add" + (selAnchor !== null ? " range" : " file") + " · Tab/← tree · q close"
+						: "↑↓ scroll · a add dir · Tab/← tree · q close";
 			footer.push(pad(theme.fg("dim", ` ${truncateToWidth(hint, innerW - 2, "…")}`), innerW));
 		}
 

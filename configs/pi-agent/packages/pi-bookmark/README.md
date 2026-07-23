@@ -18,7 +18,7 @@ Bookmark session entries with labels (Pi's `setLabel`), and manage them from a p
 | `Enter` | jump to the entry (moves the session leaf via `navigateTree`) |
 | `r` | rename the bookmark (input prompt) |
 | `d` / `x` | delete the bookmark |
-| `Esc` | close |
+| `q` | close (`Esc` remains a fallback) |
 
 Rename and delete reopen the list so you can do several in one pass; jump closes it.
 

@@ -78,8 +78,8 @@ errors immediately instead of showing an empty panel.
   preview yanks the file's source text.
 - `m` — type a free-text note to the agent in an embedded editor. Notes are **`m`
   everywhere** — never `n`, which (with `p`) stays bound to region/match navigation.
-- `q`/Esc — close (Esc first clears an active filter/search/selection, or steps
-  back up while browsing a directory).
+- `q` — close. `Esc` remains a stateful fallback that first clears an active
+  filter/search/selection, or steps back up while browsing a directory.
 
 ## Directories
 
@@ -88,8 +88,8 @@ pressing Enter focuses a directory preview on the right that you can navigate:
 
 - `↑↓` — select a child entry (the pane label shows `· browse [n/total]`);
 - `Enter` / `→` — descend into a child directory, or preview a child file;
-- `h` / `←` / `Backspace` / `Esc` — go **up** one level; at the curated root this
-  returns focus to the left list. Navigation is **clamped to the curated root** —
+- `h` / `←` / `Backspace` — go **up** one level; at the curated root this
+  returns focus to the left list (`Esc` remains a fallback). Navigation is **clamped to the curated root** —
   you can never browse above the directory the agent chose;
 - `..` — the first row when you've descended; select it and Enter (or just go up)
   to pop back to the parent.

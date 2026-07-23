@@ -3,8 +3,8 @@
  *
  * Renders the command and category, then locks the confirm action for `delayMs`
  * with a live countdown before it can be accepted. This forces a deliberate
- * pause rather than a reflexive keypress. Cancelling (Esc / n) is allowed at any
- * time.
+ * pause rather than a reflexive keypress. Cancelling (q / n, with Esc as a
+ * fallback) is allowed at any time.
  *
  * Fallbacks when the full TUI component isn't available:
  *   - RPC mode (hasUI but not "tui"): enforce the delay with a sleep, then use
@@ -111,7 +111,7 @@ export async function delayedConfirm(ctx: ExtensionContext, opts: DelayedConfirm
 
 		function handleInput(data: string) {
 			// Cancel is always available.
-			if (matchesKey(data, Key.escape) || data === "n" || data === "N") {
+			if (data === "q" || matchesKey(data, Key.escape) || data === "n" || data === "N") {
 				finish(false);
 				return;
 			}
@@ -148,7 +148,7 @@ export async function delayedConfirm(ctx: ExtensionContext, opts: DelayedConfirm
 			lines.push("");
 
 			if (ready()) {
-				addWrapped("  ", theme.fg("success", "Enter / y") + theme.fg("dim", " confirm   ") + theme.fg("warning", "Esc / n") + theme.fg("dim", " cancel"), 3);
+				addWrapped("  ", theme.fg("success", "Enter / y") + theme.fg("dim", " confirm   ") + theme.fg("warning", "q / n") + theme.fg("dim", " cancel"), 3);
 			} else {
 				const seconds = Math.ceil(remainingMs() / 1000);
 				addWrapped(
@@ -156,7 +156,7 @@ export async function delayedConfirm(ctx: ExtensionContext, opts: DelayedConfirm
 					theme.fg("dim", "confirm locked for ") +
 						theme.fg(opts.color, `${seconds}s`) +
 						theme.fg("dim", "   ·   ") +
-						theme.fg("warning", "Esc / n") +
+						theme.fg("warning", "q / n") +
 						theme.fg("dim", " cancel"),
 					3,
 				);

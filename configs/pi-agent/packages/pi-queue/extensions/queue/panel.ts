@@ -10,7 +10,7 @@
  *   K / J     move the selected entry up / down (shift+k / shift+j)
  *   d / x     delete the selected entry
  *   t         toggle the whole queue between steer and queue (follow-up) mode
- *   Esc / q   close the panel
+ *   q         close the panel (Escape remains a fallback)
  *
  * The panel does not own the queue — index.ts does. It talks to it through a
  * QueueController and subscribes via setOnChange, so mutations that happen while
@@ -272,7 +272,7 @@ export function createQueuePanel(opts: QueuePanelOptions): Component & { dispose
 			const available = Math.max(1, targetRows - lines.length - 1);
 			for (const line of editor.render(Math.max(1, innerWidth - 2)).slice(0, available)) lines.push(fit(` ${line}`));
 		} else {
-			lines.push(fit(theme.fg("dim", "↑↓ select · Enter/e edit · s send now · K/J move · d/x delete · t toggle · Esc close")));
+			lines.push(fit(theme.fg("dim", "↑↓ select · Enter/e edit · s send now · K/J move · d/x delete · t toggle · q close")));
 		}
 		lines.push(fit(rule));
 		if (lines.length > targetRows) lines.length = targetRows;

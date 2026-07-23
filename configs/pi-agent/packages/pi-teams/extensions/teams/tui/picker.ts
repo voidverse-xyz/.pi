@@ -7,7 +7,7 @@
  * section.
  *
  * Keys: ↑↓/jk navigate · Enter view · x interrupt · X retire (y/N) ·
- * S stop all · a toggle archive · Esc close. Action keys are intercepted
+ * S stop all · a toggle archive · q close. Action keys are intercepted
  * before the list so SelectList only ever sees navigation input.
  */
 
@@ -191,7 +191,7 @@ export function createPicker(options: PickerOptions): PickerComponent {
 			if (list) lines.push(...list.render(width));
 			else lines.push(theme.fg("muted", "  no agents — spawn one with team_spawn"));
 			if (confirmRetire) lines.push(clip(theme.fg("error", `  Retire ${confirmRetire}? [y/N]`)));
-			else lines.push(clip(theme.fg("dim", "  ↑↓ move · Enter view · x interrupt · S stop all · X retire · a archive · Esc close")));
+			else lines.push(clip(theme.fg("dim", "  ↑↓ move · Enter view · x interrupt · S stop all · X retire · a archive · q close")));
 			lines.push(rule);
 			return lines;
 		},

@@ -175,7 +175,7 @@ export function showUserInputs(
 		function handlePickerInput(data: string, idx: number) {
 			const s = states[idx];
 			ensurePickerLoaded(rootDir, s, refresh);
-			if (matchesKey(data, Key.escape)) {
+			if (data === "q" || matchesKey(data, Key.escape)) {
 				closeEditor();
 				return;
 			}
@@ -316,7 +316,7 @@ export function showUserInputs(
 					}
 					return;
 				}
-				if (matchesKey(data, Key.escape)) {
+				if (data === "q" || matchesKey(data, Key.escape)) {
 					done({ answers: [], cancelled: true });
 				}
 				return;
@@ -339,7 +339,7 @@ export function showUserInputs(
 				activateRow(idx);
 				return;
 			}
-			if (matchesKey(data, Key.escape)) {
+			if (data === "q" || matchesKey(data, Key.escape)) {
 				done({ answers: [], cancelled: true });
 			}
 		}

@@ -43,5 +43,5 @@ The isolated reviewer receives only bounded diff/current-content snapshots. Its 
 | `a` | Ask main agent or isolated reviewer |
 | `u` / `U` | Undo selected/all (`/changes` only) |
 | `e` / `E` | Export selected/all patches (`/changes` only) |
-| `f` / `Esc` | Back |
-| `q` | Close |
+| `f` | Back from a diff; switch the full-file view back to the diff |
+| `q` | Close the file list or go back from a nested view (`Esc` remains a fallback) |

@@ -21,7 +21,7 @@
  *    on all sides via overlayOptions.margin/width/maxHeight) listing running + recent tool
  *    calls, on a background fill distinct from the plain transcript, with interior padding
  *    around the content. Arrow keys + Enter drill into one to see its live streaming output;
- *    Escape/'b' goes back to the list; Escape/'q'/Ctrl+C closes the overlay entirely.
+ *    q/Escape/'b' goes back to the list; q from the list or Ctrl+C closes the overlay.
  *
  *    Each row (and the detail header) shows a duration - elapsed-so-far for running calls,
  *    total for finished ones - from the startedAt/endedAt stamps the run map already keeps.
@@ -368,11 +368,11 @@ class ToolMonitorComponent {
 	}
 
 	private handleDetailInput(data: string): void {
-		if (matchesKey(data, "escape") || data === "b") {
+		if (data === "q" || matchesKey(data, "escape") || data === "b") {
 			this.mode = "list";
 			return;
 		}
-		if (matchesKey(data, "ctrl+c") || data === "q") {
+		if (matchesKey(data, "ctrl+c")) {
 			this.close();
 			return;
 		}
@@ -426,7 +426,7 @@ class ToolMonitorComponent {
 			? "type to filter  enter: apply  esc: clear filter  ctrl+c: close"
 			: query !== ""
 				? "up/down: navigate  enter: view  /: edit filter  esc: clear filter  x: abort  q: close"
-				: "up/down: navigate  enter: view  /: filter  x: abort  esc/q: close";
+				: "up/down: navigate  enter: view  /: filter  x: abort  q: close";
 		const lines: string[] = [this.theme.fg("accent", "Tool Monitor"), this.theme.fg("dim", hints)];
 
 		// Filter row, shown while editing or while a filter is applied. The Input
@@ -480,7 +480,7 @@ class ToolMonitorComponent {
 		const lines: string[] = [
 			this.theme.fg("accent", `Tool: ${run.name}`),
 			this.theme.fg(statusColor(run.status), `Status: ${run.status} · ${duration}${run.status === "running" ? " elapsed" : ""}`),
-			this.theme.fg("dim", "↑↓/PgUp/PgDn: scroll  esc/b: back  x: abort  q/ctrl+c: close"),
+			this.theme.fg("dim", "↑↓/PgUp/PgDn: scroll  q/b: back  x: abort  ctrl+c: close"),
 			"",
 		];
 

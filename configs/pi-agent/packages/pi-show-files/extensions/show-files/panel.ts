@@ -1134,13 +1134,13 @@ export function createShowFilesPanel(opts: ShowFilesPanelOptions): Component {
 		if (focus === "list")
 			return `↑↓ move · Enter open · / filter · ${listAdd} · c copy mention · m note${noteInfo} · q close`;
 		if (state.previewKind === "file" && state.rendered)
-			return `↑↓ scroll · r raw${openHtml} · a add file · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`;
+			return `↑↓ scroll · r raw${openHtml} · a add file · c copy mention · y copy text · m note${noteInfo} · Tab back · q close`;
 		if (state.previewKind === "file")
-			return `↑↓ line · n/p ${state.previewSearch ? "match" : "region"} · / search${state.renderableAs ? " · r rendered" : ""}${openHtml} · s select · ${addLabel} · c copy mention · y copy text · m note${noteInfo} · Esc back · q close`;
+			return `↑↓ line · n/p ${state.previewSearch ? "match" : "region"} · / search${state.renderableAs ? " · r rendered" : ""}${openHtml} · s select · ${addLabel} · c copy mention · y copy text · m note${noteInfo} · Tab back · q close`;
 		if (state.previewKind === "dir")
-			return `↑↓ select · Enter open · h/⌫ up · a add mention · c copy mention · m note${noteInfo} · Esc up · q close`;
-		if (state.previewKind === "image") return `a add file · c copy mention · m note${noteInfo} · Esc back · q close`;
-		return `↑↓ scroll · a add · c copy mention · m note${noteInfo} · Esc back · q close`;
+			return `↑↓ select · Enter open · h/⌫ up · a add mention · c copy mention · m note${noteInfo} · q close`;
+		if (state.previewKind === "image") return `a add file · c copy mention · m note${noteInfo} · Tab back · q close`;
+		return `↑↓ scroll · a add · c copy mention · m note${noteInfo} · Tab back · q close`;
 	}
 
 	function render(width: number): string[] {

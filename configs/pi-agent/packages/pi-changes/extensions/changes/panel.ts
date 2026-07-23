@@ -277,7 +277,7 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 	}
 
 	function handleAskTargetInput(data: string): void {
-		if (keys.cancel(data)) {
+		if (data === "q" || keys.cancel(data)) {
 			backFromAsk();
 			return;
 		}
@@ -287,7 +287,7 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 	}
 
 	function handleAnswerInput(data: string): void {
-		if (keys.cancel(data) || data === "q") {
+		if (data === "q" || keys.cancel(data)) {
 			onDone({ type: "answerClose", abs: selected()?.abs ?? "" });
 			return;
 		}
@@ -304,7 +304,7 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 			tui.requestRender();
 			return;
 		}
-		if (matchesKey(data, "f") || matchesKey(data, "shift+f") || keys.cancel(data)) {
+		if (matchesKey(data, "f") || matchesKey(data, "shift+f") || data === "q" || keys.cancel(data)) {
 			setView("list");
 			return;
 		}
@@ -316,7 +316,7 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 			setView("diff");
 			return;
 		}
-		if (keys.cancel(data)) {
+		if (data === "q" || keys.cancel(data)) {
 			setView("list");
 			return;
 		}
@@ -324,7 +324,7 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 	}
 
 	function handleListInput(data: string): void {
-		if (keys.cancel(data) || data === "q") {
+		if (data === "q" || keys.cancel(data)) {
 			onDone({ type: "close" });
 			return;
 		}
@@ -447,15 +447,15 @@ export function createChangesPanel(opts: ChangesPanelOptions): Component {
 				if (!allowUndo && !allowExport) return "↑↓ move · Enter diff · o file · a ask · q close";
 				return "↑↓ move · Enter diff · o file · a ask · u undo · U undo all · e/E patch · q close";
 			case "diff":
-				if (!allowUndo && !allowExport) return "↑↓ scroll · v split · o file · a ask · f/Esc back";
-				return "↑↓ scroll · v split · o file · a ask · u undo · e/E patch · f/Esc back";
+				if (!allowUndo && !allowExport) return "↑↓ scroll · v split · o file · a ask · f/q back";
+				return "↑↓ scroll · v split · o file · a ask · u undo · e/E patch · f/q back";
 			case "file":
-				if (!allowUndo && !allowExport) return "↑↓ scroll · f diff · a ask · Esc back";
-				return "↑↓ scroll · f diff · a ask · u undo · e/E patch · Esc back";
+				if (!allowUndo && !allowExport) return "↑↓ scroll · f diff · a ask · q back";
+				return "↑↓ scroll · f diff · a ask · u undo · e/E patch · q back";
 			case "ask-target":
-				return "↑↓ · Enter choose · Esc cancel";
+				return "↑↓ · Enter choose · q cancel";
 			case "answer":
-				return answer?.status === "running" ? "↑↓ scroll · Esc stop & back" : "↑↓ scroll · Esc/q back";
+				return answer?.status === "running" ? "↑↓ scroll · q stop & back" : "↑↓ scroll · q back";
 		}
 	}
 

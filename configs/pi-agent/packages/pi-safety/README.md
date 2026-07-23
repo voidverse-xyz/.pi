@@ -29,7 +29,7 @@ The selected mode is stored in `~/.pi/agent/safety.json`. Invalid or unreadable 
 
 Classification is deliberately conservative. Unknown commands, environment-prefixed commands, output-producing flags, external preprocessors, and commands with unproven shell behavior fall into a gated category in `max` mode.
 
-Confirmations are serialized, so parallel Bash tool calls cannot stack overlapping dialogs. In print/JSON modes, gated commands fail closed because no confirmation UI is available. RPC uses its normal confirmation UI.
+Confirmations are serialized, so parallel Bash tool calls cannot stack overlapping dialogs. In the TUI, use `q` or `n` to cancel at any point; `Esc` remains a fallback. In print/JSON modes, gated commands fail closed because no confirmation UI is available. RPC uses its normal confirmation UI.
 
 ## Audit privacy
 

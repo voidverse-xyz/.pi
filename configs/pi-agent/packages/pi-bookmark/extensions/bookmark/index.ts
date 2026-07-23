@@ -9,7 +9,7 @@
  *   /unbookmark        - remove the most recent bookmark
  *   /bookmarks         - manage bookmarks: list (label + excerpt), Enter jumps
  *                        to the entry (navigateTree), r renames, d/x deletes,
- *                        Esc closes.
+ *                        q closes.
  *
  * Bookmarks are stored as label entries in the session file (setLabel appends
  * a LabelEntry; sessionManager.getLabel resolves the current label per entry).
@@ -129,8 +129,8 @@ export default function (pi: ExtensionAPI) {
 	// ---- /bookmarks manager -------------------------------------------------
 
 	// SelectList overlay showing label + excerpt. Enter resolves a jump, r a
-	// rename, d/x a delete; Esc resolves null. Action keys are intercepted
-	// before the list so SelectList only sees navigation input.
+	// rename, d/x a delete, and q closes. Action keys are intercepted before
+	// the list so SelectList only sees navigation input.
 	function openManager(ctx: ExtensionCommandContext, bookmarks: BookmarkItem[]): Promise<ManagerAction | null> {
 		const items: SelectItem[] = bookmarks.map((b) => ({
 			value: b.id,
@@ -159,7 +159,7 @@ export default function (pi: ExtensionAPI) {
 
 			const refreshThemedText = () => {
 				title.setText(theme.fg("accent", theme.bold(`Bookmarks (${bookmarks.length})`)));
-				help.setText(theme.fg("dim", "↑↓ navigate • enter jump • r rename • d/x delete • esc close"));
+				help.setText(theme.fg("dim", "↑↓ navigate • enter jump • r rename • d/x delete • q close"));
 			};
 			refreshThemedText();
 
@@ -172,6 +172,10 @@ export default function (pi: ExtensionAPI) {
 					refreshThemedText();
 				},
 				handleInput(data: string) {
+					if (data === "q") {
+						done(null);
+						return;
+					}
 					const selected = selectList.getSelectedItem();
 					if (selected && (matchesKey(data, "r") || matchesKey(data, "shift+r"))) {
 						done({ type: "rename", id: selected.value });
@@ -191,7 +195,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("bookmarks", {
 		description: "Manage bookmarks — jump to (Enter), rename (r), delete (d/x)",
 		handler: async (_args, ctx) => {
-			// Rename/delete reopen the manager with fresh data; jump and Esc leave.
+			// Rename/delete reopen the manager with fresh data; jump and q leave.
 			while (true) {
 				const bookmarks = collectBookmarks(ctx);
 				if (bookmarks.length === 0) {

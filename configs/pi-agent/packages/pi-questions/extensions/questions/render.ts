@@ -103,11 +103,11 @@ export function renderPanel(view: PanelView, width: number): string[] {
 	lines.push("");
 	const help = editing
 		? editing.kind === "picker"
-			? "↑↓ move · →/← expand/collapse · Enter pick · Esc close"
+			? "↑↓ move · →/← expand/collapse · Enter pick · q close"
 			: "Enter to save · Esc to go back"
 		: currentTab === submitTab
-			? "↑↓ move · Enter choose · Tab/←→ switch · Esc cancel"
-			: "↑↓ move · Space/Enter choose · Tab/←→ switch · Esc cancel";
+			? "↑↓ move · Enter choose · Tab/←→ switch · q cancel"
+			: "↑↓ move · Space/Enter choose · Tab/←→ switch · q cancel";
 	addWrappedWithPrefix(" ", theme.fg("dim", help));
 	lines.push(theme.fg("accent", "─".repeat(renderWidth)));
 

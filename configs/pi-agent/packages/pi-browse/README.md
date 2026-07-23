@@ -62,8 +62,8 @@ is filtered out, the selection re-seats onto the first visible row.
 | `a` | add selected file/dir to chat |
 | `Tab` | focus the preview pane |
 | `g`/`G`, `PgUp`/`PgDn`, `Ctrl+U`/`Ctrl+D` | scroll |
-| `Esc` | clear filter, else close |
 | `q` | close |
+| `Esc` | clear filter, else close (fallback) |
 
 **Preview pane (file)**
 
@@ -72,8 +72,9 @@ is filtered out, the selection re-seats onto the first visible row.
 | `↑`/`↓` | move the line cursor |
 | `s` (or `v`) | start / clear a line selection |
 | `a` | add the selected range (or the whole file) to chat |
-| `Tab` / `Esc` / `←` | back to the tree |
+| `Tab` / `←` | back to the tree |
 | `q` | close |
+| `Esc` | clear a selection, else back to the tree (fallback) |
 
 ## Install
 

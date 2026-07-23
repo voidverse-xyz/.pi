@@ -21,6 +21,13 @@ selected. Choice options may also be marked `recommended`; this adds a persisten
 they preselect answers. One call may contain up to ten inputs and fifty options per
 choice input; individual text answers are limited to 16 KiB.
 
+## Controls
+
+Use `Tab` or `←` / `→` to switch inputs, `↑` / `↓` to move, and `Enter` or
+`Space` to choose. On non-text question and picker surfaces, `q` cancels or goes
+back (`Esc` remains a fallback). While editing an answer, path, custom choice, or
+note, `q` remains ordinary text and `Esc` returns to the question.
+
 The tool intentionally requires Pi's interactive TUI. Legacy IPC forwarding was
 removed because it targeted the archived subprocess subagent system. A headless agent
 receives a proper tool error and must continue with stated assumptions.

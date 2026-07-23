@@ -23,6 +23,21 @@ At the end, two or more commits can optionally be squashed when they are still t
 
 `--dry-run` runs the review without changing Git state.
 
+## Review keys
+
+| Key | Action |
+|---|---|
+| `Tab` | Move between content and actions |
+| `↑` / `↓` | Move or scroll |
+| `Enter` | Open a file or choose an action |
+| `d` | Open the combined group diff |
+| `v` | Toggle unified/split diff |
+| `t` | Toggle diff/full-file content |
+| `f` / `q` | Return from detail to files |
+| `q` | Stop from the file or actions view (`Esc` remains a fallback) |
+
+The chat question field accepts ordinary text, so `q` remains typeable there and `Esc` closes that text-entry surface.
+
 ## Configuration
 
 Configuration is loaded in this order:

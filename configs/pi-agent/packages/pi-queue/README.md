@@ -31,7 +31,7 @@ The `/queue` panel supports:
 | `K` / `J` | Move up/down |
 | `d` / `x` | Delete |
 | `t` | Toggle delivery mode |
-| `Esc` / `q` | Close |
+| `q` | Close (`Esc` remains a fallback) |
 
 ## Delivery and limits
 
