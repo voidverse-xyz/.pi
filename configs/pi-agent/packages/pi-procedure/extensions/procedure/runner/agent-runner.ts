@@ -28,7 +28,7 @@ import { AgentFailure, ProcedureStopped } from "../script/semantics.ts";
 import { schemaShapeErrors } from "../schema/validate.ts";
 import type { ConfirmFn } from "../sandbox/safety-bridge.ts";
 import { buildSandboxedTools, selectToolNames, type SandboxPorts } from "../sandbox/tools-filter.ts";
-import { liveThinkingSummary, truncateFlat } from "../text.ts";
+import { liveThinkingSummary, retainLatestThought, truncateFlat } from "../text.ts";
 import { createOutputSlot, createStructuredOutputTool, STRUCTURED_OUTPUT_TOOL } from "./structured-output.ts";
 import type { Scheduler } from "./scheduler.ts";
 
@@ -200,17 +200,19 @@ export async function runAgent(call: AgentCall, ports: RunnerPorts): Promise<Age
 		let failure: { stopReason: string; message: string } | null = null;
 		let finalMessages: unknown[] = [];
 		let thinkingText = "";
+		let latestThought = "";
 		let toolUses = 0;
 		let lastThinkingPublish = 0;
 		const activeTools = new Map<string, { tool: string; summary: string }>();
 		ports.onActivity(call.seq, { tool: "", summary: "thinking…", toolUses });
 
 		const publishThinking = (force = false): void => {
+			latestThought = retainLatestThought(latestThought, thinkingText);
 			if (activeTools.size > 0) return;
 			const now = Date.now();
 			if (!force && now - lastThinkingPublish < 120) return;
 			lastThinkingPublish = now;
-			ports.onActivity(call.seq, { tool: "", summary: liveThinkingSummary(thinkingText), toolUses });
+			ports.onActivity(call.seq, { tool: "", summary: liveThinkingSummary(latestThought), toolUses });
 		};
 
 		const unsubscribe = session.subscribe((event) => {
@@ -218,7 +220,6 @@ export async function runAgent(call: AgentCall, ports: RunnerPorts): Promise<Age
 				const streamEvent = event.assistantMessageEvent;
 				if (streamEvent.type === "thinking_start") {
 					thinkingText = "";
-					publishThinking(true);
 					return;
 				}
 				if (streamEvent.type === "thinking_delta") {
@@ -245,7 +246,7 @@ export async function runAgent(call: AgentCall, ports: RunnerPorts): Promise<Age
 				const current = [...activeTools.values()].at(-1);
 				ports.onActivity(
 					call.seq,
-					current ? { ...current, toolUses } : { tool: "", summary: "thinking…", toolUses },
+					current ? { ...current, toolUses } : { tool: "", summary: liveThinkingSummary(latestThought), toolUses },
 				);
 				return;
 			}

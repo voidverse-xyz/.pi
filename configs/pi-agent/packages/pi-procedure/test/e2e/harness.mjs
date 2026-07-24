@@ -85,12 +85,23 @@ export async function makeWorld(name) {
 				const base = { role: "assistant", api: model.api, provider: model.provider, model: model.id, usage, timestamp: Date.now() };
 				if (spec.tools) {
 					if (spec.delayMs) await new Promise((r) => setTimeout(r, spec.delayMs));
-					const content = spec.tools.map((t) => ({ type: "toolCall", id: `call_${++callSeq}`, name: t.name, arguments: t.args }));
+					const thinking = typeof spec.thinking === "string" ? spec.thinking : "";
+					const toolCalls = spec.tools.map((t) => ({ type: "toolCall", id: `call_${++callSeq}`, name: t.name, arguments: t.args }));
+					const content = [
+						...(thinking ? [{ type: "thinking", thinking }] : []),
+						...toolCalls,
+					];
 					const output = { ...base, content, stopReason: "toolUse" };
 					stream.push({ type: "start", partial: output });
-					content.forEach((tc, i) => {
-						stream.push({ type: "toolcall_start", contentIndex: i, partial: output });
-						stream.push({ type: "toolcall_end", contentIndex: i, toolCall: tc, partial: output });
+					if (thinking) {
+						stream.push({ type: "thinking_start", contentIndex: 0, partial: output });
+						stream.push({ type: "thinking_delta", contentIndex: 0, delta: thinking, partial: output });
+						stream.push({ type: "thinking_end", contentIndex: 0, content: thinking, partial: output });
+					}
+					const toolOffset = thinking ? 1 : 0;
+					toolCalls.forEach((toolCall, i) => {
+						stream.push({ type: "toolcall_start", contentIndex: i + toolOffset, partial: output });
+						stream.push({ type: "toolcall_end", contentIndex: i + toolOffset, toolCall, partial: output });
 					});
 					stream.push({ type: "done", reason: "toolUse", message: output });
 				} else {

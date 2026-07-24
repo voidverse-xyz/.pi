@@ -46,38 +46,75 @@ writeFileSync(
 
 // ------------------------------------------------------------- mock provider
 const llmCalls = [];
+let lifecycleCalls = 0;
+
+function lastUserText(messages) {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i].role !== "user") continue;
+		const content = messages[i].content;
+		return typeof content === "string" ? content : content.map((part) => part.text ?? "").join("\n");
+	}
+	return "";
+}
+
 function mockStream(model, context) {
 	const stream = piAi.createAssistantMessageEventStream();
 	(async () => {
+		const userText = lastUserText(context.messages);
 		llmCalls.push({ systemPrompt: context.systemPrompt ?? "", model: `${model.provider}/${model.id}` });
-		const text = `MOCK_REPLY_${llmCalls.length}`;
-		const thinking = llmCalls.length === 1 ? "Inspecting the requested runtime task before replying." : "";
-		const content = [
-			...(thinking ? [{ type: "thinking", thinking }] : []),
-			{ type: "text", text },
-		];
-		const output = {
-			role: "assistant",
-			content,
-			api: model.api,
-			provider: model.provider,
-			model: model.id,
-			usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 } },
-			stopReason: "stop",
-			timestamp: Date.now(),
-		};
-		stream.push({ type: "start", partial: output });
-		if (thinking) {
-			stream.push({ type: "thinking_start", contentIndex: 0, partial: output });
-			stream.push({ type: "thinking_delta", contentIndex: 0, delta: thinking, partial: output });
-			await new Promise((resolve) => setTimeout(resolve, 250));
-			stream.push({ type: "thinking_end", contentIndex: 0, content: thinking, partial: output });
+		let spec;
+		if (userText.includes("Exercise thinking lifecycle")) {
+			lifecycleCalls++;
+			spec = lifecycleCalls === 1
+				? {
+					thinking: "Inspecting the project instructions before reading them.",
+					tools: [{ name: "read", args: { path: "AGENTS.md" } }],
+				}
+				: { thinking: "   ", text: "LIFECYCLE_OK", delayMs: 250 };
+		} else {
+			spec = {
+				text: `MOCK_REPLY_${llmCalls.length}`,
+				thinking: llmCalls.length === 1 ? "Inspecting the requested runtime task before replying." : "",
+			};
 		}
-		const textIndex = thinking ? 1 : 0;
-		stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
-		stream.push({ type: "text_delta", contentIndex: textIndex, delta: text, partial: output });
-		stream.push({ type: "text_end", contentIndex: textIndex, content: text, partial: output });
-		stream.push({ type: "done", reason: "stop", message: output });
+
+		const usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 15, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.001 } };
+		const base = { role: "assistant", api: model.api, provider: model.provider, model: model.id, usage, timestamp: Date.now() };
+		if (spec.tools) {
+			const thinking = spec.thinking ?? "";
+			const toolCalls = spec.tools.map((tool) => ({ type: "toolCall", id: `call_${lifecycleCalls}`, name: tool.name, arguments: tool.args }));
+			const content = [...(thinking ? [{ type: "thinking", thinking }] : []), ...toolCalls];
+			const output = { ...base, content, stopReason: "toolUse" };
+			stream.push({ type: "start", partial: output });
+			if (thinking) {
+				stream.push({ type: "thinking_start", contentIndex: 0, partial: output });
+				stream.push({ type: "thinking_delta", contentIndex: 0, delta: thinking, partial: output });
+				stream.push({ type: "thinking_end", contentIndex: 0, content: thinking, partial: output });
+			}
+			const toolOffset = thinking ? 1 : 0;
+			toolCalls.forEach((toolCall, i) => {
+				stream.push({ type: "toolcall_start", contentIndex: i + toolOffset, partial: output });
+				stream.push({ type: "toolcall_end", contentIndex: i + toolOffset, toolCall, partial: output });
+			});
+			stream.push({ type: "done", reason: "toolUse", message: output });
+		} else {
+			const thinking = spec.thinking ?? "";
+			const text = spec.text;
+			const content = [...(thinking ? [{ type: "thinking", thinking }] : []), { type: "text", text }];
+			const output = { ...base, content, stopReason: "stop" };
+			stream.push({ type: "start", partial: output });
+			if (thinking) {
+				stream.push({ type: "thinking_start", contentIndex: 0, partial: output });
+				stream.push({ type: "thinking_delta", contentIndex: 0, delta: thinking, partial: output });
+				await new Promise((resolve) => setTimeout(resolve, spec.delayMs ?? 250));
+				stream.push({ type: "thinking_end", contentIndex: 0, content: thinking, partial: output });
+			}
+			const textIndex = thinking ? 1 : 0;
+			stream.push({ type: "text_start", contentIndex: textIndex, partial: output });
+			stream.push({ type: "text_delta", contentIndex: textIndex, delta: text, partial: output });
+			stream.push({ type: "text_end", contentIndex: textIndex, content: text, partial: output });
+			stream.push({ type: "done", reason: "stop", message: output });
+		}
 		stream.end();
 	})();
 	return stream;
@@ -157,7 +194,7 @@ await test("spawn with task runs a real turn; JSONL + vitals land", async () => 
 	assert.equal(result.created, true);
 	const thinking = await until(() => {
 		const candidate = core.activitySnapshot().find((entry) => entry.address === "researcher/q1");
-		return candidate?.summary === "Thinking: Inspecting the requested runtime task before replying." ? candidate : null;
+		return candidate?.summary === "Inspecting the requested runtime task before replying. · thinking…" ? candidate : null;
 	});
 	assert.ok(thinking, "provider-visible thinking replaces the generic placeholder during a live turn");
 	await core.whenIdle();
@@ -178,6 +215,19 @@ await test("pinned model is used; project context OFF for researcher; body + ide
 	assert.ok(call.systemPrompt.includes("RESEARCHER_BODY_MARKER"), "type body (layer 3)");
 	assert.ok(call.systemPrompt.includes("Your identity"), "identity block (layer 4)");
 	assert.ok(!call.systemPrompt.includes("MARKER_PROJECT_CONTEXT"), "projectContext:false → no AGENTS.md");
+});
+
+await test("the latest visible thought returns after a tool and survives a blank next thinking block", async () => {
+	const result = await core.spawn({ type: "researcher", id: "lifecycle", task: "Exercise thinking lifecycle." });
+	assert.equal(result.created, true);
+	const restored = await until(() => {
+		const candidate = core.activitySnapshot().find((entry) => entry.address === "researcher/lifecycle");
+		return candidate?.toolUses === 1 && candidate.tool === "" && candidate.summary === "Inspecting the project instructions before reading them. · thinking…"
+			? candidate
+			: null;
+	});
+	assert.ok(restored, "tool completion and blank thinking must retain the latest visible clue");
+	await core.whenIdle();
 });
 
 await test("get-or-create wakes with memory intact (created:false, same JSONL)", async () => {
@@ -203,10 +253,10 @@ await test("greeter inherits session model + includes project context", async ()
 });
 
 console.log("status/peek:");
-await test("roster lists both agents with vitals", async () => {
+await test("roster lists all agents with vitals", async () => {
 	const roster = await core.status();
 	const addrs = roster.map((r) => r.address).sort();
-	assert.deepEqual(addrs, ["greeter/main", "researcher/q1"]);
+	assert.deepEqual(addrs, ["greeter/main", "researcher/lifecycle", "researcher/q1"]);
 	assert.ok(roster.every((r) => r.state === "dormant"));
 	assert.equal(await core.peek("nope/x"), null);
 });

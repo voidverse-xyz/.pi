@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { EXT, jiti } from "./env.mjs";
 import { makeWorld, summary, test, ProcedureRun } from "./harness.mjs";
@@ -87,17 +87,57 @@ await test("provider-visible thinking updates the live procedure snapshot", asyn
 			source,
 			onChange: () => {
 				const summary = thinkingRun?.snapshot().rows[0]?.activity?.summary ?? "";
-				if (summary.startsWith("Thinking: ")) liveSummary = summary;
+				if (summary !== "thinking…" && summary.endsWith(" · thinking…")) liveSummary = summary;
 			},
 		}),
 	);
 	const thinkingOutcome = await thinkingRun.execute();
 	assert.equal(thinkingOutcome.status, "completed");
 	assert.equal(thinkingOutcome.result, "THINKING_OK");
-	assert.equal(liveSummary, "Thinking: Tracing the sequential handoff before returning the result.");
+	assert.equal(liveSummary, "Tracing the sequential handoff before returning the result. · thinking…");
+});
+
+await test("the latest provider-visible thought returns after a tool finishes", async () => {
+	const thought = "Inspecting the probe before reading it.";
+	writeFileSync(join(world.project, "thinking-tool-probe.txt"), "probe\n");
+	world.scripts.push({
+		match: (c) => c.label === "thinking-tool-probe",
+		reply: () => ({
+			thinking: thought,
+			tools: [{ name: "read", args: { path: "thinking-tool-probe.txt" } }],
+		}),
+	});
+	world.scripts.push({
+		match: (c) => c.label === "thinking-tool-probe",
+		reply: () => ({ thinking: "   ", text: "TOOL_THINKING_OK", delayMs: 150 }),
+	});
+	const source = `return agent('inspect with a tool', {label: 'thinking-tool-probe', tools: ['read']})`;
+	let sawTool = false;
+	let restoredSummary = "";
+	let lostLatestThought = false;
+	let thinkingToolRun;
+	thinkingToolRun = ProcedureRun.create(
+		world.makeRunOptions({
+			source,
+			onChange: () => {
+				const activity = thinkingToolRun?.snapshot().rows[0]?.activity;
+				if (activity?.tool === "read") sawTool = true;
+				if (sawTool && activity?.tool === "") {
+					if (activity.summary === `${thought} · thinking…`) restoredSummary = activity.summary;
+					else if (restoredSummary && activity.summary === "thinking…") lostLatestThought = true;
+				}
+			},
+		}),
+	);
+	const thinkingToolOutcome = await thinkingToolRun.execute();
+	assert.equal(thinkingToolOutcome.status, "completed");
+	assert.equal(thinkingToolOutcome.result, "TOOL_THINKING_OK");
+	assert.equal(restoredSummary, `${thought} · thinking…`);
+	assert.equal(lostLatestThought, false, "an empty next thinking block must not erase the prior clue");
 });
 
 await test("per-agent model, thinking, and tools options run through a real AgentSession", async () => {
+	const callsBefore = world.llmCalls.length;
 	world.scripts.push({ match: (c) => c.label === "configured", reply: () => ({ text: "CONFIGURED_OK" }) });
 	const source = `return agent('configured task', {
 	label: 'configured',
@@ -109,10 +149,11 @@ await test("per-agent model, thinking, and tools options run through a real Agen
 	const configuredOutcome = await configured.execute();
 	assert.equal(configuredOutcome.status, "completed");
 	assert.equal(configuredOutcome.result, "CONFIGURED_OK");
-	assert.equal(world.llmCalls.length, 7);
+	assert.equal(world.llmCalls.length, callsBefore + 1);
 });
 
 await test("unknown model and tool names fail before making an LLM call", async () => {
+	const callsBefore = world.llmCalls.length;
 	const source = `return parallel([
 	() => agent('bad model', {model: 'missing/nope'}),
 	() => agent('bad tool', {tools: ['not-a-tool']}),
@@ -121,7 +162,7 @@ await test("unknown model and tool names fail before making an LLM call", async 
 	const invalidOutcome = await invalid.execute();
 	assert.equal(invalidOutcome.status, "completed");
 	assert.deepEqual(invalidOutcome.result, [null, null]);
-	assert.equal(world.llmCalls.length, 7, "invalid options must fail before provider calls");
+	assert.equal(world.llmCalls.length, callsBefore, "invalid options must fail before provider calls");
 });
 
 summary("phase1-live-run");

@@ -75,7 +75,7 @@ import type { Layout } from "../store/layout.ts";
 import { resolveTypeDef } from "../typedefs/discover.ts";
 import type { TypeDefinition } from "../typedefs/parse.ts";
 import { createSubagentTools, type SubagentMailPort } from "../tools/sub-agent.ts";
-import { collapseWhitespace, flattenMessageContent, liveThinkingSummary } from "../text.ts";
+import { collapseWhitespace, flattenMessageContent, liveThinkingSummary, retainLatestThought } from "../text.ts";
 import { toolSummary } from "../tui/activity.ts";
 import { buildSandboxedTools } from "../sandbox/tools-filter.ts";
 import { makeCommandDenyCheck, makeSystemDenyCheck } from "../sandbox/system-deny.ts";
@@ -754,16 +754,18 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			this.activity.set(address, { tool: "", summary: "thinking…", toolUses: 0 });
 			let failure: { stopReason: string; message: string } | null = null;
 			let thinkingText = "";
+			let latestThought = "";
 			const activeTools = new Map<string, { tool: string; summary: string }>();
 			const publishActivity = (next: AgentActivity): void => {
 				this.activity.set(address, next);
 				this.emit({ type: "state-changed", address, state: "running" });
 			};
 			const publishThinking = (): void => {
+				latestThought = retainLatestThought(latestThought, thinkingText);
 				const prev = this.activity.get(address);
 				if (!prev || activeTools.size > 0) return;
 				// The widget polls at 400ms, so avoid firing one runtime event per token.
-				this.activity.set(address, { ...prev, tool: "", summary: liveThinkingSummary(thinkingText) });
+				this.activity.set(address, { ...prev, tool: "", summary: liveThinkingSummary(latestThought) });
 			};
 			const unsubscribe = handle.session.subscribe((event) => {
 				if (event.type === "message_update") {
@@ -799,7 +801,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 					const current = [...activeTools.values()].at(-1);
 					publishActivity(current
 						? { ...prev, ...current }
-						: { ...prev, tool: "", summary: "thinking…" });
+						: { ...prev, tool: "", summary: liveThinkingSummary(latestThought) });
 					return;
 				}
 				if (event.type !== "agent_end") return;

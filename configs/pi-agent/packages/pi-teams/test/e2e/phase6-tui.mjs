@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { EXT, WORLDS, jiti } from "./env.mjs";
 
 const picker = await jiti.import(join(EXT, "tui/picker.ts"));
+const textHelpers = await jiti.import(join(EXT, "text.ts"));
 const tree = await jiti.import(join(EXT, "tui/tree-widget.ts"));
 
 let passed = 0;
@@ -62,6 +63,24 @@ console.log("tree widget:");
 const plainTheme = { fg: (_c, t) => t };
 test("empty when nothing is working and no main mail is unread", () => {
 	assert.deepEqual(tree.renderTreeLines([], 0, plainTheme), []);
+});
+test("thinking summaries preserve prior clues and honor narrow budgets", () => {
+	assert.equal(textHelpers.retainLatestThought("prior clue", " \n "), "prior clue");
+	for (let max = 0; max <= 15; max++) {
+		assert.ok(Array.from(textHelpers.liveThinkingSummary("abcdef", max)).length <= max);
+	}
+});
+test("long thinking rows retain the newest clue and active suffix", () => {
+	const summary = textHelpers.liveThinkingSummary(`${"older context ".repeat(20)}FINAL_MARKER`);
+	const lines = tree.renderTreeLines(
+		[{ address: "worker/thinking", tool: "", summary, toolUses: 0, ctxPercent: 1, tokens: 100, unread: 0 }],
+		0,
+		plainTheme,
+		40,
+	);
+	const detail = lines.find((line) => line.endsWith(" · thinking…"));
+	assert.ok(detail?.includes("FINAL_MARKER"), `newest thought should survive: ${lines.join(" | ")}`);
+	assert.ok(Array.from(detail).length <= 40);
 });
 test("renders Nerd Font metric icons, short labels, and the current tool", () => {
 	const lines = tree.renderTreeLines(

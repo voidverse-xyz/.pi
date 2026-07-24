@@ -19,9 +19,10 @@
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { truncateToWidth, type Component, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import type { SubagentsCore } from "../core.ts";
 import type { AgentActivityRow } from "../runtime/types.ts";
+import { fitThinkingSummary, THINKING_PLACEHOLDER } from "../text.ts";
 
 /**
  * The human brake: stop every working agent (D22). Bound in index.ts and shown in
@@ -42,6 +43,11 @@ export interface TreeTheme {
 	fg(color: string, text: string): string;
 }
 
+function fitActivitySummary(summary: string, max: number): string {
+	const fitted = fitThinkingSummary(summary, max, visibleWidth);
+	return truncateToWidth(fitted, max, "…");
+}
+
 /** Compact cumulative-token label for the narrow ambient tree row. */
 function formatTokenCount(tokens: number): string {
 	const value = Math.max(0, tokens);
@@ -55,7 +61,12 @@ function formatTokenCount(tokens: number): string {
 }
 
 /** Pure: the tree's lines for one render pass. [] when idle with no main mail. */
-export function renderTreeLines(rows: AgentActivityRow[], mainUnread: number, theme: TreeTheme): string[] {
+export function renderTreeLines(
+	rows: AgentActivityRow[],
+	mainUnread: number,
+	theme: TreeTheme,
+	width = Number.POSITIVE_INFINITY,
+): string[] {
 	if (rows.length === 0 && mainUnread === 0) return [];
 	// The stop hint rides the header only while agents are running. Main mail can
 	// keep the widget visible briefly after activity settles, until auto-wake drains it.
@@ -79,7 +90,12 @@ export function renderTreeLines(rows: AgentActivityRow[], mainUnread: number, th
 		];
 		if (row.unread > 0) metrics.push(`${MAIL_ICON} ${row.unread} mail`);
 		lines.push(theme.fg("text", `${branch} ${row.address}${label} · ${metrics.join(" · ")}`));
-		lines.push(theme.fg("dim", `${cont}└ ${row.summary || "thinking…"}`));
+		const detailPrefix = `${cont}└ `;
+		const summary = row.summary || THINKING_PLACEHOLDER;
+		const fittedSummary = Number.isFinite(width)
+			? fitActivitySummary(summary, Math.max(1, width - visibleWidth(detailPrefix)))
+			: summary;
+		lines.push(theme.fg("dim", `${detailPrefix}${fittedSummary}`));
 	});
 	lines.push("");
 	return lines;
@@ -113,7 +129,7 @@ export function createTreeWidget(core: SubagentsCore, ui: TreeWidgetHost): TreeW
 			return {
 				invalidate() {},
 				render(width: number): string[] {
-					return renderTreeLines(rows, mainUnread, theme).map((line) =>
+					return renderTreeLines(rows, mainUnread, theme, Math.max(1, width)).map((line) =>
 						line ? truncateToWidth(line, Math.max(1, width), "…") : line,
 					);
 				},

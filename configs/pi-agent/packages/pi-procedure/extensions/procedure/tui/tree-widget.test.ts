@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RunSnapshot } from "../run.ts";
+import { fitThinkingSummary, liveThinkingSummary } from "../text.ts";
 import {
 	BOTTOM_PADDING,
 	EXPAND_KEY,
@@ -75,7 +76,7 @@ test("running rows show provider-visible thinking when no tool is active", () =>
 					label: "reasoner",
 					phase: "Test",
 					state: "running",
-					activity: { tool: "", summary: "Thinking: tracing the newest dependency edge", toolUses: 0 },
+					activity: { tool: "", summary: "tracing the newest dependency edge · thinking…", toolUses: 0 },
 				},
 			],
 			logs: [],
@@ -83,8 +84,25 @@ test("running rows show provider-visible thinking when no tool is active", () =>
 		theme,
 	);
 	const text = lines.join("\n");
-	assert.ok(text.includes("└ Thinking: tracing the newest dependency edge"));
+	assert.ok(text.includes("└ tracing the newest dependency edge · thinking…"));
 	assert.equal(text.includes("tool use"), false);
+});
+
+test("long thinking rows retain the newest clue and active suffix within the detail width", () => {
+	const plainTheme = { fg: (_color: string, text: string) => text };
+	const summary = liveThinkingSummary(`${"older context ".repeat(20)}FINAL_MARKER`);
+	const lines = renderTreeLines(
+		snapshot({
+			rows: [{ seq: 0, label: "reasoner", phase: "Test", state: "running", activity: { tool: "", summary, toolUses: 0 } }],
+			logs: [],
+		}),
+		plainTheme,
+		{ width: 40, fitDetail: (detail, max) => fitThinkingSummary(detail, max) },
+	);
+	const detail = lines.find((line) => line.endsWith(" · thinking…"));
+	assert.ok(detail, `thinking detail should keep its suffix: ${lines.join(" | ")}`);
+	assert.ok(detail.includes("FINAL_MARKER"), `newest thought should survive: ${lines.join(" | ")}`);
+	assert.ok(Array.from(detail).length <= 40);
 });
 
 test("multiline agent rows keep a stable height across state and activity changes", () => {

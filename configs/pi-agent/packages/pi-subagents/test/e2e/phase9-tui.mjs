@@ -12,6 +12,7 @@ import { EXT, PI_PKG, jiti } from "./env.mjs";
 import { test, summary, until } from "./harness.mjs";
 
 const tree = await jiti.import(join(EXT, "tui/tree-widget.ts"));
+const text = await jiti.import(join(EXT, "text.ts"));
 const widget = await jiti.import(join(EXT, "tui/widget.ts"));
 const { visibleWidth } = await import(join(PI_PKG, "node_modules/@earendil-works/pi-tui/dist/index.js"));
 const plainTheme = { fg: (_color, text) => text };
@@ -57,6 +58,24 @@ await test("compact token formatting matches Pi-style thresholds", () => {
 	assert.equal(widget.formatTokens(999), "999");
 	assert.equal(widget.formatTokens(8_100), "8.1k");
 	assert.equal(widget.formatTokens(12_400), "12k");
+});
+await test("thinking summaries preserve prior clues and honor narrow budgets", () => {
+	assert.equal(text.retainLatestThought("prior clue", " \n "), "prior clue");
+	for (let max = 0; max <= 15; max++) {
+		assert.ok(Array.from(text.liveThinkingSummary("abcdef", max)).length <= max);
+	}
+});
+await test("long thinking rows retain the newest clue and active suffix", () => {
+	const summary = text.liveThinkingSummary(`${"older context ".repeat(20)}FINAL_MARKER`);
+	const lines = tree.renderTreeLines(
+		[{ address: "worker/thinking", label: "reasoner", tool: "", summary, toolUses: 0, tokens: 100, ctxPercent: 1 }],
+		{ running: 1, waiting: 0, unread: 0 },
+		plainTheme,
+		40,
+	);
+	const detail = lines.find((line) => line.endsWith(" · thinking…"));
+	assert.ok(detail?.includes("FINAL_MARKER"), `newest thought should survive: ${lines.join(" | ")}`);
+	assert.ok(visibleWidth(detail) <= 40);
 });
 await test("an 80-character label is truncated before required metrics at ordinary width", () => {
 	const lines = tree.renderTreeLines(

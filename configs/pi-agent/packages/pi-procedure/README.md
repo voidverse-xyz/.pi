@@ -54,7 +54,9 @@ return { verified }
   and retains a visually blank bottom-padding row instead of falling through
   Pi's generic 10-line widget truncation.
 - **Widget** — live progress tree above the editor (phases, per-agent state,
-  current tool, provider-visible thinking summaries, log tail); hidden when idle. It requests an immediate status-row
+  current tool, provider-visible thinking summaries, log tail); hidden when idle.
+  It starts with `thinking…`, then preserves the latest thought as
+  `<thought> · thinking…` between tool calls. It requests an immediate status-row
   re-pin when mounted, keeping the procedure above the project/Git row. It does
   not publish a footer status, so the shared footer remains stable.
 - **Safety** — subagent edit/write/bash go through the ported pi-subagents

@@ -61,14 +61,17 @@ await test("live activity tracks starts, finishes, exact tool uses, human label,
 	});
 	world.scripts.push({
 		match: (c) => c.address === "scout/activity" && c.lastUserText.includes("Exercise activity"),
-		reply: () => ({ tools: [
-			{ name: "write", args: { path: "activity-a.txt", content: "a" } },
-			{ name: "write", args: { path: "activity-b.txt", content: "b" } },
-		] }),
+		reply: () => ({
+			thinking: "Preparing both writes before execution.",
+			tools: [
+				{ name: "write", args: { path: "activity-a.txt", content: "a" } },
+				{ name: "write", args: { path: "activity-b.txt", content: "b" } },
+			],
+		}),
 	});
 	world.scripts.push({
 		match: (c) => c.address === "scout/activity" && c.lastUserText.includes("Exercise activity"),
-		reply: () => ({ delayMs: 250, thinking: "Reviewing both completed writes before reporting.", text: "Activity exercised." }),
+		reply: () => ({ delayMs: 250, thinking: "   ", text: "Activity exercised." }),
 	});
 	await activityCore.spawn({ type: "scout", id: "activity", label: "activity probe", task: "Exercise activity tracking." });
 	const running = await until(() => {
@@ -83,11 +86,11 @@ await test("live activity tracks starts, finishes, exact tool uses, human label,
 	releaseTools();
 	const thinking = await until(() => {
 		const candidate = activityCore.activitySnapshot().find((entry) => entry.address === "scout/activity");
-		return candidate?.toolUses === 2 && candidate.tool === "" && candidate.summary === "Thinking: Reviewing both completed writes before reporting."
+		return candidate?.toolUses === 2 && candidate.tool === "" && candidate.summary === "Preparing both writes before execution. · thinking…"
 			? candidate
 			: null;
 	}, 2000);
-	assert.ok(thinking, "provider-visible thinking replaces the generic placeholder during the next model response");
+	assert.ok(thinking, "the latest visible thought returns after tools and survives a blank next thinking block");
 	await activityCore.whenIdle();
 	await activityCore.dispose();
 });

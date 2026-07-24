@@ -18,6 +18,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type Component, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import type { SubagentsCore } from "../core.ts";
 import type { AgentActivityRow } from "../runtime/types.ts";
+import { fitThinkingSummary, THINKING_PLACEHOLDER } from "../text.ts";
 import { AGENTS_ICON, emptySnapshot, formatTokens, takeSnapshot, type WidgetSnapshot, widgetSegments } from "./widget.ts";
 
 /**
@@ -36,6 +37,11 @@ export const CONTEXT_ICON = ""; // nf-fa-hdd_o — context capacity
 
 export interface TreeTheme {
 	fg(color: string, text: string): string;
+}
+
+function fitActivitySummary(summary: string, max: number): string {
+	const fitted = fitThinkingSummary(summary, max, visibleWidth);
+	return truncateToWidth(fitted, max, "…");
 }
 
 /** Pure: the widget's lines for one render pass, including bottom padding. */
@@ -81,7 +87,12 @@ export function renderTreeLines(
 			lines.push(theme.fg("text", truncateToWidth(`${prefix}${name}`, Math.max(1, width), "…")));
 			lines.push(theme.fg("muted", truncateToWidth(`${cont}├ ${compactMetrics}`, Math.max(1, width), "…")));
 		}
-		lines.push(theme.fg("dim", `${cont}└ ${row.summary || "thinking…"}`));
+		const detailPrefix = `${cont}└ `;
+		const summary = row.summary || THINKING_PLACEHOLDER;
+		const fittedSummary = Number.isFinite(width)
+			? fitActivitySummary(summary, Math.max(1, width - visibleWidth(detailPrefix)))
+			: summary;
+		lines.push(theme.fg("dim", `${detailPrefix}${fittedSummary}`));
 	});
 	lines.push("");
 	return lines;

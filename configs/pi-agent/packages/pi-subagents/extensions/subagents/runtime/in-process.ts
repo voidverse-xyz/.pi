@@ -74,7 +74,7 @@ import { buildSandboxedTools, selectToolNames } from "../sandbox/tools-filter.ts
 import { makeCommandDenyCheck, makeSystemDenyCheck } from "../sandbox/system-deny.ts";
 import { type ConfirmFn, denyAllConfirm } from "../sandbox/safety-bridge.ts";
 import { readTranscriptTail } from "../session-read.ts";
-import { ellipsize, labelFromSource, liveThinkingSummary, MAX_LABEL_CHARS } from "../text.ts";
+import { ellipsize, labelFromSource, liveThinkingSummary, MAX_LABEL_CHARS, retainLatestThought } from "../text.ts";
 import type {
 	AgentActivity,
 	AgentActivityRow,
@@ -751,16 +751,18 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		});
 		let failure: TurnFailure | null = null;
 		let thinkingText = "";
+		let latestThought = "";
 		const activeTools = new Map<string, { tool: string; summary: string }>();
 		const publishActivity = (next: AgentActivity): void => {
 			this.activity.set(address, next);
 			this.emit({ type: "state-changed", address, state: "running" });
 		};
 		const publishThinking = (): void => {
+			latestThought = retainLatestThought(latestThought, thinkingText);
 			const prev = this.activity.get(address);
 			if (!prev || activeTools.size > 0) return;
 			// The widget polls at 400ms, so avoid firing one runtime event per token.
-			this.activity.set(address, { ...prev, tool: "", summary: liveThinkingSummary(thinkingText) });
+			this.activity.set(address, { ...prev, tool: "", summary: liveThinkingSummary(latestThought) });
 		};
 		const unsubscribe = handle.session.subscribe((event) => {
 			if (event.type === "message_update") {
@@ -796,7 +798,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				const current = [...activeTools.values()].at(-1);
 				publishActivity(current
 					? { ...prev, ...current }
-					: { ...prev, tool: "", summary: "thinking…" });
+					: { ...prev, tool: "", summary: liveThinkingSummary(latestThought) });
 				return;
 			}
 			// message_end is emitted just before SessionManager persistence. Defer one

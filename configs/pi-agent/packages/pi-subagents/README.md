@@ -42,8 +42,9 @@ Metric semantics:
 - **context** — current model-context fill on Pi's 0–100 percent scale, or `?`
   before Pi can calculate it.
 
-Current-tool text follows `tool_execution_start`/`tool_execution_end`; after the
-last tool finishes it returns to `thinking…` while the next model response runs.
+Current-tool text follows `tool_execution_start`/`tool_execution_end`. Before any
+provider-visible thought arrives, the row shows `thinking…`; afterward it keeps
+the latest thought visible as `<thought> · thinking…` while the model continues.
 At ordinary widths, the label is truncated before metrics. At narrow widths the
 widget moves all three metrics to a compact second row so telemetry remains
 visible.

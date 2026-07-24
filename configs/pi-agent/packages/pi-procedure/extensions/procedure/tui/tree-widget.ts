@@ -15,8 +15,9 @@
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, type Component, type TUI } from "@earendil-works/pi-tui";
+import { truncateToWidth, type Component, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import type { RunSnapshot } from "../run.ts";
+import { fitThinkingSummary } from "../text.ts";
 import { renderTreeLines, treeNeedsExpansion } from "./tree-render.ts";
 
 export { BOTTOM_PADDING, EXPAND_KEY, STOP_KEY } from "./tree-render.ts";
@@ -42,6 +43,11 @@ export interface TreeWidgetOptions {
 const WIDGET_KEY = "procedure-tree";
 const PLACEMENT = { placement: "aboveEditor" as const };
 
+function fitActivitySummary(summary: string, max: number): string {
+	const fitted = fitThinkingSummary(summary, max, visibleWidth);
+	return truncateToWidth(fitted, max, "…");
+}
+
 /** Keep the tree card + status line fresh on run events + a poll. */
 export function createTreeWidget(
 	getSnapshot: () => RunSnapshot | null,
@@ -64,7 +70,11 @@ export function createTreeWidget(
 					invalidate() {},
 					render(width: number): string[] {
 						const safeWidth = Math.max(1, width);
-						return renderTreeLines(currentSnapshot, theme, { expanded }).map((line) =>
+						return renderTreeLines(currentSnapshot, theme, {
+							expanded,
+							width: safeWidth,
+							fitDetail: fitActivitySummary,
+						}).map((line) =>
 							line ? truncateToWidth(line, safeWidth, "…") : line,
 						);
 					},

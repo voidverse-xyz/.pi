@@ -30,6 +30,8 @@ const STATE_MARKS: Record<string, { mark: string; color: string }> = {
 
 export interface TreeRenderOptions {
 	expanded?: boolean;
+	width?: number;
+	fitDetail?: (detail: string, max: number) => string;
 }
 
 /** Whether the full tree would exceed the compact widget's line budget. */
@@ -72,7 +74,14 @@ export function renderTreeLines(snapshot: RunSnapshot | null, theme: TreeTheme, 
 			if (row.state === "waiting") return "Awaiting approval";
 			return "Working…";
 		})();
-		return [`${theme.fg("dim", branch)} ${text}`, theme.fg("dim", `${cont}└ ${detail}`)];
+		const detailPrefix = `${cont}└ `;
+		const detailBudget = Number.isFinite(options.width)
+			? Math.max(1, options.width! - Array.from(detailPrefix).length)
+			: Number.POSITIVE_INFINITY;
+		const fittedDetail = options.fitDetail && Number.isFinite(detailBudget)
+			? options.fitDetail(detail, detailBudget)
+			: detail;
+		return [`${theme.fg("dim", branch)} ${text}`, theme.fg("dim", `${detailPrefix}${fittedDetail}`)];
 	});
 	const logLines = snapshot.logs.slice(-2).map((log) => theme.fg("dim", `   log: ${log}`));
 	const fullLines = [header, ...agentBlocks.flat(), ...logLines, BOTTOM_PADDING];
