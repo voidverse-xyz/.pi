@@ -20,7 +20,9 @@
  * 2. `/tools` — a near-full-screen floating overlay (ctx.ui.custom, inset by OVERLAY_MARGIN
  *    on all sides via overlayOptions.margin/width/maxHeight) listing running + recent tool
  *    calls, on a background fill distinct from the plain transcript, with interior padding
- *    around the content. Arrow keys + Enter drill into one to see its live streaming output;
+ *    around the content. The list is bounded to the overlay height: arrow-key selection follows
+ *    the active row, PgUp/PgDn scroll long row sets (including expanded subagent children), and
+ *    Home/End jump to the first/last call. Enter drills into one to see its live streaming output;
  *    q/Escape/'b' goes back to the list; q from the list or Ctrl+C closes the overlay.
  *
  *    Each row (and the detail header) shows a duration - elapsed-so-far for running calls,
@@ -86,8 +88,9 @@ const INNER_PAD_Y = 1;
 // pi-tui has a function with this exact name/behavior, but it isn't among the text utils
 // re-exported from the package's public index. Reimplemented locally (see codex-usage).
 function applyBackgroundToLine(line: string, width: number, bgFn: (text: string) => string): string {
-	const padding = " ".repeat(Math.max(0, width - visibleWidth(line)));
-	return bgFn(line + padding);
+	const bounded = truncateToWidth(line, Math.max(1, width), "");
+	const padding = " ".repeat(Math.max(0, width - visibleWidth(bounded)));
+	return bgFn(bounded + padding);
 }
 
 type ToolStatus = "running" | "done" | "error";
@@ -234,13 +237,38 @@ function runningLeafNames(run: ToolRun): string[] {
 	return [run.name];
 }
 
+export function calculateListWindow(
+	totalRows: number,
+	selectedRow: number,
+	viewportRows: number,
+	scroll: number,
+	followSelection: boolean,
+): { scroll: number; maxScroll: number; end: number } {
+	const viewport = Math.max(1, viewportRows);
+	const maxScroll = Math.max(0, totalRows - viewport);
+	let nextScroll = Math.max(0, Math.min(scroll, maxScroll));
+
+	if (followSelection && selectedRow >= 0 && selectedRow < totalRows) {
+		if (selectedRow < nextScroll) nextScroll = selectedRow;
+		else if (selectedRow >= nextScroll + viewport) nextScroll = selectedRow - viewport + 1;
+	}
+
+	return { scroll: nextScroll, maxScroll, end: Math.min(totalRows, nextScroll + viewport) };
+}
+
 // Full-screen /tools overlay: a hand-rolled two-mode (list/detail) component. Not built on
 // pi-tui's SelectList since that only accepts its item array at construction time — there's
 // no way to refresh it in place as tool runs start/finish while the overlay is open.
-class ToolMonitorComponent {
+export class ToolMonitorComponent {
 	private mode: "list" | "detail" = "list";
 	private selectedIndex = 0;
 	private selectedId: string | undefined;
+	private listScroll = 0;
+	private listCursorRow = 0;
+	private listLineCount = 0;
+	private listViewportRows = 1;
+	private listFollowSelection = true;
+	private listRowItemIndices: number[] = [];
 	private detailScroll = 0;
 	private detailLineCount = 0;
 	// Content-line index (within renderList output) of the selected row, or null.
@@ -296,6 +324,7 @@ class ToolMonitorComponent {
 		if (clear) this.filterInput.setValue("");
 		this.filterFocused = false;
 		this.filterInput.focused = false;
+		this.listFollowSelection = true;
 	}
 
 	private filterQuery(): string {
@@ -324,6 +353,14 @@ class ToolMonitorComponent {
 		}
 	}
 
+	private scrollListPage(delta: number): void {
+		const maxScroll = Math.max(0, this.listLineCount - this.listViewportRows);
+		this.listScroll = Math.max(0, Math.min(maxScroll, this.listScroll + delta * this.listViewportRows));
+		this.listCursorRow = Math.min(Math.max(0, this.listLineCount - 1), this.listScroll);
+		this.selectedIndex = this.listRowItemIndices[this.listCursorRow] ?? this.selectedIndex;
+		this.listFollowSelection = false;
+	}
+
 	handleInput(data: string): void {
 		if (this.mode === "list") this.handleListInput(data);
 		else this.handleDetailInput(data);
@@ -340,13 +377,26 @@ class ToolMonitorComponent {
 				return;
 			}
 			this.filterInput.handleInput(data);
+			this.listFollowSelection = true;
 			return;
 		}
 		const items = this.currentItems();
 		if (matchesKey(data, "up") || data === "k") {
 			this.selectedIndex = items.length === 0 ? 0 : (this.selectedIndex - 1 + items.length) % items.length;
+			this.listFollowSelection = true;
 		} else if (matchesKey(data, "down") || data === "j") {
 			this.selectedIndex = items.length === 0 ? 0 : (this.selectedIndex + 1) % items.length;
+			this.listFollowSelection = true;
+		} else if (matchesKey(data, "pageup")) {
+			this.scrollListPage(-1);
+		} else if (matchesKey(data, "pagedown")) {
+			this.scrollListPage(1);
+		} else if (matchesKey(data, "home") || data === "g") {
+			this.selectedIndex = 0;
+			this.listFollowSelection = true;
+		} else if (matchesKey(data, "end") || data === "G") {
+			this.selectedIndex = Math.max(0, items.length - 1);
+			this.listFollowSelection = true;
 		} else if (matchesKey(data, "enter") || matchesKey(data, "return")) {
 			const item = items[this.selectedIndex];
 			if (item) {
@@ -362,6 +412,7 @@ class ToolMonitorComponent {
 		} else if (matchesKey(data, "escape") && this.filterQuery() !== "") {
 			// First escape clears an applied filter; a second one closes the overlay.
 			this.filterInput.setValue("");
+			this.listFollowSelection = true;
 		} else if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || data === "q") {
 			this.close();
 		}
@@ -393,14 +444,17 @@ class ToolMonitorComponent {
 		// (which has none), and the frame is padded with blank filled rows to the full
 		// available terminal height (pi-tui sizes the overlay to however many lines we
 		// return — it does not auto-stretch short content to fill the box on its own).
-		const contentWidth = Math.max(1, width - INNER_PAD_X * 2);
+		const horizontalPad = Math.min(INNER_PAD_X, Math.max(0, Math.floor((width - 1) / 2)));
+		const contentWidth = Math.max(1, width - horizontalPad * 2);
 		const content = this.mode === "list" ? this.renderList(contentWidth) : this.renderDetail(contentWidth);
+		const targetRows = Math.max(1, this.tui.terminal.rows - OVERLAY_MARGIN * 2);
+		const contentRows = Math.max(0, targetRows - INNER_PAD_Y * 2);
 
 		const bgFn = (text: string) => this.theme.bg("customMessageBg", text);
 		const selBgFn = (text: string) => this.theme.bg("selectedBg", text);
-		const pad = " ".repeat(INNER_PAD_X);
+		const pad = " ".repeat(horizontalPad);
 		const blankRow = applyBackgroundToLine("", width, bgFn);
-		const rows = content.map((line, i) =>
+		const rows = content.slice(0, contentRows).map((line, i) =>
 			applyBackgroundToLine(
 				`${pad}${truncateToWidth(line, contentWidth, "…")}`,
 				width,
@@ -408,14 +462,12 @@ class ToolMonitorComponent {
 			),
 		);
 
-		// Top interior padding so the content isn't flush against the box edge.
-		for (let i = 0; i < INNER_PAD_Y; i++) rows.unshift(blankRow);
-
-		// Fill the remaining box height (bottom padding), keeping the frame opaque.
-		const targetRows = Math.max(rows.length, this.tui.terminal.rows - OVERLAY_MARGIN * 2);
+		// Keep the frame at exactly the overlay's available height. The final slice is
+		// defensive for terminals too short to fit both configured padding rows.
+		for (let i = 0; i < INNER_PAD_Y && rows.length < targetRows; i++) rows.unshift(blankRow);
 		while (rows.length < targetRows) rows.push(blankRow);
 
-		return rows;
+		return rows.slice(0, targetRows);
 	}
 
 	private renderList(width: number): string[] {
@@ -425,34 +477,44 @@ class ToolMonitorComponent {
 		const hints = this.filterFocused
 			? "type to filter  enter: apply  esc: clear filter  ctrl+c: close"
 			: query !== ""
-				? "up/down: navigate  enter: view  /: edit filter  esc: clear filter  x: abort  q: close"
-				: "up/down: navigate  enter: view  /: filter  x: abort  q: close";
-		const lines: string[] = [this.theme.fg("accent", "Tool Monitor"), this.theme.fg("dim", hints)];
+				? "↑↓: select  PgUp/PgDn: scroll  enter: view  /: edit filter  esc: clear  x: abort  q: close"
+				: "↑↓: select  PgUp/PgDn: scroll  Home/End: jump  enter: view  /: filter  x: abort  q: close";
+		const header: string[] = [this.theme.fg("accent", "Tool Monitor"), ""];
 
 		// Filter row, shown while editing or while a filter is applied. The Input
 		// renders its own cursor when focused; unfocused it's just the query text.
 		if (this.filterFocused || query !== "") {
 			const label = "filter: ";
 			const inputLine = this.filterInput.render(Math.max(1, width - label.length))[0] ?? "";
-			lines.push(truncateToWidth(this.theme.fg("dim", label) + inputLine, width));
+			header.push(truncateToWidth(this.theme.fg("dim", label) + inputLine, width));
 		}
-		lines.push("");
+		header.push("");
 
 		if (items.length === 0) {
-			lines.push(this.theme.fg("dim", query !== "" ? "No tool executions match the filter." : "No tool executions yet."));
-			return lines;
+			header[1] = this.theme.fg("dim", `0/0 · ${hints}`);
+			header.push(this.theme.fg("dim", query !== "" ? "No tool executions match the filter." : "No tool executions yet."));
+			this.listScroll = 0;
+			this.listCursorRow = 0;
+			this.listLineCount = 0;
+			this.listViewportRows = 1;
+			this.listRowItemIndices = [];
+			return header;
 		}
 
 		// Keep the selection in range as the list reorders (running pinned to top).
 		this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, items.length - 1));
 
+		const itemLines: string[] = [];
+		const rowItemIndices: number[] = [];
+		let selectedParentRow = -1;
 		items.forEach((run, index) => {
 			const selected = index === this.selectedIndex;
-			if (selected) this.highlightRow = lines.length;
+			if (selected) selectedParentRow = itemLines.length;
+			rowItemIndices.push(index);
 			const marker = selected ? ">" : " ";
 			const label = `${marker} ${run.name} ${statusLabel(run.status)}`;
 			const duration = this.theme.fg("dim", ` ${formatDuration(runDurationMs(run))}`);
-			lines.push(truncateToWidth(this.theme.fg(statusColor(run.status), label) + duration, width));
+			itemLines.push(truncateToWidth(this.theme.fg(statusColor(run.status), label) + duration, width));
 			// Inner subagent tool calls, indented beneath their parent so a delegating
 			// turn shows the bash/read/edit its subagents ran, not just "subagent".
 			// Under a filter that the parent itself doesn't match, only the matching
@@ -462,10 +524,36 @@ class ToolMonitorComponent {
 				if (!parentMatched && !childMatchesQuery(child, query)) continue;
 				const prefix = child.agent ? `[${child.agent}] ` : "";
 				const childLabel = `    ${prefix}${child.name} ${statusLabel(child.status)}`;
-				lines.push(truncateToWidth(this.theme.fg(statusColor(child.status), childLabel), width));
+				itemLines.push(truncateToWidth(this.theme.fg(statusColor(child.status), childLabel), width));
+				rowItemIndices.push(index);
 			}
 		});
-		return lines;
+
+		const availableRows = Math.max(0, this.viewportRows() - header.length);
+		this.listLineCount = itemLines.length;
+		this.listViewportRows = Math.max(1, availableRows);
+		this.listRowItemIndices = rowItemIndices;
+		if (this.listFollowSelection) this.listCursorRow = selectedParentRow;
+		else this.listCursorRow = Math.max(0, Math.min(this.listCursorRow, itemLines.length - 1));
+		this.selectedIndex = rowItemIndices[this.listCursorRow] ?? this.selectedIndex;
+		const window = calculateListWindow(
+			itemLines.length,
+			this.listCursorRow,
+			this.listViewportRows,
+			this.listScroll,
+			this.listFollowSelection,
+		);
+		this.listScroll = window.scroll;
+
+		const scrollPosition =
+			window.maxScroll > 0 ? ` · rows ${window.scroll + 1}-${window.end}/${itemLines.length}` : "";
+		header[1] = this.theme.fg("dim", `${this.selectedIndex + 1}/${items.length}${scrollPosition} · ${hints}`);
+		if (availableRows === 0) return header;
+
+		if (this.listCursorRow >= window.scroll && this.listCursorRow < window.end) {
+			this.highlightRow = header.length + this.listCursorRow - window.scroll;
+		}
+		return [...header, ...itemLines.slice(window.scroll, window.end)];
 	}
 
 	private renderDetail(width: number): string[] {

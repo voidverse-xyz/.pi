@@ -5,6 +5,9 @@
   "keywords": [
     "pi-package"
   ],
+  "scripts": {
+    "test": "node ./test/run.mjs"
+  },
   "pi": {
     "extensions": [
       "./extensions"
