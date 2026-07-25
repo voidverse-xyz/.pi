@@ -24,6 +24,7 @@ import {
 	createInputState,
 	type EditTarget,
 	nextButtonRow,
+	responsesAreSubmittable,
 	rowCount,
 } from "./input-state.ts";
 import type { TreeNode } from "./picker-tree.ts";
@@ -90,10 +91,7 @@ export function showUserInputs(
 		}
 
 		function canSubmit(): boolean {
-			return inputs.every((inp, i) => {
-				if (inp.optional && !hasResponse(i)) return true;
-				return isAnswered(i);
-			});
+			return responsesAreSubmittable(inputs.length, hasResponse, validationError);
 		}
 
 		function refresh() {
@@ -348,10 +346,13 @@ export function showUserInputs(
 			return inputs.map((inp, idx): InputAnswer => {
 				const s = states[idx];
 				let answer: InputAnswer;
-				if (inp.optional && !hasResponse(idx)) {
-					answer = { type: inp.type, title: inp.title, skipped: true };
+				if (!hasResponse(idx)) {
+					answer = { type: inp.type, title: inp.title };
+					if (inp.optional) answer.skipped = true;
+					else if (inp.type === "text" || inp.type === "file") answer.text = "(no response)";
+					else answer.selections = [];
 				} else if (inp.type === "text") {
-					answer = { type: inp.type, title: inp.title, text: s.textValue || "(no response)" };
+					answer = { type: inp.type, title: inp.title, text: s.textValue };
 				} else if (inp.type === "file") {
 					const pathInfo = typedPath(rootDir, s.textValue);
 					answer = { type: inp.type, title: inp.title, text: pathInfo.display, path: pathInfo.abs };

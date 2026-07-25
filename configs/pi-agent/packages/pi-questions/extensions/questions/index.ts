@@ -80,7 +80,12 @@ const InputSchema = Type.Object({
 				"Choices for 'radio'/'multi' inputs. Ignored for other input types. Radio/multi inputs always include a 'Something else…' choice.",
 		}),
 	),
-	optional: Type.Optional(Type.Boolean({ description: "If true, the user may skip this input; skipped optionals are reported explicitly." })),
+	optional: Type.Optional(
+		Type.Boolean({
+			description:
+				"If true, an unanswered input is reported as skipped. Blank inputs never disable submission.",
+		}),
+	),
 	default: Type.Optional(
 		Type.String({
 			description:

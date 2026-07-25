@@ -14,7 +14,9 @@ new output file or directory. `fileKind` is enforced when an existing path can
 be inspected.
 
 Inputs support stable IDs, defaults, optional answers, descriptions, and custom
-“Something else” choices. Selecting “Something else” always opens its text editor;
+“Something else” choices. Blank inputs never disable submission; `optional` only
+controls whether an unanswered input is reported as skipped. Selecting “Something
+else” always opens its text editor;
 returning to it reopens the previous text for editing, even after another option was
 selected. Choice options may also be marked `recommended`; this adds a persistent
 “(recommended)” label without selecting the option. Defaults remain separate because

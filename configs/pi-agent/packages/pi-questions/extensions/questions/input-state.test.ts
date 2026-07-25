@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	activateChoiceRow,
 	createInputState,
+	responsesAreSubmittable,
 	somethingElseRow,
 } from "./input-state.ts";
 import type { Input } from "./schema.ts";
@@ -15,6 +16,26 @@ function choiceInput(type: "radio" | "multi"): Input {
 		fileKind: "any",
 	};
 }
+
+test("blank inputs do not block submission", () => {
+	const responses = [false, false];
+	const errors = [null, null];
+
+	assert.equal(
+		responsesAreSubmittable(responses.length, (index) => responses[index]!, (index) => errors[index] ?? null),
+		true,
+	);
+});
+
+test("a non-empty invalid response still blocks submission", () => {
+	const responses = [false, true, true];
+	const errors = ["ignored for blank input", "invalid value", null];
+
+	assert.equal(
+		responsesAreSubmittable(responses.length, (index) => responses[index]!, (index) => errors[index] ?? null),
+		false,
+	);
+});
 
 test("Something else always opens the custom editor and preserves prior text", () => {
 	const input = choiceInput("radio");

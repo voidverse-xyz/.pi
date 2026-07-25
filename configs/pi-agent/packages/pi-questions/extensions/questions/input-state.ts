@@ -45,6 +45,18 @@ export function createInputState(input: Input): InputState {
 	};
 }
 
+/** Blank inputs never block submission; only a non-empty invalid response does. */
+export function responsesAreSubmittable(
+	inputCount: number,
+	hasResponse: (index: number) => boolean,
+	validationError: (index: number) => string | null,
+): boolean {
+	for (let index = 0; index < inputCount; index++) {
+		if (hasResponse(index) && validationError(index) !== null) return false;
+	}
+	return true;
+}
+
 // ----- row geometry -----
 
 export function optionRows(inp: Input): number {

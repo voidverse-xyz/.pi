@@ -336,11 +336,7 @@ export function renderPanel(view: PanelView, width: number): string[] {
 		add(submitPrefix, theme.fg(submitColor, `${ICON_CHECK} Submit`));
 
 		if (!canGo) {
-			const missing = inputs
-				.filter((inp, i) => !(inp.optional && !hasResponse(i)) && !hasResponse(i))
-				.map((inp) => inp.title);
 			const fixes = inputs.filter((_, i) => hasResponse(i) && validationError(i) !== null).map((inp) => inp.title);
-			if (missing.length > 0) add(" ", theme.fg("warning", `Still unanswered: ${missing.join(", ")}`));
 			if (fixes.length > 0) add(" ", theme.fg("warning", `Fix: ${fixes.join(", ")}`));
 		}
 	}
