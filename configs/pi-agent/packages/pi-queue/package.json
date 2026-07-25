@@ -2,7 +2,7 @@
   "name": "pi-queue",
   "version": "1.0.0",
   "type": "module",
-  "description": "Manage messages typed while Pi is busy: cancel, edit, reorder, send, steer, or follow up through /queue.",
+  "description": "Coalesce messages typed while Pi is busy, including compaction, with wrapped display and editor retrieval.",
   "keywords": [
     "pi-package"
   ],

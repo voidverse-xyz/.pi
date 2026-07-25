@@ -20,7 +20,7 @@ Pi packages live under `packages/<name>/` and are enabled through portable relat
 | `pi-notify-user` | LLM-callable `notify_user` notices |
 | `pi-plan` | Branch-persistent, hard read-only Plan mode with automatic tagged-skill routing, explicit `--skill` override, and a user-authorized `save_plan` path |
 | `pi-questions` | LLM-callable `ask_user` TUI questions with defaults and non-selecting recommendations |
-| `pi-queue` | Managed, session-persistent steer/follow-up messages with an above-working queue card and `/queue` |
+| `pi-queue` | Coalesced, session-persistent busy/compaction messages with wrapped display and editor retrieval |
 | `pi-run-guard` | Confirmation before interrupting an active run |
 | `pi-turn-stats` | One-line `agent_settled` TUI notice with theme-aware Nerd Font uncached input/output counters and elapsed time for the full user turn; no summary generation, prompt injection, message rewriting, or non-TUI output |
 | `pi-safety` | Main-agent Bash confirmation modes and privacy-preserving `/safety-log` |

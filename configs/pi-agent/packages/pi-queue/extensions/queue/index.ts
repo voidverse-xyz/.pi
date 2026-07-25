@@ -1,18 +1,25 @@
-import type {
-	ExtensionAPI,
-	ExtensionCommandContext,
-	ExtensionContext,
-	ImageContent,
-	Theme,
+import {
+	CustomEditor,
+	InteractiveMode,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type ImageContent,
+	type Theme,
 } from "@earendil-works/pi-coding-agent";
-import { Box, Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { createQueuePanel, type QueueController, type QueueMode } from "./panel.ts";
+import { Box, matchesKey, Text, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+	combineQueuedContent,
+	type CompactionQueuePrototype,
+	patchCompactionQueue,
+	restoreOwnedEditorFactory,
+	shouldManageInput,
+	takeQueuedTextForEditor,
+} from "./logic.ts";
 
 const WIDGET_KEY = "queue-pending";
 const ENTRY_TYPE = "queue.operation";
 const CANCEL_KEY = "alt+x";
 const TOGGLE_KEY = "alt+q";
-const MAX_PREVIEW_ENTRIES = 5;
 const MAX_ENTRIES = 100;
 const MAX_TOTAL_TEXT = 256 * 1024;
 const ICON_IMAGE = ""; // nf-fa-image
@@ -23,19 +30,22 @@ interface QueueEntry {
 	images?: ImageContent[];
 }
 
+type QueueMode = "steer" | "followUp";
+
 type QueueOperation =
 	| { op: "enqueue"; entry: QueueEntry }
 	| { op: "remove"; id: string }
-	| { op: "update"; id: string; text: string }
+	| { op: "update"; id: string; text: string; images?: ImageContent[] }
 	| { op: "order"; ids: string[] }
 	| { op: "mode"; mode: QueueMode };
 
 export default function queueExtension(pi: ExtensionAPI): void {
 	let entries: QueueEntry[] = [];
 	let mode: QueueMode = "steer";
-	let onQueueChange: (() => void) | null = null;
 	let idCounter = 0;
 	let dispatching = false;
+	let restoreCompactionQueue: (() => void) | null = null;
+	let restoreEditor: (() => void) | null = null;
 
 	function nextId(): string {
 		idCounter += 1;
@@ -44,10 +54,6 @@ export default function queueExtension(pi: ExtensionAPI): void {
 
 	function persist(operation: QueueOperation): void {
 		pi.appendEntry(ENTRY_TYPE, operation);
-	}
-
-	function notifyChanged(): void {
-		onQueueChange?.();
 	}
 
 	function applyOperation(operation: QueueOperation): void {
@@ -60,7 +66,10 @@ export default function queueExtension(pi: ExtensionAPI): void {
 				break;
 			case "update": {
 				const entry = entries.find((candidate) => candidate.id === operation.id);
-				if (entry) entry.text = operation.text;
+				if (entry) {
+					entry.text = operation.text;
+					if (operation.images !== undefined) entry.images = operation.images.length > 0 ? operation.images : undefined;
+				}
 				break;
 			}
 			case "order": {
@@ -87,7 +96,10 @@ export default function queueExtension(pi: ExtensionAPI): void {
 			return { op: "remove", id: operation.id };
 		}
 		if (operation.op === "update" && typeof operation.id === "string" && typeof operation.text === "string") {
-			return { op: "update", id: operation.id, text: operation.text };
+			const images = Array.isArray(operation.images)
+				? operation.images.filter((image): image is ImageContent => Boolean(image && typeof image === "object" && (image as { type?: unknown }).type === "image"))
+				: undefined;
+			return { op: "update", id: operation.id, text: operation.text, images };
 		}
 		if (operation.op === "order" && Array.isArray(operation.ids) && operation.ids.every((id) => typeof id === "string")) {
 			return { op: "order", ids: operation.ids as string[] };
@@ -135,22 +147,14 @@ export default function queueExtension(pi: ExtensionAPI): void {
 			"",
 		];
 
-		const visibleEntries = entries.slice(0, MAX_PREVIEW_ENTRIES);
-		for (const [index, entry] of visibleEntries.entries()) {
-			const preview = entry.text.replace(/\s+/g, " ").trim() || "Image only";
+		for (const [index, entry] of entries.entries()) {
+			const preview = entry.text || "Image only";
 			const imageCount = entry.images?.length ?? 0;
 			const imageMark = imageCount > 0
 				? theme.fg("warning", `  ${ICON_IMAGE} ${imageCount}`)
 				: "";
-			output.push(fit(
-				theme.fg("dim", `${String(index + 1).padStart(2)}  `) +
-					theme.fg("text", preview) +
-					imageMark,
-			));
-			if (index < visibleEntries.length - 1) output.push("");
-		}
-		if (entries.length > MAX_PREVIEW_ENTRIES) {
-			output.push(fit(theme.fg("dim", `    +${entries.length - MAX_PREVIEW_ENTRIES} more`)));
+			output.push(...wrapTextWithAnsi(theme.fg("text", preview) + imageMark, width));
+			if (index < entries.length - 1) output.push("");
 		}
 
 		const toggleLabel = mode === "steer" ? "follow up" : "steer";
@@ -159,9 +163,7 @@ export default function queueExtension(pi: ExtensionAPI): void {
 			theme.fg("warning", CANCEL_KEY) +
 				theme.fg("dim", " cancel latest   ") +
 				theme.fg("warning", TOGGLE_KEY) +
-				theme.fg("dim", ` ${toggleLabel}   `) +
-				theme.fg("warning", "/queue") +
-				theme.fg("dim", " manage"),
+				theme.fg("dim", ` ${toggleLabel}`),
 		));
 		return output;
 	}
@@ -188,14 +190,106 @@ export default function queueExtension(pi: ExtensionAPI): void {
 		);
 	}
 
+	function manageInput(
+		text: string,
+		images: ImageContent[] | undefined,
+		requestedMode: QueueMode,
+		ctx: ExtensionContext,
+	): boolean {
+		if (text.trimStart().startsWith("/")) return false;
+		const latest = entries.at(-1);
+		const combined = latest
+			? combineQueuedContent(latest, { text, images })
+			: { text, images };
+		const otherText = entries.reduce((sum, entry) => sum + (entry === latest ? 0 : entry.text.length), 0);
+		if (otherText + combined.text.length > MAX_TOTAL_TEXT) {
+			if (ctx.mode === "tui") ctx.ui.notify("Managed queue is full; this message will use Pi's native queue", "warning");
+			return false;
+		}
+
+		if (latest) {
+			latest.text = combined.text;
+			latest.images = combined.images;
+			persist({ op: "update", id: latest.id, text: latest.text, images: latest.images });
+		} else {
+			mode = requestedMode;
+			persist({ op: "mode", mode });
+			const entry: QueueEntry = { id: nextId(), text: combined.text, images: combined.images };
+			entries.push(entry);
+			persist({ op: "enqueue", entry });
+		}
+		return true;
+	}
+
+	function flushManagedAfterCompaction(ctx: ExtensionContext): void {
+		if (entries.length === 0) return;
+		if (ctx.isIdle()) dispatchEntry(entries[0]!.id);
+		else dispatchAll(mode);
+	}
+
+	function installCompactionCapture(ctx: ExtensionContext): void {
+		if (ctx.mode !== "tui") return;
+		restoreCompactionQueue?.();
+		const prototype = InteractiveMode.prototype as unknown as CompactionQueuePrototype;
+		restoreCompactionQueue = patchCompactionQueue(
+			prototype,
+			(text, requestedMode) => manageInput(text, undefined, requestedMode, ctx),
+			() => flushManagedAfterCompaction(ctx),
+		);
+		if (!restoreCompactionQueue) {
+			ctx.ui.notify("pi-queue cannot capture compaction input on this Pi version", "warning");
+		}
+	}
+
+	function installEditorDequeue(ctx: ExtensionContext): void {
+		if (ctx.mode !== "tui") return;
+		restoreEditor?.();
+		const previousFactory = ctx.ui.getEditorComponent();
+		const wrapperFactory = (tui: Parameters<NonNullable<typeof previousFactory>>[0], editorTheme: Parameters<NonNullable<typeof previousFactory>>[1], keybindings: Parameters<NonNullable<typeof previousFactory>>[2]) => {
+			const editor = previousFactory
+				? previousFactory(tui, editorTheme, keybindings)
+				: new CustomEditor(tui, editorTheme, keybindings);
+			const handleInput = editor.handleInput.bind(editor);
+			editor.handleInput = (data: string): void => {
+				const shouldRestore = matchesKey(data, "up") && entries.length > 0 && ctx.ui.getEditorText().length === 0;
+				if (shouldRestore && restoreLatestToEditor(ctx)) {
+					tui.requestRender();
+					return;
+				}
+				handleInput(data);
+			};
+			return editor;
+		};
+		ctx.ui.setEditorComponent(wrapperFactory);
+		restoreEditor = () => {
+			restoreOwnedEditorFactory(
+				() => ctx.ui.getEditorComponent(),
+				(factory) => ctx.ui.setEditorComponent(factory),
+				wrapperFactory,
+				previousFactory,
+			);
+		};
+	}
+
 	pi.on("session_start", (_event, ctx) => {
 		restore(ctx);
 		registerWidget(ctx);
-		notifyChanged();
+		installCompactionCapture(ctx);
+	});
+	// resources_discover runs after every extension's session_start handler, so
+	// this wraps the final editor (including Void Agent) instead of replacing it.
+	pi.on("resources_discover", (_event, ctx) => {
+		installEditorDequeue(ctx);
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
-		onQueueChange = null;
+		restoreCompactionQueue?.();
+		restoreCompactionQueue = null;
+		restoreEditor?.();
+		restoreEditor = null;
 		if (ctx.mode === "tui") ctx.ui.setWidget(WIDGET_KEY, undefined, { placement: "aboveWorking" });
+	});
+	pi.on("session_tree", (_event, ctx) => {
+		restore(ctx);
 	});
 
 	function contentFor(entry: QueueEntry): string | ({ type: "text"; text: string } | ImageContent)[] {
@@ -208,8 +302,28 @@ export default function queueExtension(pi: ExtensionAPI): void {
 		if (index < 0) return undefined;
 		const [entry] = entries.splice(index, 1);
 		persist({ op: "remove", id });
-		notifyChanged();
 		return entry;
+	}
+
+	function restoreLatestToEditor(ctx: ExtensionContext): boolean {
+		const entry = entries.at(-1);
+		if (!entry) return false;
+		const restoration = takeQueuedTextForEditor(entry);
+		if (!restoration) {
+			ctx.ui.notify("The pending message contains only images and cannot be restored to the editor", "info");
+			return false;
+		}
+
+		if (restoration.remaining) {
+			entry.text = restoration.remaining.text;
+			entry.images = restoration.remaining.images;
+			persist({ op: "update", id: entry.id, text: entry.text, images: entry.images });
+			ctx.ui.notify("Queued text restored; attached images remain pending", "info");
+		} else {
+			removeEntry(entry.id);
+		}
+		ctx.ui.setEditorText(restoration.editorText);
+		return true;
 	}
 
 	function dispatchEntry(id: string, deliverAs?: QueueMode): boolean {
@@ -218,7 +332,6 @@ export default function queueExtension(pi: ExtensionAPI): void {
 		const entry = entries[index]!;
 		entries.splice(index, 1);
 		persist({ op: "remove", id });
-		notifyChanged();
 		try {
 			pi.sendUserMessage(contentFor(entry), deliverAs ? { deliverAs } : undefined);
 			return true;
@@ -226,7 +339,6 @@ export default function queueExtension(pi: ExtensionAPI): void {
 			entries.splice(index, 0, entry);
 			persist({ op: "enqueue", entry });
 			persist({ op: "order", ids: entries.map((candidate) => candidate.id) });
-			notifyChanged();
 			return false;
 		}
 	}
@@ -244,23 +356,13 @@ export default function queueExtension(pi: ExtensionAPI): void {
 	}
 
 	pi.on("input", (event, ctx) => {
-		if (!event.streamingBehavior || event.source !== "interactive") return;
-		// Registered extension commands have already executed before this event.
-		// Other slash inputs must pass through so Pi can expand skills/templates.
-		if (event.text.trimStart().startsWith("/")) return;
-		const totalText = entries.reduce((sum, entry) => sum + entry.text.length, 0);
-		if (entries.length >= MAX_ENTRIES || totalText + event.text.length > MAX_TOTAL_TEXT) {
-			if (ctx.mode === "tui") ctx.ui.notify("Managed queue is full; this message will use Pi's native queue", "warning");
-			return;
-		}
-		if (entries.length === 0) {
-			mode = event.streamingBehavior;
-			persist({ op: "mode", mode });
-		}
-		const entry: QueueEntry = { id: nextId(), text: event.text, images: event.images };
-		entries.push(entry);
-		persist({ op: "enqueue", entry });
-		notifyChanged();
+		if (!shouldManageInput({
+			text: event.text,
+			source: event.source,
+			streamingBehavior: event.streamingBehavior,
+			isIdle: ctx.isIdle(),
+		})) return;
+		if (!manageInput(event.text, event.images, event.streamingBehavior ?? "steer", ctx)) return;
 		return { action: "handled" as const };
 	});
 
@@ -290,84 +392,7 @@ export default function queueExtension(pi: ExtensionAPI): void {
 			if (entries.length === 0) return;
 			mode = mode === "steer" ? "followUp" : "steer";
 			persist({ op: "mode", mode });
-			notifyChanged();
 			ctx.ui.notify(mode === "steer" ? "Pending messages will steer" : "Pending messages will follow up", "info");
-		},
-	});
-
-	async function runQueuePanel(ctx: ExtensionCommandContext): Promise<void> {
-		if (ctx.mode !== "tui") {
-			ctx.ui.notify("/queue requires interactive TUI mode", "error");
-			return;
-		}
-		if (entries.length === 0) {
-			ctx.ui.notify("No managed messages (type while the agent is busy to add one)", "info");
-			return;
-		}
-		const controller: QueueController = {
-			entries: () => entries.map((entry) => ({ id: entry.id, text: entry.text, imageCount: entry.images?.length ?? 0 })),
-			mode: () => mode,
-			toggleMode: () => {
-				mode = mode === "steer" ? "followUp" : "steer";
-				persist({ op: "mode", mode });
-				notifyChanged();
-				return mode;
-			},
-			removeAt: (index) => {
-				const entry = entries[index];
-				if (entry) removeEntry(entry.id);
-			},
-			updateText: (index, text) => {
-				const entry = entries[index];
-				if (!entry) return;
-				const otherText = entries.reduce((sum, candidate, candidateIndex) =>
-					sum + (candidateIndex === index ? 0 : candidate.text.length), 0);
-				if (otherText + text.length > MAX_TOTAL_TEXT) {
-					ctx.ui.notify("Edited message exceeds the managed queue text limit", "warning");
-					return;
-				}
-				entry.text = text;
-				persist({ op: "update", id: entry.id, text });
-				notifyChanged();
-			},
-			moveBy: (index, delta) => {
-				const target = index + delta;
-				if (index < 0 || target < 0 || index >= entries.length || target >= entries.length) return index;
-				const [entry] = entries.splice(index, 1);
-				entries.splice(target, 0, entry!);
-				persist({ op: "order", ids: entries.map((candidate) => candidate.id) });
-				notifyChanged();
-				return target;
-			},
-			sendNow: (index) => {
-				const entry = entries[index];
-				if (!entry) return;
-				const idle = ctx.isIdle();
-				const sent = dispatchEntry(entry.id, idle ? undefined : "steer");
-				ctx.ui.notify(sent ? (idle ? "Message sent" : "Message will steer at the next boundary") : "Message could not be sent", sent ? "info" : "error");
-			},
-			setOnChange: (callback) => {
-				onQueueChange = callback;
-			},
-		};
-		await ctx.ui.custom<void>(
-			(tui, theme, _keybindings, done) =>
-				createQueuePanel({ ctrl: controller, tui, theme, onDone: () => done(undefined) }),
-			{
-				overlay: true,
-				overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%", margin: 0 },
-			},
-		);
-	}
-
-	pi.registerCommand("queue", {
-		description: "Manage pending messages: edit, reorder, send, delete, or change delivery mode",
-		handler: async (args, ctx) => {
-			if (args.trim()) {
-				ctx.ui.notify("Usage: /queue", "error");
-				return;
-			}
-			await runQueuePanel(ctx);
 		},
 	});
 }
