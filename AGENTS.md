@@ -177,6 +177,14 @@ such as `configs/pi-agent/docs/agents/` for PiAgent-specific work.
   `mcp_search_tools`, unsupported client callbacks fail closed, and
   `session_shutdown` owns process cleanup. Remote HTTP, resources, prompts,
   roots, sampling, elicitation, and MCP tasks are intentionally out of scope.
+- `pi-timers` gives only the owning main agent a `manage_timers` tool for up to
+  five finite in-process recurring wake-ups. Each timer fires after one full
+  interval, coalesces overlapping ticks until the main agent settles, stops at
+  its finite run cap, and is cleared on reload, session replacement, or exit.
+  A live above-editor tree shows countdowns, run progress, and pending/coalesced
+  state; `Alt+R` opens its cancellation picker. `/timers` lists or cancels active
+  timers; subagents and procedure workers load no extensions and cannot access
+  the tool.
 - `pi-clear` registers `/clear` as a muscle-memory alias for `/new` using
   `ctx.newSession()`, so existing session-switch hooks still apply.
 - `pi-safety` gates agent `bash` commands by category with countdown

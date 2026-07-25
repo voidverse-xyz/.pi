@@ -22,6 +22,7 @@
     "./configs/pi-agent/packages/pi-questions",
     "./configs/pi-agent/packages/pi-plan",
     "./configs/pi-agent/packages/pi-queue",
+    "./configs/pi-agent/packages/pi-timers",
     "./configs/pi-agent/packages/pi-safety",
     "./configs/pi-agent/packages/pi-merge",
     "./configs/pi-agent/packages/void-agent",
