@@ -113,6 +113,9 @@ await test("the latest provider-visible thought returns after a tool finishes", 
 	});
 	const source = `return agent('inspect with a tool', {label: 'thinking-tool-probe', tools: ['read']})`;
 	let sawTool = false;
+	let maxToolUses = 0;
+	let maxTokens = 0;
+	let liveContextPercent = null;
 	let restoredSummary = "";
 	let lostLatestThought = false;
 	let thinkingToolRun;
@@ -121,6 +124,11 @@ await test("the latest provider-visible thought returns after a tool finishes", 
 			source,
 			onChange: () => {
 				const activity = thinkingToolRun?.snapshot().rows[0]?.activity;
+				if (activity) {
+					maxToolUses = Math.max(maxToolUses, activity.toolUses);
+					maxTokens = Math.max(maxTokens, activity.tokens);
+					if (activity.ctxPercent !== null) liveContextPercent = activity.ctxPercent;
+				}
 				if (activity?.tool === "read") sawTool = true;
 				if (sawTool && activity?.tool === "") {
 					if (activity.summary === `${thought} · thinking…`) restoredSummary = activity.summary;
@@ -134,6 +142,9 @@ await test("the latest provider-visible thought returns after a tool finishes", 
 	assert.equal(thinkingToolOutcome.result, "TOOL_THINKING_OK");
 	assert.equal(restoredSummary, `${thought} · thinking…`);
 	assert.equal(lostLatestThought, false, "an empty next thinking block must not erase the prior clue");
+	assert.equal(maxToolUses, 1, "live telemetry counts the active tool call");
+	assert.ok(maxTokens >= 15, `expected finalized-message tokens, got ${maxTokens}`);
+	assert.equal(typeof liveContextPercent, "number", "live telemetry includes context fill");
 });
 
 await test("per-agent model, thinking, and tools options run through a real AgentSession", async () => {

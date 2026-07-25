@@ -3,7 +3,7 @@
  *
  *    procedure release-check · phase Test · 2 running 1 queued  alt+w stop
  *   ├─ ✓ build (cached)
- *   ├─ ▶ unit-tests · 4 tool uses
+ *   ├─ ▶ unit-tests ·  4 tools ·  18% ·  12k tokens
  *   │  └ Bash: npm test
  *   └─ ○ integ-tests
  *      … +3 lines · alt+e expand
@@ -58,6 +58,7 @@ export function createTreeWidget(
 	let expanded = false;
 	let lastState = "";
 	let mounted = false;
+	let lastRenderWidth = Number.POSITIVE_INFINITY;
 	let activeTui: TUI | undefined;
 
 	const mount = (): void => {
@@ -70,10 +71,13 @@ export function createTreeWidget(
 					invalidate() {},
 					render(width: number): string[] {
 						const safeWidth = Math.max(1, width);
+						lastRenderWidth = safeWidth;
 						return renderTreeLines(currentSnapshot, theme, {
 							expanded,
 							width: safeWidth,
 							fitDetail: fitActivitySummary,
+							measure: visibleWidth,
+							truncate: truncateToWidth,
 						}).map((line) =>
 							line ? truncateToWidth(line, safeWidth, "…") : line,
 						);
@@ -115,7 +119,7 @@ export function createTreeWidget(
 		refresh,
 		toggleExpanded(): boolean {
 			const snapshot = getSnapshot();
-			if (!treeNeedsExpansion(snapshot)) return false;
+			if (!treeNeedsExpansion(snapshot, lastRenderWidth, visibleWidth)) return false;
 			currentSnapshot = snapshot;
 			expanded = !expanded;
 			lastState = JSON.stringify([currentSnapshot, expanded]);

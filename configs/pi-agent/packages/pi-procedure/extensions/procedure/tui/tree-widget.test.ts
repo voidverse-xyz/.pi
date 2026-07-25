@@ -4,12 +4,15 @@ import type { RunSnapshot } from "../run.ts";
 import { fitThinkingSummary, liveThinkingSummary } from "../text.ts";
 import {
 	BOTTOM_PADDING,
+	CONTEXT_ICON,
 	EXPAND_KEY,
 	MAX_COLLAPSED_LINES,
+	PROCEDURE_ICON,
 	renderTreeLines,
 	STOP_KEY,
+	TOKEN_ICON,
+	TOOL_ICON,
 	treeNeedsExpansion,
-	PROCEDURE_ICON,
 } from "./tree-render.ts";
 
 const theme = { fg: (color: string, text: string) => `<${color}>${text}</${color}>` };
@@ -22,7 +25,13 @@ const snapshot = (over: Partial<RunSnapshot> = {}): RunSnapshot => ({
 	phases: ["Build", "Test"],
 	rows: [
 		{ seq: 0, label: "build", phase: "Build", state: "cached", cached: true },
-		{ seq: 1, label: "unit-tests", phase: "Test", state: "running", activity: { tool: "bash", summary: "Bash: npm test", toolUses: 4 } },
+		{
+			seq: 1,
+			label: "unit-tests",
+			phase: "Test",
+			state: "running",
+			activity: { tool: "bash", summary: "Bash: npm test", toolUses: 4, tokens: 12_345, ctxPercent: 18.4 },
+		},
 		{ seq: 2, label: "integ-tests", phase: "Test", state: "queued" },
 	],
 	logs: ["fanning out test shards"],
@@ -59,7 +68,9 @@ test("rows: cached ✓, running ▶ with tool subline, queued ○, error ✗, lo
 	const text = lines.join("\n");
 	assert.ok(text.includes("<success></success> build<dim> (cached)</dim>"));
 	assert.ok(text.includes("<accent></accent> unit-tests"));
-	assert.ok(text.includes("4 tool uses"));
+	assert.ok(text.includes(`${TOOL_ICON} 4 tools`));
+	assert.ok(text.includes(`${CONTEXT_ICON} 18%`));
+	assert.ok(text.includes(`${TOKEN_ICON} 12k tokens`));
 	assert.ok(text.includes("└ Bash: npm test"));
 	assert.ok(text.includes("<dim></dim> integ-tests"));
 	assert.ok(text.includes("<error></error> boom"));
@@ -76,7 +87,13 @@ test("running rows show provider-visible thinking when no tool is active", () =>
 					label: "reasoner",
 					phase: "Test",
 					state: "running",
-					activity: { tool: "", summary: "tracing the newest dependency edge · thinking…", toolUses: 0 },
+					activity: {
+						tool: "",
+						summary: "tracing the newest dependency edge · thinking…",
+						toolUses: 0,
+						tokens: 0,
+						ctxPercent: null,
+					},
 				},
 			],
 			logs: [],
@@ -93,7 +110,15 @@ test("long thinking rows retain the newest clue and active suffix within the det
 	const summary = liveThinkingSummary(`${"older context ".repeat(20)}FINAL_MARKER`);
 	const lines = renderTreeLines(
 		snapshot({
-			rows: [{ seq: 0, label: "reasoner", phase: "Test", state: "running", activity: { tool: "", summary, toolUses: 0 } }],
+			rows: [
+				{
+					seq: 0,
+					label: "reasoner",
+					phase: "Test",
+					state: "running",
+					activity: { tool: "", summary, toolUses: 0, tokens: 900, ctxPercent: 3.2 },
+				},
+			],
 			logs: [],
 		}),
 		plainTheme,
@@ -103,6 +128,25 @@ test("long thinking rows retain the newest clue and active suffix within the det
 	assert.ok(detail, `thinking detail should keep its suffix: ${lines.join(" | ")}`);
 	assert.ok(detail.includes("FINAL_MARKER"), `newest thought should survive: ${lines.join(" | ")}`);
 	assert.ok(Array.from(detail).length <= 40);
+});
+
+test("narrow rows protect compact metrics and account for the extra line in expansion", () => {
+	const plainTheme = { fg: (_color: string, text: string) => text };
+	const oneRow = snapshot({ rows: [snapshot().rows[1]!], logs: [] });
+	const lines = renderTreeLines(oneRow, plainTheme, { width: 34 });
+	assert.ok(lines.some((line) => line.includes(`${TOOL_ICON} 4 · ${CONTEXT_ICON} 18% · ${TOKEN_ICON} 12k`)));
+	assert.ok(lines.some((line) => line.includes("Bash: npm test")));
+
+	const threeActiveRows = snapshot({
+		rows: Array.from({ length: 3 }, (_, seq) => ({
+			...snapshot().rows[1]!,
+			seq,
+			label: `agent-${seq}`,
+		})),
+		logs: [],
+	});
+	assert.equal(treeNeedsExpansion(threeActiveRows), false, "wide rows stay two lines each");
+	assert.equal(treeNeedsExpansion(threeActiveRows, 34), true, "narrow metric rows count toward the compact budget");
 });
 
 test("multiline agent rows keep a stable height across state and activity changes", () => {

@@ -47,9 +47,16 @@ export interface AgentCall {
 }
 
 export interface AgentActivity {
+	/** The current tool name, or an empty string while thinking. */
 	tool: string;
+	/** Current tool detail or the latest provider-visible thinking summary. */
 	summary: string;
+	/** Tool calls made by this one-shot agent. */
 	toolUses: number;
+	/** Cumulative input/output/cache tokens at the latest finalized message. */
+	tokens: number;
+	/** Current context fill from the live session, 0–100; null when unknown. */
+	ctxPercent: number | null;
 }
 
 export type AgentRunState = "queued" | "running" | "waiting" | "done" | "error" | "cached";
@@ -201,10 +208,22 @@ export async function runAgent(call: AgentCall, ports: RunnerPorts): Promise<Age
 		let finalMessages: unknown[] = [];
 		let thinkingText = "";
 		let latestThought = "";
-		let toolUses = 0;
 		let lastThinkingPublish = 0;
 		const activeTools = new Map<string, { tool: string; summary: string }>();
-		ports.onActivity(call.seq, { tool: "", summary: "thinking…", toolUses });
+		const initialStats = session.getSessionStats();
+		let activity: AgentActivity = {
+			tool: "",
+			summary: "thinking…",
+			toolUses: 0,
+			tokens: initialStats.tokens.total,
+			ctxPercent: initialStats.contextUsage?.percent ?? null,
+		};
+
+		const publishActivity = (update: Partial<AgentActivity>): void => {
+			activity = { ...activity, ...update };
+			ports.onActivity(call.seq, activity);
+		};
+		ports.onActivity(call.seq, activity);
 
 		const publishThinking = (force = false): void => {
 			latestThought = retainLatestThought(latestThought, thinkingText);
@@ -212,7 +231,7 @@ export async function runAgent(call: AgentCall, ports: RunnerPorts): Promise<Age
 			const now = Date.now();
 			if (!force && now - lastThinkingPublish < 120) return;
 			lastThinkingPublish = now;
-			ports.onActivity(call.seq, { tool: "", summary: liveThinkingSummary(latestThought), toolUses });
+			publishActivity({ tool: "", summary: liveThinkingSummary(latestThought) });
 		};
 
 		const unsubscribe = session.subscribe((event) => {
@@ -234,20 +253,29 @@ export async function runAgent(call: AgentCall, ports: RunnerPorts): Promise<Age
 				return;
 			}
 			if (event.type === "tool_execution_start") {
-				toolUses += 1;
 				const tool = event.toolName;
 				const current = { tool, summary: toolSummary(tool, event.args) };
 				activeTools.set(event.toolCallId, current);
-				ports.onActivity(call.seq, { ...current, toolUses });
+				publishActivity({ ...current, toolUses: activity.toolUses + 1 });
 				return;
 			}
 			if (event.type === "tool_execution_end") {
 				activeTools.delete(event.toolCallId);
 				const current = [...activeTools.values()].at(-1);
-				ports.onActivity(
-					call.seq,
-					current ? { ...current, toolUses } : { tool: "", summary: liveThinkingSummary(latestThought), toolUses },
-				);
+				publishActivity(current ?? { tool: "", summary: liveThinkingSummary(latestThought) });
+				return;
+			}
+			// Match the teams/subagents widget: finalized messages are the point where
+			// session token totals and context fill become authoritative. Defer one
+			// microtask so SessionManager persistence has included the message.
+			if (event.type === "message_end") {
+				queueMicrotask(() => {
+					const stats = session.getSessionStats();
+					publishActivity({
+						tokens: stats.tokens.total,
+						ctxPercent: stats.contextUsage?.percent ?? null,
+					});
+				});
 				return;
 			}
 			if (event.type !== "agent_end") return;
