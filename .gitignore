@@ -45,6 +45,7 @@
 /teams.json
 /procedures.json
 /commit.json
+/mcp.json
 /changes-*.patch
 /agent/safety.json
 /agent/safety-audit.jsonl*
@@ -57,6 +58,7 @@
 /agent/teams.json
 /agent/procedures.json
 /agent/commit.json
+/agent/mcp.json
 /agent/changes-*.patch
 
 # Root runtime output.

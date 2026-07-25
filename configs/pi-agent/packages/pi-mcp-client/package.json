@@ -1,0 +1,23 @@
+{
+  "name": "pi-mcp-client",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Local stdio MCP client that exposes configured server tools to Pi.",
+  "keywords": [
+    "pi-package",
+    "mcp"
+  ],
+  "files": [
+    "extensions",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

@@ -171,6 +171,12 @@ such as `configs/pi-agent/docs/agents/` for PiAgent-specific work.
   fresh ad-hoc one-shot `pi-subagents` workers whose coding tools are forced to
   `read`/`grep`/`find`/`ls`; follow-up/control calls are scoped to Plan-created
   workers. The shared base instructions live in `skills/plan/`.
+- `pi-mcp-client` loads machine-local `mcp.json` server definitions, launches
+  local stdio MCP servers per session with a minimal environment, and exposes
+  namespaced `mcp_*` tools. Calls confirm by default; large catalogs use
+  `mcp_search_tools`, unsupported client callbacks fail closed, and
+  `session_shutdown` owns process cleanup. Remote HTTP, resources, prompts,
+  roots, sampling, elicitation, and MCP tasks are intentionally out of scope.
 - `pi-clear` registers `/clear` as a muscle-memory alias for `/new` using
   `ctx.newSession()`, so existing session-switch hooks still apply.
 - `pi-safety` gates agent `bash` commands by category with countdown
