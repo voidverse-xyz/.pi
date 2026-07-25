@@ -1,17 +1,18 @@
 /**
- * Codex account usage limits (5h / weekly rate-limit windows).
+ * Codex account usage limits (including 5h and weekly rate-limit windows).
  *
  * Talks to the local `codex` CLI's app-server over stdio (JSON-RPC,
  * `account/rateLimits/read`) — the same data the Codex CLI itself uses for
- * its own "5h limit" / weekly limit indicators.
+ * its rate-limit indicators.
  *
- * Footer: publishes just the 5h window via `ctx.ui.setStatus()`, the generic
- * cross-extension footer-status channel. It emits bare content; the status-line
- * extension owns the separators between footer segments, so any footer can
- * display it without this extension touching that extension's code at all.
+ * Footer: publishes the shortest window returned by Codex via
+ * `ctx.ui.setStatus()` — 5h when available, otherwise a longer window such as
+ * 7d. It emits bare content; the status-line extension owns the separators
+ * between footer segments, so any footer can display it without this extension
+ * touching that extension's code at all.
  *
- * Command: `/codex-usage` shows the full picture (5h + 7d windows, plan,
- * credits) as a multi-line toast notification via `ctx.ui.notify()`.
+ * Command: `/codex-usage` shows every returned window, plus the plan and
+ * credits, as a multi-line toast notification via `ctx.ui.notify()`.
  *
  * Footer only shows anything when both hold:
  *  - the active Pi model's provider is "openai-codex" (only relevant when
@@ -55,6 +56,11 @@ interface RateLimitSnapshot {
 	credits: CreditsSnapshot | null;
 }
 
+interface LabeledRateLimitWindow {
+	fallbackLabel: "5h" | "7d";
+	window: RateLimitWindow;
+}
+
 type AuthMode = "apikey" | "chatgpt" | "chatgptAuthTokens" | "agentIdentity" | "personalAccessToken" | "bedrockApiKey";
 
 const SUBSCRIPTION_AUTH_MODES: ReadonlySet<AuthMode> = new Set(["chatgpt", "chatgptAuthTokens"]);
@@ -92,9 +98,38 @@ function formatWindowText(label: string, win: RateLimitWindow): string {
 	return `${formatWindowLabel(win.windowDurationMins) || label} ${pct}% (${formatResetIn(win.resetsAt)})`;
 }
 
-function formatWindow(label: string, win: RateLimitWindow | null, theme: ExtensionContext["ui"]["theme"]): string {
-	if (!win) return "";
-	return theme.fg(windowColor(Math.round(win.usedPercent)), formatWindowText(label, win));
+function getRateLimitWindows(snapshot: RateLimitSnapshot): LabeledRateLimitWindow[] {
+	const windows: LabeledRateLimitWindow[] = [];
+	if (snapshot.primary) windows.push({ fallbackLabel: "5h", window: snapshot.primary });
+	if (snapshot.secondary) windows.push({ fallbackLabel: "7d", window: snapshot.secondary });
+
+	return windows.sort((left, right) => {
+		const leftDuration = left.window.windowDurationMins ?? Number.POSITIVE_INFINITY;
+		const rightDuration = right.window.windowDurationMins ?? Number.POSITIVE_INFINITY;
+		return leftDuration - rightDuration;
+	});
+}
+
+export function formatUsageLines(snapshot: RateLimitSnapshot): string[] {
+	const lines: string[] = ["Codex usage"];
+	if (snapshot.planType) lines.push(`Plan: ${snapshot.planType}`);
+	for (const { fallbackLabel, window } of getRateLimitWindows(snapshot)) {
+		lines.push(formatWindowText(fallbackLabel, window));
+	}
+	if (snapshot.credits) {
+		const creditsText = snapshot.credits.unlimited
+			? "unlimited"
+			: (snapshot.credits.balance ?? "unknown");
+		lines.push(`Credits: ${creditsText}`);
+	}
+	if (lines.length === 1) lines.push("no data available");
+	return lines;
+}
+
+function formatWindow(entry: LabeledRateLimitWindow | undefined, theme: ExtensionContext["ui"]["theme"]): string {
+	if (!entry) return "";
+	const { fallbackLabel, window } = entry;
+	return theme.fg(windowColor(Math.round(window.usedPercent)), formatWindowText(fallbackLabel, window));
 }
 
 // Minimal JSON-RPC client for `codex app-server --stdio` — newline-delimited JSON,
@@ -138,7 +173,7 @@ class CodexRateLimitClient {
 		child.stderr.resume();
 
 		this.initialized = this.request(child, "initialize", {
-			clientInfo: { name: "pi-codex-usage", title: null, version: "1.0.0" },
+			clientInfo: { name: "pi-codex-usage", title: null, version: "1.0.2" },
 			capabilities: null,
 		}).then(() => undefined);
 
@@ -257,7 +292,7 @@ export default function (pi: ExtensionAPI) {
 	// even if Pi's current model isn't Codex. Auth mode is still required, since
 	// there's genuinely no rate-limit data without a codex/ChatGPT login.
 	pi.registerCommand("codex-usage", {
-		description: "Show full Codex account usage (5h + 7d windows, plan, credits)",
+		description: "Show Codex rate-limit windows, plan, and credits",
 		handler: async (_args, ctx) => {
 			const activeClient = ensureClient();
 			try {
@@ -271,19 +306,7 @@ export default function (pi: ExtensionAPI) {
 
 				// notify() takes a single un-themed string; embed newlines so it renders
 				// as a multi-line block (Pi builds a Text component from the string).
-				const lines: string[] = ["Codex usage"];
-				if (snapshot.planType) lines.push(`Plan: ${snapshot.planType}`);
-				if (snapshot.primary) lines.push(formatWindowText("5h", snapshot.primary));
-				if (snapshot.secondary) lines.push(formatWindowText("7d", snapshot.secondary));
-				if (snapshot.credits) {
-					const creditsText = snapshot.credits.unlimited
-						? "unlimited"
-						: (snapshot.credits.balance ?? "unknown");
-					lines.push(`Credits: ${creditsText}`);
-				}
-				if (lines.length === 1) lines.push("no data available");
-
-				ctx.ui.notify(lines.join("\n"), "info");
+				ctx.ui.notify(formatUsageLines(snapshot).join("\n"), "info");
 			} catch (error) {
 				ctx.ui.notify(
 					`Could not reach codex: ${error instanceof Error ? error.message : String(error)}`,
@@ -318,8 +341,9 @@ export default function (pi: ExtensionAPI) {
 						ctx.ui.setStatus(STATUS_KEY, undefined);
 						return;
 					}
-					const fiveHour = formatWindow("5h", snapshot.primary, ctx.ui.theme);
-					ctx.ui.setStatus(STATUS_KEY, fiveHour || undefined);
+					const shortestWindow = getRateLimitWindows(snapshot)[0];
+					const status = formatWindow(shortestWindow, ctx.ui.theme);
+					ctx.ui.setStatus(STATUS_KEY, status || undefined);
 				})
 				.catch(() => {
 					if (generation !== refreshGeneration) return;

@@ -11,7 +11,7 @@ Pi packages live under `packages/<name>/` and are enabled through portable relat
 | `pi-browse` | `/browse` native file browser |
 | `pi-changes` | `/changes` session edit review/undo and read-only `/git-changes` repository diff browser |
 | `pi-clear` | `/clear` alias |
-| `pi-codex-usage` | Codex five-hour usage status and `/codex-usage` |
+| `pi-codex-usage` | Shortest available Codex rate-limit status and all-window `/codex-usage` details |
 | `pi-codex-web-search` | LLM-callable `web_search` backed by an isolated ephemeral Codex app-server turn and ChatGPT login |
 | `pi-mcp-client` | Local stdio MCP client with machine-local multi-server config, namespaced tools, confirmation gates, and progressive discovery |
 | `void-agent` | Bundled Void Agent theme family and presentation extension, plus a pre-trust guard that prevents the portable global `.pi` tree from loading again as project config through a bind-mount/path alias and suppresses the resulting misleading warning. Ships palettes `void-agent` (default) plus `void-agent-{gruvbox,tokyo-night,nord,one-dark,catppuccin,kanagawa}` (identical role-map, colors only) — Pi's native picker owns selection/persistence; the default is seeded once on first run, never re-forced. Prompt field, working indicator (random accent spinners incl. blinking star pulse, `label… (elapsed · ↓ tokens)` with run-cumulative counts, three-line full-width black↔prompt-gray background block with theme-green Matrix rain and a random per-run animation: breathe/aurora/comet/shimmer; persistent `/matrix` and `/working-animation` controls), and tool-turn separators without replacing tool definitions, status lines, or widgets |

@@ -1,10 +1,14 @@
 {
   "name": "pi-codex-usage",
-  "version": "1.0.1",
-  "description": "Shows Codex subscription usage: a compact 5h status-line segment and full details via /codex-usage.",
+  "version": "1.0.2",
+  "type": "module",
+  "description": "Shows available Codex subscription rate-limit windows in the status line and via /codex-usage.",
   "keywords": [
     "pi-package"
   ],
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
   "pi": {
     "extensions": [
       "./extensions"
