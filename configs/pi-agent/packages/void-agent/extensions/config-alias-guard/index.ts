@@ -9,7 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 const TRUST_WARNING_PATCH = Symbol.for("void-agent.config-alias-trust-warning-patch");
-const SUPPORTED_PI_VERSIONS = new Set(["0.80.10", "0.81.0"]);
+const SUPPORTED_PI_VERSIONS = new Set(["0.80.10", "0.81.0", "0.81.1"]);
 
 type ProjectTrustWarningRenderer = (this: InteractiveModeInternals) => void;
 
