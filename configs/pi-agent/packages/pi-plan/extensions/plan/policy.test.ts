@@ -5,6 +5,7 @@ import {
 	extractSuccessfulSpawnAddress,
 	isToolAllowedInMode,
 	isTrustedTool,
+	nextAgentMode,
 	parseAgentModeState,
 	parseModeCommand,
 	parsePlanCommand,
@@ -87,6 +88,13 @@ test("mode commands recognize controls and preserve message text", () => {
 	});
 });
 
+test("mode cycle follows Off, Discuss, Plan, Quick, then Off", () => {
+	assert.equal(nextAgentMode("off"), "discuss");
+	assert.equal(nextAgentMode("discuss"), "plan");
+	assert.equal(nextAgentMode("plan"), "quick");
+	assert.equal(nextAgentMode("quick"), "off");
+});
+
 test("Plan commands preserve template selection syntax", () => {
 	assert.deepEqual(parsePlanCommand(" design auth migration "), {
 		kind: "task",
@@ -113,7 +121,7 @@ test("restrictedModeTools applies the exact tool surface for each mode", () => {
 		"read", "bash", "write", "ask_user", "show_files", "todo_write", "team_spawn",
 	];
 	assert.deepEqual(
-		restrictedModeTools("ask", baseline, trustedTools, trustedOwners),
+		restrictedModeTools("quick", baseline, trustedTools, trustedOwners),
 		["read", "grep", "find", "ls"],
 	);
 	assert.deepEqual(
@@ -138,8 +146,8 @@ test("trusted-tool policy is provenance-aware and mode-specific", () => {
 	const read = trustedTools.find((tool) => tool.name === "read");
 	const askUser = trustedTools.find((tool) => tool.name === "ask_user");
 	const spawn = trustedTools.find((tool) => tool.name === "subagent_spawn");
-	assert.equal(isToolAllowedInMode("ask", read, trustedOwners), true);
-	assert.equal(isToolAllowedInMode("ask", askUser, trustedOwners), false);
+	assert.equal(isToolAllowedInMode("quick", read, trustedOwners), true);
+	assert.equal(isToolAllowedInMode("quick", askUser, trustedOwners), false);
 	assert.equal(isToolAllowedInMode("discuss", askUser, trustedOwners), true);
 	assert.equal(isToolAllowedInMode("discuss", spawn, trustedOwners), false);
 	assert.equal(isToolAllowedInMode("plan", spawn, trustedOwners), true);
@@ -178,7 +186,7 @@ test("state parsing supports all modes, Plan child scope, and legacy booleans", 
 			planSubagentAddresses: ["adhoc/one", "adhoc/two"],
 		},
 	);
-	assert.deepEqual(parseAgentModeState({ mode: "ask" }), { mode: "ask" });
+	assert.deepEqual(parseAgentModeState({ mode: "quick" }), { mode: "quick" });
 	assert.deepEqual(parseAgentModeState({ enabled: true }), { mode: "plan" });
 	assert.deepEqual(parseAgentModeState({ enabled: false }), { mode: "off" });
 	assert.deepEqual(

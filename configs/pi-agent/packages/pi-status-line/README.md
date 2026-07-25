@@ -6,9 +6,9 @@ Owns Pi's shared status layout:
   thinking level from `pi-model-thinking` on the right. This status row stays
   below content widgets; late-mounted widgets may emit `status-line:pin-header`
   to request an immediate re-pin.
-- **Footer line 1** — the active `pi-plan` restricted mode (`󰋗 ask mode`,
-  `󰍩 discuss mode`, or ` plan mode`) appears on the left in mode-specific blue,
-  yellow, or green, followed by subagent activity when present; otherwise
+- **Footer line 1** — the active `pi-plan` restricted mode (`󰍩 discuss mode`,
+  ` plan mode`, or `󱐋 quick mode`) appears on the left in mode-specific yellow,
+  green, or blue, followed by subagent activity when present; otherwise
   tool-monitor moves up into that space.
   Context and other extension statuses stay right.
 - **Footer line 2** — tool-monitor moves here when subagent status occupies line 1;
@@ -28,7 +28,7 @@ reorders segments within their effective slot and sets narrow-width drop priorit
 
 | id | slot | verbose | compact |
 |----|------|---------|---------|
-| `plan-mode` | line 1, left | Ask blue, Discuss yellow, Plan green | same |
+| `plan-mode` | line 1, left | Discuss yellow, Plan green, Quick blue | same |
 | `subagents` | line 1, left | activity from `pi-agents`, dimmed | same |
 | `context` | line 1, right | hard-drive icon + `NN%` context usage, colored by fullness | `NN%` (icon dropped) |
 | `extension-statuses` | line 1, right | every other extension's `setStatus()` text, ` \| `-joined | space-joined |

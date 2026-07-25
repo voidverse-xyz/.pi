@@ -1,27 +1,27 @@
 # pi-plan
 
-Host-managed Ask, Discuss, and Plan modes for Pi. Off remains the normal unrestricted coding agent.
+Host-managed Discuss, Plan, and Quick modes for Pi. Off remains the normal unrestricted coding agent.
 
 ## Modes
 
 | Mode | Response behavior | Main-agent tools |
 |---|---|---|
 | **Off** | Normal Pi behavior | The exact tool set that was active before entering a restricted mode |
-| **Ask** (`󰋗`) | Quick chat, normally 1–4 short sentences | trusted built-in `read`, `grep`, `find`, `ls` only |
-| **Discuss** (`󰍩`) | Normal response length and structure | Ask tools plus trusted `ask_user` and `show_files` |
+| **Discuss** (`󰍩`) | Normal response length and structure | Quick tools plus trusted `ask_user` and `show_files` |
 | **Plan** (``) | Research and save a decision-complete Markdown plan | trusted read/UI/session tools, `save_plan`, and scoped read-only `subagent_*` tools |
+| **Quick** (`󱐋`) | Quick chat, normally 1–4 short sentences | trusted built-in `read`, `grep`, `find`, `ls` only |
 
-Ask's length rule is a host-injected prompt rule, not a provider-level token cap. The tool restrictions are host-enforced with both active-tool filtering and a default-deny `tool_call` guard.
+Quick's length rule is a host-injected prompt rule, not a provider-level token cap. The tool restrictions are host-enforced with both active-tool filtering and a default-deny `tool_call` guard.
 
 ## Usage
 
-- `/ask` — toggle Ask mode; `/ask <message>` enables it and sends the message.
 - `/discuss` — toggle Discuss mode; `/discuss <message>` enables it and sends the message.
 - `/plan` — toggle Plan mode.
 - `/plan <task>` — enable Plan mode, automatically select the best tagged supplemental Plan skill, and begin planning.
 - `/plan --skill <name> <task>` — force one tagged supplemental Plan skill for the task.
-- `/ask|discuss|plan on|off|exit|toggle|status` — explicit mode control.
-- `Shift+Tab` — cycle `Off → Ask → Discuss → Plan → Off` while Pi is idle.
+- `/quick` — toggle Quick mode; `/quick <message>` enables it and sends the message.
+- `/discuss|plan|quick on|off|exit|toggle|status` — explicit mode control.
+- `Shift+Tab` — cycle `Off → Discuss → Plan → Quick → Off` while Pi is idle.
 - `/skill:plan <task>` — invoke the underlying planning procedure for one task without enabling the host-enforced mode guard or `save_plan`.
 
 Routine mode transitions are silent because the footer already shows the active state. Busy-state warnings, invalid-command errors, fallback warnings, and explicit `status` responses remain visible.
@@ -52,17 +52,13 @@ The directly cloneable global configuration exposes the repository's root `skill
 
 ## Tool policy
 
-Entering the first restricted mode snapshots the current active tools. Moving between Ask, Discuss, and Plan re-filters from that same snapshot; returning Off restores it exactly, except `save_plan` remains disabled outside Plan.
+Entering the first restricted mode snapshots the current active tools. Moving between Discuss, Plan, and Quick re-filters from that same snapshot; returning Off restores it exactly, except `save_plan` remains disabled outside Plan.
 
 Every allowed tool must match its expected Pi built-in or local-package provenance, so a colliding custom tool cannot gain access merely by registering an approved name. A default-deny `tool_call` guard remains authoritative if another extension activates a tool after the mode begins.
 
-### Ask
-
-Ask enables only Pi's trusted built-in `read`, `grep`, `find`, and `ls`. It cannot mutate, run shell commands, use companion UI tools, or delegate.
-
 ### Discuss
 
-Discuss enables Ask's read-only tools plus the trusted local `ask_user` and `show_files` tools. It cannot mutate, run shell commands, save plans, or delegate.
+Discuss enables Quick's read-only tools plus the trusted local `ask_user` and `show_files` tools. It cannot mutate, run shell commands, save plans, or delegate.
 
 ### Plan
 
@@ -86,6 +82,10 @@ One-shot workers also receive only the subagent runtime's `report` companion too
 `todo_write` changes only the session checklist and remains available so Plan mode can track and clear complex planning work without granting project-file mutation. Bash, general mutation tools, teams, procedures, and unknown custom tools remain unavailable to the main agent.
 
 These are agent-tool guards, not an operating-system sandbox. They do not prevent user-entered `!` commands, manually invoked slash commands, subagents that were already running before a restricted mode began, other extension background work, or external processes from changing the workspace. Static symlinks are rejected for plan saving, but a concurrent external filesystem actor can still race path-based Node filesystem operations; use a read-only container or mount when that threat is in scope.
+
+### Quick
+
+Quick enables only Pi's trusted built-in `read`, `grep`, `find`, and `ls`. It cannot mutate, run shell commands, use companion UI tools, or delegate.
 
 ## Saving a plan
 
@@ -121,4 +121,4 @@ node --test \
   configs/pi-agent/packages/pi-plan/extensions/plan/templates.test.ts
 ```
 
-An offline RPC `get_commands` smoke test should report `ask`, `discuss`, `plan`, and `skill:plan`, confirming that the package and shared skill load successfully.
+An offline RPC `get_commands` smoke test should report `discuss`, `plan`, `quick`, and `skill:plan`, confirming that the package and shared skill load successfully.

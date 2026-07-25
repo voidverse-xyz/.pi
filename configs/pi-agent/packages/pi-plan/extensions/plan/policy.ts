@@ -21,7 +21,7 @@ const PLAN_SUBAGENT_TOOLS = new Set<string>(PLAN_SUBAGENT_TOOL_NAMES);
 const MAX_PERSISTED_PLAN_SUBAGENTS = 256;
 const ADHOC_ADDRESS_RE = /^adhoc\/[a-z0-9][a-z0-9._-]*$/i;
 
-export type AgentMode = "off" | "ask" | "discuss" | "plan";
+export type AgentMode = "off" | "discuss" | "plan" | "quick";
 
 export interface ToolSource {
 	name: string;
@@ -77,8 +77,15 @@ function normalizedPath(value: string): string {
 	return path.replaceAll("\\", "/").replace(/\/+$/, "");
 }
 
+const AGENT_MODE_ORDER: AgentMode[] = ["off", "discuss", "plan", "quick"];
+
 function isAgentMode(value: unknown): value is AgentMode {
-	return value === "off" || value === "ask" || value === "discuss" || value === "plan";
+	return AGENT_MODE_ORDER.includes(value as AgentMode);
+}
+
+export function nextAgentMode(mode: AgentMode): AgentMode {
+	const currentIndex = AGENT_MODE_ORDER.indexOf(mode);
+	return AGENT_MODE_ORDER[(currentIndex + 1) % AGENT_MODE_ORDER.length]!;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -175,7 +182,7 @@ export function isToolAllowedInMode(
 	if (!isTrustedTool(tool, trustedCustomTools)) return false;
 	if (tool && BUILTIN_READ_TOOLS.has(tool.name)) return true;
 	if (!tool) return false;
-	if (mode === "ask") return false;
+	if (mode === "quick") return false;
 	if (mode === "discuss") return DISCUSS_CUSTOM_TOOLS.has(tool.name);
 	return PLAN_COMPANION_TOOLS.has(tool.name)
 		|| tool.name === SAVE_PLAN_TOOL
@@ -200,7 +207,7 @@ export function restrictedModeTools(
 	const coreReadTools = READ_ONLY_TOOL_NAMES.filter((name) =>
 		isTrustedTool(byName.get(name), trustedCustomTools)
 	);
-	if (mode === "ask") return coreReadTools;
+	if (mode === "quick") return coreReadTools;
 	if (mode === "discuss") {
 		return [...new Set([
 			...coreReadTools,

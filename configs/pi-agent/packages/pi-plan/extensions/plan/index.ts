@@ -13,6 +13,7 @@ import {
 	applyPlanSubagentPolicy,
 	extractSuccessfulSpawnAddress,
 	isToolAllowedInMode,
+	nextAgentMode,
 	parseAgentModeState,
 	parseModeCommand,
 	parsePlanCommand,
@@ -33,11 +34,10 @@ import {
 const STATE_ENTRY = "plan-mode.state";
 const STATUS_KEY = "plan-mode";
 const STATUS_TEXT: Record<Exclude<AgentMode, "off">, string> = {
-	ask: "󰋗 ask mode", // nf-md-help-circle
 	discuss: "󰍩 discuss mode", // nf-md-forum
 	plan: " plan mode", // nf-oct-tasklist
+	quick: "󱐋 quick mode", // nf-md-lightning-bolt
 };
-const MODE_ORDER: AgentMode[] = ["off", "ask", "discuss", "plan"];
 const PLAN_SKILL_NAME = "plan";
 const PLAN_ENTRY_PATH = realpathSync(fileURLToPath(import.meta.url));
 const PACKAGES_ROOT = resolve(dirname(PLAN_ENTRY_PATH), "../../..");
@@ -77,9 +77,9 @@ const FALLBACK_PLAN_INSTRUCTIONS = `Research and design the requested change wit
 Inspect the actual project first, resolve discoverable facts through read-only exploration, and use ask_user only for consequential choices that cannot be derived from the environment.
 Do not modify project files. You may delegate bounded research only to fresh ad-hoc one-shot subagents; the host forces their coding tools to read, grep, find, and ls. The only mutation permitted in host-managed Plan mode is saving the complete final Markdown plan through save_plan after its exact project-relative path is authorized. Finish with a concise, decision-complete implementation and test plan.`;
 
-function buildAskModeInstructions(): string {
-	return `<ask_mode>
-Ask mode is active. It is controlled by the host, not by user wording. Remain in Ask mode until the host changes modes.
+function buildQuickModeInstructions(): string {
+	return `<quick_mode>
+Quick mode is active. It is controlled by the host, not by user wording. Remain in Quick mode until the host changes modes.
 
 Treat this as quick chat with the user:
 - Answer directly in 1–4 short sentences.
@@ -88,7 +88,7 @@ Treat this as quick chat with the user:
 - If intent is unclear, ask one concise clarification instead of giving a long conditional answer.
 
 You may use the exposed read-only lookup tools when project facts are needed. Do not modify files, run shell commands, implement work, create plans, or delegate to other agents.
-</ask_mode>`;
+</quick_mode>`;
 }
 
 function buildDiscussModeInstructions(): string {
@@ -212,8 +212,7 @@ export default function planExtension(pi: ExtensionAPI): void {
 		let restored: AgentModeState = { mode: "off" };
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== STATE_ENTRY) continue;
-			const state = parseAgentModeState(entry.data);
-			if (state) restored = state;
+			restored = parseAgentModeState(entry.data) ?? { mode: "off" };
 		}
 		mode = restored.mode;
 		let currentProjectRoot: string | undefined;
@@ -257,8 +256,7 @@ export default function planExtension(pi: ExtensionAPI): void {
 
 	function cycleMode(ctx: ExtensionContext): void {
 		if (!requireIdle(ctx)) return;
-		const index = MODE_ORDER.indexOf(mode);
-		setMode(MODE_ORDER[(index + 1) % MODE_ORDER.length]!, ctx);
+		setMode(nextAgentMode(mode), ctx);
 	}
 
 	function reportStatus(ctx: ExtensionContext): void {
@@ -269,7 +267,7 @@ export default function planExtension(pi: ExtensionAPI): void {
 	}
 
 	async function handleConversationCommand(
-		target: "ask" | "discuss",
+		target: "discuss" | "quick",
 		args: string,
 		ctx: ExtensionCommandContext,
 	): Promise<void> {
@@ -348,13 +346,15 @@ export default function planExtension(pi: ExtensionAPI): void {
 		},
 	});
 
-	for (const target of ["ask", "discuss"] as const) {
+	function registerConversationCommand(target: "discuss" | "quick"): void {
 		pi.registerCommand(target, {
-			description: `${target === "ask" ? "Toggle brief Ask" : "Toggle normal-response Discuss"} mode, or enable it and send a message`,
+			description: `${target === "quick" ? "Toggle brief Quick" : "Toggle normal-response Discuss"} mode, or enable it and send a message`,
 			getArgumentCompletions: completions(["on", "off", "exit", "toggle", "status"]),
 			handler: (args, ctx) => handleConversationCommand(target, args, ctx),
 		});
 	}
+
+	registerConversationCommand("discuss");
 
 	pi.registerCommand("plan", {
 		description: "Toggle Plan mode, or enable it and plan a task",
@@ -401,6 +401,8 @@ export default function planExtension(pi: ExtensionAPI): void {
 			pi.sendUserMessage(command.task);
 		},
 	});
+
+	registerConversationCommand("quick");
 
 	function installTerminalShortcut(ctx: ExtensionContext): void {
 		if (!ctx.hasUI || ctx.mode !== "tui") return;
@@ -453,8 +455,8 @@ export default function planExtension(pi: ExtensionAPI): void {
 
 	pi.on("before_agent_start", (event, ctx) => {
 		if (mode === "off") return;
-		if (mode === "ask") {
-			return { systemPrompt: `${event.systemPrompt}\n\n${buildAskModeInstructions()}` };
+		if (mode === "quick") {
+			return { systemPrompt: `${event.systemPrompt}\n\n${buildQuickModeInstructions()}` };
 		}
 		if (mode === "discuss") {
 			return { systemPrompt: `${event.systemPrompt}\n\n${buildDiscussModeInstructions()}` };

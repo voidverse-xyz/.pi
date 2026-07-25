@@ -115,7 +115,7 @@ function joinSegments(segments: string[], separator: string): string {
 
 function renderPlanModeStatus(value: string, theme: Theme): string {
 	if (!value) return "";
-	const color = value.endsWith(" ask mode")
+	const color = value.endsWith(" quick mode")
 		? "thinkingMinimal"
 		: value.endsWith(" discuss mode")
 			? "warning"

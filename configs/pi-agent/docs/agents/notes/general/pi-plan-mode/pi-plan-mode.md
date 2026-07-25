@@ -1,33 +1,33 @@
-# Pi Ask, Discuss, and Plan modes
+# Pi Discuss, Plan, and Quick modes
 
 ## Scope
 
 `configs/pi-agent/packages/pi-plan/` implements four mutually exclusive main-agent states:
 
 1. **Off** — normal unrestricted Pi with the pre-mode active tool set.
-2. **Ask** — quick chat, normally 1–4 short sentences, with trusted built-in read-only lookup tools.
-3. **Discuss** — normal response length with trusted read-only lookup plus `ask_user` and `show_files`.
-4. **Plan** — project research, optional read-only delegated research, and authorized Markdown plan saving.
+2. **Discuss** — normal response length with trusted read-only lookup plus `ask_user` and `show_files`.
+3. **Plan** — project research, optional read-only delegated research, and authorized Markdown plan saving.
+4. **Quick** — quick chat, normally 1–4 short sentences, with trusted built-in read-only lookup tools.
 
-`/ask`, `/discuss`, and `/plan` toggle their mode or enable it and submit a task. `Shift+Tab` cycles `Off → Ask → Discuss → Plan → Off`. Mode changes are idle-only. Routine transitions do not emit notifications because the footer already shows the active mode; busy-state warnings, errors, fallback warnings, and explicit status responses remain visible.
+`/discuss`, `/plan`, and `/quick` toggle their mode or enable it and submit a task. `Shift+Tab` cycles `Off → Discuss → Plan → Quick → Off`. Mode changes are idle-only. Routine transitions do not emit notifications because the footer already shows the active mode; busy-state warnings, errors, fallback warnings, and explicit status responses remain visible.
 
 ## State and lifecycle
 
 The extension persists one `plan-mode.state` custom entry containing the active mode, Plan template override, authorized plan root/path, and addresses of read-only subagents created in Plan mode. State follows the active branch across reload, resume, fork, and `/tree`. The parser accepts the former `{ enabled: boolean }` shape and migrates it to `plan` or `off`.
 
-Entering the first restricted mode snapshots the current active tools. Transitions among Ask, Discuss, and Plan filter from the same snapshot. Returning Off restores the snapshot. `session_shutdown` restores it before runtime replacement so the next extension instance does not accidentally snapshot an already-filtered set.
+Entering the first restricted mode snapshots the current active tools. Transitions among Discuss, Plan, and Quick filter from the same snapshot. Returning Off restores the snapshot. `session_shutdown` restores it before runtime replacement so the next extension instance does not accidentally snapshot an already-filtered set.
 
-The `plan-mode` status producer uses `󰋗 ask mode`, `󰍩 discuss mode`, and ` plan mode`. `pi-status-line` renders them blue, yellow, and green respectively; the Material Design forum glyph avoids the Font Awesome comments glyph's visual overlap in the configured terminal font.
+The `plan-mode` status producer uses `󰍩 discuss mode`, ` plan mode`, and `󱐋 quick mode`. `pi-status-line` renders them yellow, green, and blue respectively; the Material Design forum glyph avoids the Font Awesome comments glyph's visual overlap in the configured terminal font.
 
 ## Prompt behavior
 
 `before_agent_start` appends a host-controlled block for the active restricted mode:
 
-- Ask requires a direct 1–4 sentence response with no padding or extra sections.
 - Discuss permits normal response length and organization but forbids implementation and delegation.
 - Plan loads the shared `skills/plan/` boundaries and at most one supplemental tagged planning template.
+- Quick requires a direct 1–4 sentence response with no padding or extra sections.
 
-Ask brevity is a prompt-level rule because the extension API does not expose a per-mode provider output-token setting. Tool restrictions are independently enforced by the host.
+Quick brevity is a prompt-level rule because the extension API does not expose a per-mode provider output-token setting. Tool restrictions are independently enforced by the host.
 
 ## Template routing
 
@@ -43,9 +43,9 @@ Every restricted-mode tool must match exact expected built-in or local-package p
 
 | Mode | Allowed tool classes |
 |---|---|
-| Ask | trusted built-in `read`, `grep`, `find`, `ls` |
-| Discuss | Ask tools plus trusted local `ask_user`, `show_files` |
+| Discuss | Quick tools plus trusted local `ask_user`, `show_files` |
 | Plan | read tools, previously active `ask_user`/`show_files`/`todo_write`, `save_plan`, trusted local `subagent_*` tools |
+| Quick | trusted built-in `read`, `grep`, `find`, `ls` |
 
 Bash, general file mutation, team tools, procedure tools, and unknown custom tools are unavailable in all restricted modes.
 
@@ -87,6 +87,6 @@ node --test \
 
 Offline RPC smoke coverage should verify:
 
-1. `get_commands` includes `ask`, `discuss`, `plan`, and `skill:plan` with no `extension_error`.
-2. `/ask on`, `/discuss on`, `/plan on`, and `/plan off` publish the expected status sequence without routine notifications.
+1. `get_commands` includes `discuss`, `plan`, `quick`, and `skill:plan` with no `extension_error`.
+2. `/discuss on`, `/plan on`, `/quick on`, and `/quick off` publish the expected status sequence without routine notifications.
 3. `get_entries` contains branch-local mode states in that same sequence.

@@ -162,11 +162,12 @@ such as `configs/pi-agent/docs/agents/` for PiAgent-specific work.
   `plan-commit` export and superseded package snapshots were removed from the
   tracked clone and preserved locally in the migration quarantine.
 - `pi-plan` provides four branch-persistent states: unrestricted Off plus
-  hard-restricted Ask, Discuss, and Plan modes via `/ask`, `/discuss`, `/plan`,
-  and a `Shift+Tab` cycle. Ask is quick chat (normally 1–4 sentences) with only
-  trusted read tools; Discuss has normal response length with read tools plus
-  `ask_user`/`show_files`; Plan keeps tagged `plan-template: true` routing,
-  `/plan --skill <name> <task>`, and authorized `save_plan`. Plan may use only
+  hard-restricted Discuss, Plan, and Quick modes via `/discuss`, `/plan`, `/quick`,
+  and an `Off → Discuss → Plan → Quick → Off` `Shift+Tab` cycle. Quick is concise
+  chat (normally 1–4 sentences) with only trusted read tools; Discuss has normal
+  response length with read tools plus `ask_user`/`show_files`; Plan keeps tagged
+  `plan-template: true` routing, `/plan --skill <name> <task>`, and authorized
+  `save_plan`. Plan may use only
   fresh ad-hoc one-shot `pi-subagents` workers whose coding tools are forced to
   `read`/`grep`/`find`/`ls`; follow-up/control calls are scoped to Plan-created
   workers. The shared base instructions live in `skills/plan/`.
