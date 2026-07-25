@@ -1,5 +1,5 @@
 /**
- * /browse (alias: /browse-files) — a native Pi TUI file & directory tree browser.
+ * /browse — a native Pi TUI file & directory tree browser.
  *
  * Left pane: a lazy tree rooted at the working directory (dirs expand/collapse).
  * Right pane: a preview — file contents (with a movable line cursor and range
@@ -21,9 +21,7 @@ export default function browseExtension(pi: ExtensionAPI): void {
 		handler: async (_args: string, ctx: ExtensionCommandContext) => runBrowse(ctx),
 	};
 
-	// /browse is the primary name; /browse-files stays as an alias.
 	pi.registerCommand("browse", command);
-	pi.registerCommand("browse-files", command);
 }
 
 async function runBrowse(ctx: ExtensionCommandContext): Promise<void> {

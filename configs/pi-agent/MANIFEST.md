@@ -8,7 +8,7 @@ Pi packages live under `packages/<name>/` and are enabled through portable relat
 |---|---|
 | `pi-teams` | **Teams** — persistent Pi subagents (`/teams`). Eight `team_*` tools, disk-backed mailboxes, explicit `team_await`, flat peer communication, pi-safety-gated tool calls, and a session-viewer TUI. See `configs/subagent-docs/` (D1'–D27'). |
 | `pi-bookmark` | `/bookmark` and `/unbookmark` session-tree labels |
-| `pi-browse` | `/browse-files` native file browser |
+| `pi-browse` | `/browse` native file browser |
 | `pi-changes` | `/changes` session edit review/undo and read-only `/git-changes` repository diff browser |
 | `pi-clear` | `/clear` alias |
 | `pi-codex-usage` | Codex five-hour usage status and `/codex-usage` |

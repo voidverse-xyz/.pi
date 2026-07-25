@@ -99,7 +99,7 @@ pressing Enter focuses a directory preview on the right that you can navigate:
 Child files opened while browsing are reported back in the result's `opened`, and
 mentions added while browsing land in `added`, same as curated files. For a
 full-tree browser outside a curated set, the separate **pi-browse** extension
-(`/browse-files`) still applies.
+(`/browse`) still applies.
 
 ## Two-way result
 

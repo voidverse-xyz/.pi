@@ -1,6 +1,6 @@
 # pi-browse
 
-`/browse` (alias: `/browse-files`) — a native Pi TUI file & directory tree browser with
+`/browse` — a native Pi TUI file & directory tree browser with
 **add-to-chat**.
 
 ## What it does
