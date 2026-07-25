@@ -9,7 +9,8 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const failures = [];
 const notes = [];
 
-const EXPECTED_PACKAGE_COUNT = 25;
+const EXPECTED_PACKAGE_COUNT = 28;
+const EXPECTED_SKILL_COUNT = 33;
 const EXPECTED_THEME = "void-agent-tokyo-night";
 const ROOT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
 const AGENT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
@@ -172,8 +173,8 @@ function collectSkillFiles(directory, found = []) {
 }
 
 const skillFiles = collectSkillFiles(join(root, "skills"));
-if (skillFiles.length !== 38) {
-  fail(`expected 38 global SKILL.md files; found ${skillFiles.length}`);
+if (skillFiles.length !== EXPECTED_SKILL_COUNT) {
+  fail(`expected ${EXPECTED_SKILL_COUNT} global SKILL.md files; found ${skillFiles.length}`);
 }
 for (const skillFile of skillFiles) {
   const prefix = readFileSync(skillFile, "utf8").slice(0, 16 * 1024);
