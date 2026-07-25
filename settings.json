@@ -12,6 +12,7 @@
     "./configs/pi-agent/packages/pi-notify-user",
     "./configs/pi-agent/packages/pi-status-line",
     "./configs/pi-agent/packages/pi-codex-usage",
+    "./configs/pi-agent/packages/pi-codex-web-search",
     "./configs/pi-agent/packages/pi-commit",
     "./configs/pi-agent/packages/pi-session-name",
     "./configs/pi-agent/packages/pi-run-guard",

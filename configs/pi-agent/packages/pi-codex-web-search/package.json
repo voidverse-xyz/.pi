@@ -1,0 +1,18 @@
+{
+  "name": "pi-codex-web-search",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Pi web_search tool backed by the installed Codex CLI and ChatGPT login.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
