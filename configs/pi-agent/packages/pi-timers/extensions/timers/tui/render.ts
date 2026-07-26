@@ -34,7 +34,8 @@ export function renderTimerWidgetLines(
 		const schedule = timer.pending
 			? theme.fg("warning", "wake queued")
 			: theme.fg("accent", formatCountdown(timer.nextRunAt, nowMs));
-		const runs = theme.fg("muted", `${timer.runCount}/${timer.maxRuns} runs`);
+		const runLimit = timer.maxRuns === undefined ? "∞" : timer.maxRuns;
+		const runs = theme.fg("muted", `${timer.runCount}/${runLimit} runs`);
 		const label = theme.fg("text", timer.label);
 		const coalesced = timer.skippedTicks > 0
 			? theme.fg("dim", ` · ${timer.skippedTicks} coalesced`)
@@ -61,7 +62,7 @@ export function buildTimerPickerItems(timers: TimerSnapshot[], nowMs: number): T
 		label: `${timer.label} (${timer.id})`,
 		description: [
 			timer.pending ? "wake queued" : `next ${formatCountdown(timer.nextRunAt, nowMs)}`,
-			`${timer.remainingRuns} remaining`,
+			timer.remainingRuns === undefined ? "no run limit" : `${timer.remainingRuns} remaining`,
 		].join(" · "),
 	}));
 	if (timers.length > 1) {

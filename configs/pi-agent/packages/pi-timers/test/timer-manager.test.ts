@@ -51,7 +51,7 @@ function createManager(overrides: { onWake?: (wake: TimerWake) => void } = {}) {
 	return { manager, scheduler, wakes, errors };
 }
 
-test("creates bounded finite timers whose first wake follows one full interval", () => {
+test("creates finite timers whose first wake follows one full interval", () => {
 	const { manager, scheduler } = createManager();
 	const timer = manager.create({
 		instruction: "Check GitHub issues",
@@ -75,6 +75,14 @@ test("creates bounded finite timers whose first wake follows one full interval",
 	});
 	assert.equal(scheduler.activeCount, 1);
 
+	const overOldCap = manager.create({
+		instruction: "Check a long-running migration",
+		intervalMs: MIN_INTERVAL_MS,
+		maxRuns: 51,
+	});
+	assert.equal(overOldCap.maxRuns, 51);
+	assert.equal(overOldCap.remainingRuns, 51);
+
 	assert.throws(
 		() => manager.create({ instruction: "x", intervalMs: MIN_INTERVAL_MS - 1, maxRuns: 1 }),
 		/interval must be a whole number/,
@@ -87,6 +95,25 @@ test("creates bounded finite timers whose first wake follows one full interval",
 		() => manager.create({ instruction: "   ", intervalMs: MIN_INTERVAL_MS, maxRuns: 1 }),
 		/instruction must not be empty/,
 	);
+	manager.dispose();
+});
+
+test("keeps timers without maxRuns active indefinitely", () => {
+	const { manager, scheduler, wakes } = createManager();
+	const timer = manager.create({ instruction: "Keep checking", intervalMs: MIN_INTERVAL_MS });
+	assert.equal(timer.maxRuns, undefined);
+	assert.equal(timer.remainingRuns, undefined);
+
+	for (let run = 1; run <= 55; run++) {
+		scheduler.fire();
+		assert.equal(wakes.at(-1)?.run, run);
+		assert.equal(wakes.at(-1)?.maxRuns, undefined);
+		assert.equal(wakes.at(-1)?.finalRun, false);
+		manager.markAgentSettled();
+	}
+
+	assert.equal(manager.list()[0]?.runCount, 55);
+	assert.equal(scheduler.activeCount, 1);
 	manager.dispose();
 });
 

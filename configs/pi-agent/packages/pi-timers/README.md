@@ -1,6 +1,6 @@
 # pi-timers
 
-Finite, in-process timers that wake only the owning main Pi agent. The main agent can create up to five recurring timers with a fixed interval, stored instruction, and finite run cap. A timer sends a custom message back into the same main session and triggers a turn; it does not execute the instruction itself.
+Recurring, in-process timers that wake only the owning main Pi agent. The main agent can create up to five timers with a fixed interval, stored instruction, and optional finite run cap. By default a timer repeats until it is cancelled or its session ends. A timer sends a custom message back into the same main session and triggers a turn; it does not execute the instruction itself.
 
 Subagents, team workers, and procedure workers cannot use `manage_timers`. Their runtimes disable extensions and construct explicit worker tool lists.
 
@@ -8,7 +8,7 @@ Subagents, team workers, and procedure workers cannot use `manage_timers`. Their
 
 A user can say:
 
-> Every five minutes, check GitHub issues, but only do it ten times.
+> Every five minutes, check GitHub issues until I stop the timer.
 
 The main agent calls:
 
@@ -17,12 +17,11 @@ The main agent calls:
   "action": "create",
   "label": "GitHub issue check",
   "instruction": "Check GitHub issues and report anything requiring attention.",
-  "intervalSeconds": 300,
-  "maxRuns": 10
+  "intervalSeconds": 300
 }
 ```
 
-The first wake occurs after five minutes. Each accepted wake is labeled with its run number. The timer is automatically removed immediately after wake 10 is accepted.
+The first wake occurs after five minutes. Each accepted wake is labeled with its run number. The timer keeps recurring until cancellation or session shutdown. To stop automatically after a specific number of accepted wakes, include a positive `maxRuns` value; there is no application-level upper cap.
 
 ## Live widget
 
@@ -30,7 +29,7 @@ Active timers appear in a stable tree above the editor, using the same ambient v
 
 ```text
 󰔛 Timers · 2 active · alt+r cancel
-├─ 4m 33s · 2/10 runs · GitHub issue check
+├─ 4m 33s · 2/∞ runs · GitHub issue check
 │  └ Check GitHub issues and report anything requiring attention.
 └─ wake queued · 1/5 runs · Release monitor · 1 coalesced
    └ Check the release pipeline and summarize failures.
@@ -44,7 +43,7 @@ Press **`Alt+R`** to open a bordered cancellation picker. Selecting a timer canc
 
 `manage_timers` supports:
 
-- `create` — requires `instruction`, `intervalSeconds`, and `maxRuns`; `label` is optional.
+- `create` — requires `instruction` and `intervalSeconds`; `label` and finite `maxRuns` are optional.
 - `list` — returns active timers, accepted runs, pending state, next expected tick, and coalesced tick count.
 - `cancel` — requires `timerId`.
 - `cancel_all` — removes every active timer.
@@ -53,11 +52,11 @@ Limits are deterministic:
 
 - five active timers;
 - intervals from 60 seconds through seven days;
-- one through 50 accepted wakes per timer;
+- any positive whole-number `maxRuns` when a finite limit is requested;
 - instruction length up to 4,000 characters;
 - label length up to 80 characters.
 
-The finite `maxRuns` field is mandatory. An interval timer cannot run forever.
+Omit `maxRuns` to repeat until cancellation or session shutdown. Providing `maxRuns` preserves finite automatic removal without an arbitrary 50-run maximum.
 
 ## Busy-agent behavior
 
@@ -69,9 +68,9 @@ Wake delivery uses:
 
 When the main agent is idle, `triggerTurn` starts a turn. When it is already working, `followUp` queues the wake without interrupting the current turn.
 
-Each timer permits only one accepted but unsettled wake. If more ticks occur before the main agent settles, they are coalesced: they do not queue additional turns and do not consume `maxRuns`. The next normal interval tick may wake the agent after it settles.
+Each timer permits only one accepted but unsettled wake. If more ticks occur before the main agent settles, they are coalesced: they do not queue additional turns or increment the accepted-run count. The next normal interval tick may wake the agent after it settles.
 
-An accepted wake counts toward `maxRuns` even if the subsequent model turn or requested operation fails. Pi's message API is fire-and-forget, so synchronous message acceptance is the boundary the extension can observe.
+When `maxRuns` is configured, an accepted wake counts toward it even if the subsequent model turn or requested operation fails. Pi's message API is fire-and-forget, so synchronous message acceptance is the boundary the extension can observe.
 
 ## Commands
 

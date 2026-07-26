@@ -43,6 +43,11 @@ test("active timer widget renders a live tree with countdown, runs, instruction,
 	assert.match(lines[1]!, /GitHub issue check/);
 	assert.match(lines[2]!, /Check GitHub issues/);
 	assert.equal(lines[3], "");
+
+	const unlimited = renderTimerWidgetLines([
+		timer({ maxRuns: undefined, remainingRuns: undefined }),
+	], 1_027_000, theme);
+	assert.match(unlimited[1]!, /2\/∞ runs/);
 });
 
 test("widget renders every timer and surfaces queued, coalesced, and failed state", () => {
@@ -81,6 +86,11 @@ test("cancellation picker items expose remaining work and add cancel-all only fo
 		label: "GitHub issue check (timer-1)",
 		description: "next 4m 33s · 8 remaining",
 	}]);
+
+	const unlimited = buildTimerPickerItems([
+		timer({ maxRuns: undefined, remainingRuns: undefined }),
+	], 1_027_000);
+	assert.match(unlimited[0]!.description, /no run limit/);
 
 	const multiple = buildTimerPickerItems([
 		timer(),

@@ -2,7 +2,7 @@
   "name": "pi-timers",
   "version": "1.0.0",
   "type": "module",
-  "description": "Finite in-process timers that wake only the owning main Pi agent without overlapping turns.",
+  "description": "Recurring in-process timers that wake only the owning main Pi agent without overlapping turns.",
   "keywords": [
     "pi-package"
   ],
