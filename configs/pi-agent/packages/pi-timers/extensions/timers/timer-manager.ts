@@ -1,5 +1,4 @@
 export const MAX_TIMERS = 5;
-export const MAX_RUNS = 50;
 export const MIN_INTERVAL_MS = 60_000;
 export const MAX_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_INSTRUCTION_CHARS = 4_000;
@@ -8,7 +7,7 @@ export const MAX_LABEL_CHARS = 80;
 export interface CreateTimerInput {
 	instruction: string;
 	intervalMs: number;
-	maxRuns: number;
+	maxRuns?: number;
 	label?: string;
 }
 
@@ -17,9 +16,9 @@ export interface TimerSnapshot {
 	label: string;
 	instruction: string;
 	intervalMs: number;
-	maxRuns: number;
+	maxRuns?: number;
 	runCount: number;
-	remainingRuns: number;
+	remainingRuns?: number;
 	pending: boolean;
 	skippedTicks: number;
 	wakeFailures: number;
@@ -33,7 +32,7 @@ export interface TimerWake {
 	instruction: string;
 	intervalMs: number;
 	run: number;
-	maxRuns: number;
+	maxRuns?: number;
 	finalRun: boolean;
 	skippedTicks: number;
 }
@@ -56,7 +55,7 @@ interface ActiveTimer {
 	label: string;
 	instruction: string;
 	intervalMs: number;
-	maxRuns: number;
+	maxRuns?: number;
 	runCount: number;
 	pending: boolean;
 	skippedTicks: number;
@@ -106,8 +105,8 @@ export class TimerManager {
 				`Timer interval must be a whole number between ${MIN_INTERVAL_MS / 1000} and ${MAX_INTERVAL_MS / 1000} seconds.`,
 			);
 		}
-		if (!Number.isInteger(input.maxRuns) || input.maxRuns < 1 || input.maxRuns > MAX_RUNS) {
-			throw new Error(`Timer maxRuns must be a whole number between 1 and ${MAX_RUNS}.`);
+		if (input.maxRuns !== undefined && (!Number.isInteger(input.maxRuns) || input.maxRuns < 1)) {
+			throw new Error("Timer maxRuns must be a whole number of at least 1 when provided.");
 		}
 
 		const id = `timer-${this.nextId++}`;
@@ -118,7 +117,7 @@ export class TimerManager {
 			label,
 			instruction,
 			intervalMs: input.intervalMs,
-			maxRuns: input.maxRuns,
+			...(input.maxRuns !== undefined ? { maxRuns: input.maxRuns } : {}),
 			runCount: 0,
 			pending: false,
 			skippedTicks: 0,
@@ -183,14 +182,15 @@ export class TimerManager {
 		}
 
 		const run = timer.runCount + 1;
+		const finalRun = timer.maxRuns !== undefined && run === timer.maxRuns;
 		const wake: TimerWake = {
 			id: timer.id,
 			label: timer.label,
 			instruction: timer.instruction,
 			intervalMs: timer.intervalMs,
 			run,
-			maxRuns: timer.maxRuns,
-			finalRun: run === timer.maxRuns,
+			...(timer.maxRuns !== undefined ? { maxRuns: timer.maxRuns } : {}),
+			finalRun,
 			skippedTicks: timer.skippedTicks,
 		};
 
@@ -237,9 +237,10 @@ function snapshot(timer: ActiveTimer): TimerSnapshot {
 		label: timer.label,
 		instruction: timer.instruction,
 		intervalMs: timer.intervalMs,
-		maxRuns: timer.maxRuns,
+		...(timer.maxRuns === undefined
+			? {}
+			: { maxRuns: timer.maxRuns, remainingRuns: timer.maxRuns - timer.runCount }),
 		runCount: timer.runCount,
-		remainingRuns: timer.maxRuns - timer.runCount,
 		pending: timer.pending,
 		skippedTicks: timer.skippedTicks,
 		wakeFailures: timer.wakeFailures,

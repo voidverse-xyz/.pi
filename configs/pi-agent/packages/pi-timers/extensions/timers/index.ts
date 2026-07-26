@@ -5,7 +5,6 @@ import {
 	MAX_INSTRUCTION_CHARS,
 	MAX_INTERVAL_MS,
 	MAX_LABEL_CHARS,
-	MAX_RUNS,
 	MAX_TIMERS,
 	MIN_INTERVAL_MS,
 	TimerManager,
@@ -46,8 +45,7 @@ const ManageTimersParams = Type.Object(
 		maxRuns: Type.Optional(
 			Type.Integer({
 				minimum: 1,
-				maximum: MAX_RUNS,
-				description: "For create: finite number of accepted main-agent wake-ups before automatic removal.",
+				description: "For create: optional number of accepted wake-ups before automatic removal. Omit to repeat until cancelled or the session ends.",
 			}),
 		),
 		label: Type.Optional(
@@ -140,15 +138,15 @@ export default function timersExtension(pi: ExtensionAPI): void {
 		name: TOOL_NAME,
 		label: "Main-agent timers",
 		description:
-			`Create and manage up to ${MAX_TIMERS} finite, in-process timers owned by the main Pi agent. ` +
+			`Create and manage up to ${MAX_TIMERS} recurring, in-process timers owned by the main Pi agent. ` +
 			"Each timer waits one full interval, then sends its stored instruction back to the main agent and triggers a turn. " +
 			"Busy turns are never interrupted; one accepted wake may wait as a follow-up, and further ticks for that timer are " +
-			"coalesced until the agent settles. Timers disappear on cancellation, after maxRuns, or when the Pi session reloads, " +
-			"switches, or exits. Subagents cannot use this tool.",
-		promptSnippet: "manage_timers — schedule finite in-process wake-ups for the main agent",
+			"coalesced until the agent settles. Timers disappear on cancellation, after an optional maxRuns limit, or when the Pi " +
+			"session reloads, switches, or exits. Subagents cannot use this tool.",
+		promptSnippet: "manage_timers — schedule recurring in-process wake-ups for the main agent",
 		promptGuidelines: [
 			"Use manage_timers only when the user explicitly asks the main agent to perform something later or repeatedly.",
-			"Every manage_timers create action must use a finite maxRuns. Tell the user that the first run occurs after one full interval and that timers do not survive reload, session replacement, or process exit.",
+			"For manage_timers create, set maxRuns only when the user requests a finite count; omit it to repeat until cancellation or session shutdown. Tell the user that the first run occurs after one full interval and that timers do not survive reload, session replacement, or process exit.",
 			"Do not create replacement timers when a pi-timers wake message arrives; the existing timer already controls recurrence.",
 			"Use manage_timers list or cancel when the user asks about or stops scheduled main-agent work. Subagents and procedure workers must not manage timers.",
 		],
@@ -158,18 +156,20 @@ export default function timersExtension(pi: ExtensionAPI): void {
 			const manager = getTimers();
 			switch (params.action) {
 				case "create": {
-					if (params.instruction === undefined || params.intervalSeconds === undefined || params.maxRuns === undefined) {
-						throw new Error("create requires instruction, intervalSeconds, and maxRuns.");
+					if (params.instruction === undefined || params.intervalSeconds === undefined) {
+						throw new Error("create requires instruction and intervalSeconds.");
 					}
 					const timer = manager.create({
 						instruction: params.instruction,
 						intervalMs: params.intervalSeconds * 1000,
-						maxRuns: params.maxRuns,
+						...(params.maxRuns !== undefined ? { maxRuns: params.maxRuns } : {}),
 						...(params.label !== undefined ? { label: params.label } : {}),
 					});
+					const runLimit = timer.maxRuns === undefined
+						? "it will repeat until cancelled or the session ends."
+						: `it will run at most ${timer.maxRuns} time${timer.maxRuns === 1 ? "" : "s"}.`;
 					return toolResult(
-						`Created ${timer.id} (${timer.label}). First wake in ${formatDuration(timer.intervalMs)}; ` +
-						`it will run at most ${timer.maxRuns} time${timer.maxRuns === 1 ? "" : "s"}.`,
+						`Created ${timer.id} (${timer.label}). First wake in ${formatDuration(timer.intervalMs)}; ${runLimit}`,
 						{ action: "create", timer },
 					);
 				}
@@ -270,9 +270,12 @@ function buildWakeMessage(wake: TimerWake): string {
 	const skipped = wake.skippedTicks > 0
 		? ` ${wake.skippedTicks} overlapping tick${wake.skippedTicks === 1 ? " was" : "s were"} coalesced.`
 		: "";
+	const run = wake.maxRuns === undefined
+		? `Run ${wake.run} (no run limit).`
+		: `Run ${wake.run} of ${wake.maxRuns}${wake.finalRun ? " (final run)" : ""}.`;
 	return [
 		`[Main-agent timer ${wake.id}: ${wake.label}]`,
-		`Run ${wake.run} of ${wake.maxRuns}${wake.finalRun ? " (final run)" : ""}.${skipped}`,
+		`${run}${skipped}`,
 		wake.instruction,
 		"Carry out the instruction now in the main agent. Do not create another timer for this recurrence; the existing timer owns the remaining schedule.",
 	].join("\n\n");
@@ -284,8 +287,9 @@ function formatTimerList(timers: TimerSnapshot[]): string {
 	for (const timer of timers) {
 		const state = timer.pending ? " · wake pending" : "";
 		const skipped = timer.skippedTicks > 0 ? ` · ${timer.skippedTicks} coalesced` : "";
+		const runProgress = timer.maxRuns === undefined ? `${timer.runCount}/∞` : `${timer.runCount}/${timer.maxRuns}`;
 		lines.push(
-			`- ${timer.id} (${timer.label}): ${timer.runCount}/${timer.maxRuns} accepted · every ${formatDuration(timer.intervalMs)} · next ${new Date(timer.nextRunAt).toISOString()}${state}${skipped}`,
+			`- ${timer.id} (${timer.label}): ${runProgress} accepted · every ${formatDuration(timer.intervalMs)} · next ${new Date(timer.nextRunAt).toISOString()}${state}${skipped}`,
 			`  ${truncateInstruction(timer.instruction)}`,
 		);
 	}

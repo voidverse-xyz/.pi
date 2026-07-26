@@ -62,11 +62,13 @@ test("registers the main-agent timer tool and command in the installed Pi runtim
 	const tool = state.all.find((candidate) => candidate.name === "manage_timers");
 	assert.ok(tool);
 	assert.match(tool.description, /main Pi agent/);
+	assert.match(tool.description, /optional maxRuns limit/);
 	assert.match(tool.description, /Subagents cannot use this tool/);
 	assert.equal(tool.parameters.type, "object");
 	assert.deepEqual(tool.parameters.required, ["action"]);
 	assert.equal(tool.parameters.properties.intervalSeconds.minimum, 60);
-	assert.equal(tool.parameters.properties.maxRuns.maximum, 50);
+	assert.equal(tool.parameters.properties.maxRuns.minimum, 1);
+	assert.equal(Object.hasOwn(tool.parameters.properties.maxRuns, "maximum"), false);
 	assert.equal(state.active.includes("manage_timers"), true);
 	assert.equal(state.commands.includes("timers"), true);
 });
