@@ -1,5 +1,5 @@
 {
-  "theme": "void-agent-tokyo-night",
+  "theme": "void-agent",
   "packages": [
     "./configs/pi-agent/packages/pi-teams",
     "./configs/pi-agent/packages/pi-subagents",
@@ -32,5 +32,11 @@
   ],
   "skills": [
     "./skills"
-  ]
+  ],
+  "lastChangelogVersion": "0.81.1",
+  "defaultThinkingLevel": "high",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-sol",
+  "enableInstallTelemetry": false,
+  "hideThinkingBlock": false
 }
