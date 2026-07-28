@@ -1,5 +1,7 @@
 # Extension Architecture — pi-agents package
 
+> **Historical — superseded.** This architecture snapshot names a retired package and team-capable design. Use the current Pi Subagents package, `03-tool-surface.md`, and the current implementation note.
+
 Decided 2026-07-09 (D23), session ownership added by D25/D26 and required-turn joins by D27. Package path is
 `configs/pi-agent/packages/pi-agents/`; package.json declares the `pi-package`
 keyword and `pi.extensions:["./extensions"]`.

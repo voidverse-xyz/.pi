@@ -1,130 +1,88 @@
-# Tool Surface — What the Main Agent's LLM Sees
+# Tool surface — what the main agent sees
 
-Decided 2026-07-09 (D16), extended 2026-07-12 (D26). Implements the
-01-power-matrix.md allowed set as eight intent-grouped tools. Rejected: one multiplexed mega-tool (sparse schema, weak
-validation); one-tool-per-power (context bloat).
+Current Pi Subagents exposes seven hub-and-spoke tools. Subagents cannot spawn or message one another; the main agent is the sole coordinator.
 
-## Tools
+## `subagent_spawn`
 
-### subagent_spawn
+```text
+(type?, prompt?, id?, label, lifetime?, task?, model?, thinking?, tools?)
 ```
-(type, id?, team?, lifetime?: "persistent"|"oneshot", task?, background?: boolean)
-→ { address, created: boolean, state, vitals, taskEnvelopeId? }
-```
-- Get-or-create on `<type>/<id>` (D5): created:false = existed, woke it, memory intact.
-- id required for persistent spawns (meaningful purview slug; default "main" for
-  singleton types); omitted id on oneshot → auto `tmp-<short>`.
-- team: names a team; creates it if new (D12).
-- task: optional first message — spawn + assign in one call; its envelope id is returned as an await anchor and joins the current user-turn completion barrier. `background:true` explicitly detaches it.
 
-### subagent_send
-```
-(to, text, when?: "now"|"after-turn", correlationId?, background?: boolean)
-→ { delivery: "delivered"|"queued", disposition: "woken"|"held"|"queued", recipientState, envelopeId }
-```
-- Covers three matrix powers: send (when:"now", default), queue (when:"after-turn"),
-  answer (correlationId set → answer envelope). correlationId doubles as the
-  escalation-deny channel: correlating to a pending escalation envelope's id DENIES
-  that blocked call (text = deny note); main can never approve (D10).
-- Never interrupts a running turn regardless of `when` (D11); "now" vs "after-turn"
-  only matters for orderings around the recipient's queued mail. Both wake a dormant
-  recipient — there is no way to hold mail without waking it.
-- disposition disambiguates delivery:"queued": "held" = recipient mid-turn (boundary
-  drain), "queued" = a turn was already scheduled. "woken" pairs with
-  delivery:"delivered" and recipientState:"queued" (the wake scheduled the turn).
-- Uncorrelated sends join the current user-turn completion barrier. Correlated
-  answers do not create a new task; `background:true` explicitly detaches an
-  uncorrelated send.
+- Use either a named type definition or an ad-hoc prompt.
+- Typed agents default to persistent; ad-hoc agents default to one-shot.
+- Persistent typed addresses are get-or-create on `<type>/<id>` and resume with memory inside the same owning main session.
+- One-shot IDs are generated when omitted and auto-retire after their final report.
+- `label` is required for the user-facing widget.
+- An optional task returns `taskEnvelopeId`, the exact await anchor for that assignment.
+- Model, thinking, and tool overrides apply only to ad-hoc agents; typed definitions own those fields.
 
-### subagent_steer
-```
-(to, text) → { steered: boolean }
-```
-- Deliberately its own tool (D11): steering ≠ mail. Main-agent-only; injects
-  mid-turn to redirect current work. No-op with steered:false if agent not running.
+## `subagent_send`
 
-### subagent_status
+```text
+(to, text) -> { envelopeId, delivery, disposition, ... }
 ```
-(address?, tail?) → roster | detail
-```
-- No address: full roster — per agent: address, type, state
-  (queued|running|dormant|waiting), teams, purview, vitals {ctx%, tokens, cost,
-  turns} (D15), `unread` (mailbox pending count), and — when state is `waiting` —
-  `waitingOn`: the pending escalation summary {id, envelopeId, tool, reason}.
-- With address: detail + `outstandingQuestions` (questions the agent sent, from its
-  .sent-questions.json index, with no answer/bounce on record — recoverable after
-  main's context compacts) + last `tail` transcript entries (peek; never perturbs).
 
-### subagent_collect
-```
-(to, schema, background?: boolean) → { requested: true, requestId, recipientState }
-```
-- The tool call is non-blocking, but its request joins the current user-turn
-  completion barrier unless `background:true`: the agent delivers a result
-  conforming to `schema` as a report envelope with
-  payload.data validated against the schema (restricted subset: type/properties/
-  required/items/enum/const/additionalProperties:false; other keywords ignored).
-  Within the subset validation is honest: `additionalProperties:false` closes the
-  object even when `properties` is absent/partial (unknown keys rejected);
-  `const`/`enum` equality is JSON-semantic (order-independent for objects,
-  recursive); and a `type` whose value is not a known type keyword is reported as
-  a schema error, not a silent match. Out-of-subset keywords stay ignored.
-- requestId = the collect-request envelope's id; the fulfilling report carries it
-  as correlationId, so multiple outstanding collects stay distinguishable.
+The send never interrupts a running turn. It wakes a dormant agent or queues the assignment at a busy agent's turn boundary. `envelopeId` is the await anchor for this new assignment.
 
-### subagent_await
-```
-(to, waitFor: "final"|"collect", anchorId, timeoutSeconds?)
-→ { status: "completed"|"attention"|"timeout"|"retired", report?, attention?, progress? }
-```
-- Final mode matches `payload.final:true` correlated to a task/send anchor; collect mode
-  matches a report correlated to requestId.
-- Questions/escalations/errors return `attention` early so waiting cannot deadlock.
-  Attention is sender-generation-fenced through a durable anchor→generation
-  index: a replacement at the same address cannot satisfy an await begun before
-  either generation retired.
-- Await searches pending, host-parked, and already-finalized mail by exact
-  anchor. If the ordinary main digest claimed the terminal report first, await
-  registers its tool-result marker as an alternate durable proof instead of
-  polling pending forever. Each retry first reconciles a previously persisted
-  attention result, so an old parked question cannot starve a later final.
-- Timeout/cancellation consumes no mail. Newly claimed results are parked until
-  the main-session JSONL durably contains an accepted delivery record (D26).
+## `subagent_steer`
 
-### subagent_interrupt
+```text
+(to, text) -> { steered }
 ```
-(to) → { interrupted: boolean }
-```
-- Aborts the current turn; agent stays alive, memory intact, goes dormant.
 
-### subagent_retire
-```
-(to) → { retired: true }
-```
-- The ONLY destructive tool — kept separate so Pi's per-tool permissioning can
-  require confirmation for it alone. Deregisters, bounces future sends, scrubs
-  teams.json, moves dir to .archive/ (N-day GC) (D13). Pending owner/user mail
-  is quietly audited as cancelled; peer mail still bounces (D26).
+Steering affects only the recipient's current running turn. It is a no-op when the recipient is not running; use `subagent_send` for a follow-up assignment.
 
-## Not tools (by design)
-- approve — the main agent can never grant a blocked call (D10); escalation goes
-  to the human.
-- suspend / retune / compact / fork — see D10 (auto or deferred).
-- Sub→sub send: subagents get a reduced send-only tool pair (send/queue) — same
-  envelope, team-checked at delivery (D12). No other subagent tools.
+## `subagent_await`
 
-## Main-agent completion and mailbox delivery (D27; supersedes D24)
-The main agent is a Pi session; envelopes reach its LLM without notification-driven
-restart mechanics:
-- Idle main mail never auto-wakes the host. Unrelated queued mail joins the next
-  genuine interactive/RPC user turn.
-- Spawn tasks, uncorrelated sends, collects, and transitive uncorrelated peer
-  delegations created during the current user turn form one required group.
-- A candidate final response is replaced with a waiting status while anchors
-  remain. `agent_end` waits without a hard timeout and queues each result or
-  attention item as `deliverAs:"followUp"`, continuing the same main run.
-- Questions, escalations, provider/tool waits, scheduler contention, main
-  interruption, and missing `final:true` never silently detach the group.
-- `background:true` is the only intentional per-call detachment.
-- Escalations additionally surface a human approval prompt in the TUI; only the
-  human can approve (D10).
+```text
+(targets?: [{ to, anchorId }], mode?: "all" | "any", timeoutSeconds?)
+```
+
+- Omitting targets snapshots all currently open assignments.
+- Top-level status is `completed`, `timeout`, or `empty`.
+- Terminal per-target entries are returned in `outcomes` with status `completed`, `error`, or `retired`.
+- `completed` contains the final report; `error` contains the agent error; `retired` means the target disappeared.
+- `timeout` leaves unresolved assignments in `pending`; it consumes no pending result.
+- A final waiting/blocked report consumes its anchor. Answer its question with `subagent_send` and await the new envelope ID rather than reusing the old anchor.
+
+There is no collection mode or separate collection tool.
+
+## `subagent_cancel`
+
+```text
+(to) -> { cancelled }
+```
+
+Cancel aborts the current turn without deleting the agent. Its triggering mail remains pending, so a later send can resume it.
+
+## `subagent_retire`
+
+```text
+(to) -> { retired, archiveDir }
+```
+
+Retirement is destructive: it deregisters the persistent address and archives its state. One-shot agents normally retire themselves after their final report.
+
+## `subagent_status`
+
+```text
+(address?, tail?)
+```
+
+Without an address, status returns:
+
+```text
+{ ownerScopeId, agents, count, openTasks }
+```
+
+`ownerScopeId` is a stable opaque fingerprint of the owning main Pi session. It remains equal across reload/resume of that session and differs for `/new`, forks, or another main session. Persist it when a workflow must prove that a persistent address still refers to the same session-scoped agent memory.
+
+With an address, status returns that agent's details and recent transcript entries without perturbing it.
+
+## Session and result rules
+
+- Mutable agent state is scoped to one owning main Pi session. Reload/resume retains it; `/new` and forks start another scope.
+- Capture each assignment's exact anchor and await it explicitly when its result is required in the current response.
+- Treat timeout as pending and `error`/`retired` as non-completion.
+- Questions are final waiting/blocked reports followed by a new send and a new anchor.
+- Do not retire a one-shot before its report is delivered, and do not silently recreate a missing persistent agent when memory continuity matters.

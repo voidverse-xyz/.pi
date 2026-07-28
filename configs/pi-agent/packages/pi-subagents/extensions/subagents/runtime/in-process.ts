@@ -482,15 +482,16 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				}
 				const fatal = pending.find((p) => {
 					if (p.envelope.type !== "error" || p.envelope.from !== target.to) return false;
-					const anchors = terminalAnchorList(p.envelope);
-					return anchors.length === 0 || anchors.includes(target.anchorId); // empty = legacy unscoped error
+					const terminal = terminalTaskAnchors(p.envelope);
+					return terminal.kind === "legacy-unscoped-error" || terminal.anchors.includes(target.anchorId);
 				});
 				if (fatal) {
-					const anchors = terminalAnchorList(fatal.envelope);
-					if (anchors.length > 0) consumeSupersededProgress(mainbox, pending, fatal.envelope, new Set(anchors));
+					const terminal = terminalTaskAnchors(fatal.envelope);
+					const anchors = terminal.kind === "anchors" ? new Set(terminal.anchors) : null;
+					if (anchors !== null && anchors.size > 0) consumeSupersededProgress(mainbox, pending, fatal.envelope, anchors);
 					markDone(mainbox, fatal.envelope.id);
 					const view = envView(fatal.envelope);
-					resolveAnchorsFor(target.to, anchors.length > 0 ? new Set(anchors) : null, (t) => ({ to: t.to, anchorId: t.anchorId, status: "error", error: view }));
+					resolveAnchorsFor(target.to, anchors, (t) => ({ to: t.to, anchorId: t.anchorId, status: "error", error: view }));
 					continue;
 				}
 				// Retired detection keys on the TARGET's own liveness, not the fleet-wide
@@ -1018,11 +1019,7 @@ function taskAnchors(trigger: Envelope[] | null): string[] {
 		.map((envelope) => envelope.id))];
 }
 
-/**
- * Flat anchor-list view of mail/envelope's terminalTaskAnchors for the await
- * loop: a legacy unscoped error flattens to [] — which the fatal matcher above
- * treats as matching ANY target of that sender (historical behavior).
- */
+/** Flat anchor-list view for final reports, including correlation fallback. */
 function terminalAnchorList(envelope: Envelope): string[] {
 	const result = terminalTaskAnchors(envelope);
 	return result.kind === "anchors" ? result.anchors : [];

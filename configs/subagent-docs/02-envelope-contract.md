@@ -1,5 +1,7 @@
 # Envelope Contract — Messages Between Agents
 
+> **Historical — superseded.** This envelope specification includes retired peer and escalation behavior. Use `03-tool-surface.md` and current runtime types for the active contract.
+
 Decided 2026-07-09 (D11, D12, D14). One envelope shape for every message in the
 system, regardless of direction (main→sub, sub→sub, sub→main).
 

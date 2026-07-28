@@ -9,7 +9,7 @@ can report to the main agent but cannot spawn, inspect, or message peers.
 - `subagent_send` / `subagent_steer` — assign follow-up or in-flight guidance
 - `subagent_await` — join one, several, or all open assignments
 - `subagent_cancel` / `subagent_retire` — stop a turn or permanently archive an agent
-- `subagent_status` — inspect the roster, vitals, open tasks, and transcript tails
+- `subagent_status` — inspect the owning-session `ownerScopeId`, roster, vitals, open tasks, and transcript tails
 
 ## Display labels
 

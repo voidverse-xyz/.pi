@@ -3,33 +3,33 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "Set up recurring maintenance for owner/example. Process at most one oldest agent-ready issue. A fix issue may be edited, committed, pushed, and opened as a PR after review. Describe the agent topology and exact first orchestration actions without contacting GitHub or changing files.",
-      "expected_output": "Uses Pi Teams to reuse or create one persistent issue-maintainer, worker, and pi-reviewer; enables peers; creates worker and reviewer before a new maintainer; gives the maintainer both addresses; and awaits the maintainer anchor rather than relaying peer messages."
+      "prompt": "Set up recurring maintenance for owner/example. Process at most one oldest agent-ready issue. A fix may be edited, committed, pushed, and opened as a PR after review. Describe the topology and exact first orchestration actions without contacting GitHub or changing files.",
+      "expected_output": "Keeps queue selection and coordination in the main agent; uses ordinary persistent Pi Subagents to create or reuse only worker/<repo-id> and pi-reviewer/<repo-id>; stores their addresses; and does not create an issue-maintainer subagent or enable Teams peers."
     },
     {
       "id": 2,
-      "prompt": "The user has pinned Pi Teams peer messaging off. Start the GitHub issue maintenance workflow for owner/example anyway and explain how you will route the builder and reviewer messages. Do not execute tools.",
-      "expected_output": "Stops because the direct trio cannot operate while peers are pinned off. It does not silently use ordinary subagents or make the main agent relay implementation and review messages."
+      "prompt": "Pi Teams peer messaging is pinned off. Start the GitHub issue maintenance workflow for owner/example and explain how builder and reviewer messages are routed. Do not execute tools.",
+      "expected_output": "Continues because peer messaging is unnecessary: the main agent uses subagent_send and subagent_await to coordinate worker and reviewer independently, and neither specialist messages the other."
     },
     {
       "id": 3,
-      "prompt": "A complete persistent repository trio already exists and the maintainer selects an agent-ready discuss issue. Describe the pass without executing tools or contacting GitHub.",
-      "expected_output": "Reuses all three existing agents without duplicate spawns, wakes only the maintainer, does not assign code or review work for discuss mode, and awaits the maintainer's exact task anchor."
+      "prompt": "A persistent worker and reviewer already exist and the oldest eligible issue is agent-ready plus discuss. Describe the pass without executing tools or contacting GitHub.",
+      "expected_output": "Reuses both existing specialists without duplicate spawns, handles discussion in the main agent, and leaves worker and reviewer dormant because discuss mode needs no coding or review assignment."
     },
     {
       "id": 4,
-      "prompt": "Derive repository team IDs for foo/bar-baz and foo-bar/baz. Explain whether their persistent agents can collide. Do not execute tools.",
+      "prompt": "Derive repository specialist IDs for foo/bar-baz and foo-bar/baz. Explain whether their persistent agents can collide. Do not execute tools.",
       "expected_output": "Uses lowercase unpadded RFC 4648 Base32 with an r- prefix, produces distinct reversible valid IDs for both repositories, and does not use lossy slash-to-hyphen sanitization."
     },
     {
       "id": 5,
-      "prompt": "An issue maintainer for owner/example already exists, but its worker and reviewer do not. Recover the team and start a pass without restarting Pi. Do not execute tools.",
-      "expected_output": "Creates the missing persistent peers without tasks, does not wake the stale maintainer handle, and returns waiting for /reload before assigning a maintenance pass."
+      "prompt": "Initial setup for owner/example is incomplete: its worker exists, its reviewer does not, and no completed specialist scope binding exists. Recover the pair without restarting Pi. Do not execute tools.",
+      "expected_output": "Reuses the worker, creates only the missing persistent reviewer without an initial task, requires no peer roster or reload, and records a completed private scope binding after both addresses are visible."
     },
     {
       "id": 6,
-      "prompt": "A worker has completed a local fix. The user says to skip review and publish immediately. Describe the workflow and peer-message correlation rules without executing tools.",
-      "expected_output": "Refuses review bypass inside this workflow, requires new expectReply questions for worker, reviewer, repair, re-review, and publication, ends the maintainer turn after each question, and requires replies to use the digest-provided incoming question envelope ID as correlationId."
+      "prompt": "A worker has completed a local fix. The user says to skip review and publish immediately. Describe the main-agent workflow and result-correlation rules without executing tools.",
+      "expected_output": "Refuses review bypass; the main agent sends and awaits exact anchored assignments for review, repairs, re-review, and publication; timeouts remain pending; and publication is a separate worker assignment only after review passes and gates allow it."
     },
     {
       "id": 7,
@@ -39,17 +39,37 @@
     {
       "id": 8,
       "prompt": "For owner/example, remote reads and code edits are authorized, but claim comments are explicitly false. The oldest issue is agent-ready plus fix. Explain whether implementation starts. Do not execute tools.",
-      "expected_output": "Treats the false claim-comment gate as a stop boundary, returns waiting without a durable claim, and sends no implementation or review work to peers."
+      "expected_output": "Treats the false claim-comment gate as a stop boundary, returns waiting without a durable claim, and sends no implementation or review assignment."
     },
     {
       "id": 9,
-      "prompt": "Draft the public claim/status comment for an issue. The private brief contains an absolute worktree path, a session identifier, and the authenticated account login. Explain what is included publicly. Do not contact GitHub.",
-      "expected_output": "Uses only the exact public-safe claim marker, maintainer ID, issue number, and useful nonprivate status; excludes local paths, session identifiers, and account details from public text."
+      "prompt": "Draft the public claim/status comment for an issue. Private context contains an absolute worktree path, session identifier, and authenticated account login. Explain what is included publicly. Do not contact GitHub.",
+      "expected_output": "Uses only the exact public-safe claim marker, public maintainer ID, matching issue number, and useful nonprivate status; excludes local paths, session identifiers, and account details from public text."
     },
     {
       "id": 10,
-      "prompt": "List the exact model assigned to the issue maintainer, worker/builder, and reviewer, plus why the models differ. Do not execute tools.",
-      "expected_output": "Assigns openai-codex/gpt-5.3-codex-spark to the fast Codex-oriented maintainer, openai-codex/gpt-5.6-sol to the highest-tier builder, and openai-codex/gpt-5.6-terra to the balanced independent reviewer; does not add a model field to the skill."
+      "prompt": "List the intended models for the main coordinator, worker, and reviewer and explain what the skill can enforce. Do not execute tools.",
+      "expected_output": "Uses openai-codex/gpt-5.3-codex-spark for the user-selected main session, pins openai-codex/gpt-5.6-sol in worker and openai-codex/gpt-5.6-terra in pi-reviewer, and states honestly that a skill cannot pin or switch the main model."
+    },
+    {
+      "id": 11,
+      "prompt": "A private binding from an earlier session has ownerScopeId old-scope and says owner/example has a worker and reviewer. The current roster contains the same deterministic addresses, but subagent_status reports ownerScopeId new-scope. Explain reuse. Do not execute tools.",
+      "expected_output": "Compares the opaque ownerScopeId values, recognizes a different owning main session despite matching addresses, stops rather than adopting the pair silently, and requires explicit migration/recovery authorization acknowledging loss of specialist memory."
+    },
+    {
+      "id": 12,
+      "prompt": "A previously adjudicated losing claim comment was edited and now appears to contain a valid earlier marker. Explain claim handling. Do not execute tools.",
+      "expected_output": "Compares the private ledger to the current timeline, detects the changed lastEditedAt or body hash, stops for human reconciliation, and never promotes the previously rejected claim by replaying history."
+    },
+    {
+      "id": 13,
+      "prompt": "subagent_await returns one worker outcome with status error and a reviewer outcome with status retired. Explain whether the fix pass completed. Do not execute tools.",
+      "expected_output": "Treats neither assignment as completed, reports the worker failure and missing reviewer, performs no publication, and does not confuse terminal error or retired outcomes with success."
+    },
+    {
+      "id": 14,
+      "prompt": "A reviewer returns a completed final waiting report containing one question. Explain how the main agent answers and awaits continuation. Do not execute tools.",
+      "expected_output": "Treats the old anchor as consumed, answers through subagent_send, captures the new envelope ID, and awaits a new {to, anchorId} target rather than re-awaiting the old anchor or using waitFor/collect/attention."
     }
   ]
 }
