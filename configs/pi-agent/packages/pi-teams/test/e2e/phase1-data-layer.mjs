@@ -49,11 +49,14 @@ ok("distinct sessions never collide", () => {
 	const b = createLayout(project, { home, sessionId: "sess-B" });
 	assert.notEqual(layout.subagentsRoot, b.subagentsRoot);
 });
-ok("explicit Pi agent-directory override owns definitions and mutable state", () => {
+ok("explicit Pi agent-directory override owns shared definitions and Teams state", () => {
 	const agentDir = join(scratch, "override-agent");
 	const overridden = createLayout(project, { sessionId: "sess-override", agentDir });
 	assert.equal(overridden.agentDir, agentDir);
-	assert.equal(overridden.globalTypeDefsDir, join(agentDir, "teams"));
+	assert.equal(overridden.globalTypeDefsDir, join(agentDir, "subagents"));
+	assert.equal(overridden.projectTypeDefsDir, join(project, ".pi", "subagents"));
+	assert.equal(overridden.globalSettingsFile, join(agentDir, "teams.json"));
+	assert.equal(overridden.projectSettingsFile, join(project, ".pi", "teams.json"));
 	assert.ok(overridden.subagentsRoot.startsWith(join(agentDir, "sessions")));
 });
 ok("invalid session id rejected", () => {
@@ -239,6 +242,12 @@ mkdirSync(discLayout.projectTypeDefsDir, { recursive: true });
 writeFileSync(join(discLayout.globalTypeDefsDir, "researcher.md"), `---\nname: researcher\ndescription: g\n---\nglobal body`);
 writeFileSync(join(discLayout.globalTypeDefsDir, "refactorer.md"), `---\nname: refactorer\ndescription: g\n---\nglobal`);
 writeFileSync(join(discLayout.projectTypeDefsDir, "refactorer.md"), `---\nname: refactorer\ndescription: p\n---\nproject`);
+const legacyGlobalTypeDefsDir = join(discHome, ".pi", "agent", "teams");
+const legacyProjectTypeDefsDir = join(discProject, ".pi", "teams");
+mkdirSync(legacyGlobalTypeDefsDir, { recursive: true });
+mkdirSync(legacyProjectTypeDefsDir, { recursive: true });
+writeFileSync(join(legacyGlobalTypeDefsDir, "legacy-global.md"), `---\nname: legacy-global\ndescription: old\n---\nold`);
+writeFileSync(join(legacyProjectTypeDefsDir, "legacy-project.md"), `---\nname: legacy-project\ndescription: old\n---\nold`);
 ok("project shadows global when trusted", () => {
 	const list = discover.listTypeDefs(discLayout, { projectTrusted: true });
 	const ref = list.find((s) => s.name === "refactorer");
@@ -254,6 +263,11 @@ ok("untrusted project defs are ignored (finding #7)", () => {
 	assert.equal(ref.origin, "global");
 	const resolved = discover.resolveTypeDef(discLayout, "refactorer", { projectTrusted: false });
 	assert.equal(resolved.resolved.definition.config.description, "g");
+});
+ok("legacy teams definition directories are ignored", () => {
+	const names = discover.listTypeDefs(discLayout, { projectTrusted: true }).map((source) => source.name);
+	assert.ok(!names.includes("legacy-global"));
+	assert.ok(!names.includes("legacy-project"));
 });
 ok("symlinked type files are ignored", () => {
 	symlinkSync(join(discLayout.globalTypeDefsDir, "researcher.md"), join(discLayout.globalTypeDefsDir, "linked.md"));

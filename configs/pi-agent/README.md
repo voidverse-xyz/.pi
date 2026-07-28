@@ -10,7 +10,7 @@ are dormant).
 - `docs/`: PiAgent-specific plans, notes, and implementation records.
 - `MANIFEST.md`: active package and resource inventory.
 
-Global skills, keybindings, subagent definitions, and team definitions live at
-root `skills/`, `keybindings.json`, `subagents/`, and `teams/`; `agent/` exposes
+Global skills, keybindings, and definitions shared by Pi Subagents and Pi Teams
+live at root `skills/`, `keybindings.json`, and `subagents/`; `agent/` exposes
 them to Pi when the checkout sits one level above the effective agent dir. Keep
 machine-local and sensitive state outside the tracked tree.

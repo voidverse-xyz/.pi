@@ -93,11 +93,6 @@ export function collectRequestsFileOf(mailboxDir: string): string {
 	return join(mailboxDir, ".collect-requests.json");
 }
 
-/** <typeDefsDir>.json — the settings-file sibling of a type-def dir. */
-function settingsFileSiblingOf(typeDefsDir: string): string {
-	return `${typeDefsDir}.json`;
-}
-
 // ---------------------------------------------------------------------------
 // Layout
 // ---------------------------------------------------------------------------
@@ -143,9 +138,9 @@ export interface Layout {
 	/** <archiveRoot>/<type>/<id> — where retire moves an agent dir (D13). */
 	archiveDir(type: string, id: string): string;
 
-	/** ~/.pi/agent/teams — global type-definition library (D6). */
+	/** ~/.pi/agent/subagents — shared global type-definition library (D6). */
 	readonly globalTypeDefsDir: string;
-	/** <cwd>/.pi/teams — repo-shipped type definitions (D6; wins on conflict). */
+	/** <cwd>/.pi/subagents — shared repo-shipped definitions (D6; wins on conflict). */
 	readonly projectTypeDefsDir: string;
 	/** A type definition file inside either discovery dir. */
 	typeDefFile(dir: string, typeName: string): string;
@@ -172,8 +167,8 @@ export function createLayout(cwd: string, options: LayoutOptions): Layout {
 	const archiveRoot = join(subagentsRoot, ".archive");
 	const mainMailboxDir = join(subagentsRoot, ".main", "mailbox");
 
-	const globalTypeDefsDir = join(agentDir, "teams");
-	const projectTypeDefsDir = join(cwd, ".pi", "teams");
+	const globalTypeDefsDir = join(agentDir, "subagents");
+	const projectTypeDefsDir = join(cwd, ".pi", "subagents");
 
 	const agentInstanceDir = (type: string, id: string): string => join(subagentsRoot, type, id);
 	const mailboxDir = (type: string, id: string): string => join(agentInstanceDir(type, id), "mailbox");
@@ -198,7 +193,7 @@ export function createLayout(cwd: string, options: LayoutOptions): Layout {
 		projectTypeDefsDir,
 		typeDefFile: (dir, typeName) => join(dir, `${typeName}.md`),
 
-		globalSettingsFile: settingsFileSiblingOf(globalTypeDefsDir),
-		projectSettingsFile: settingsFileSiblingOf(projectTypeDefsDir),
+		globalSettingsFile: join(agentDir, "teams.json"),
+		projectSettingsFile: join(cwd, ".pi", "teams.json"),
 	};
 }

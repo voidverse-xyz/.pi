@@ -81,7 +81,7 @@ export function makeSystemDenyCheck(protectedDirs: string[], realpath: RealpathF
  * edit/write resolve a single target and are checked precisely; bash is opaque, so
  * we scan the command TEXT for any protected root — the resolved realpath, the raw
  * configured dir, and (when the dir is under $HOME) its `~`-relative spelling. This
- * closes the trivial `echo x > ~/.pi/agent/teams/self.md` self-modification and
+ * closes the trivial `echo x > ~/.pi/agent/subagents/self.md` self-modification and
  * mailbox-forgery paths. It is NOT a complete bash sandbox (env vars, `cd`, symlinks
  * planted at runtime can still evade a text scan) — a bash-capable type remains an
  * explicit trust decision — but it removes the silent, one-line bypass.

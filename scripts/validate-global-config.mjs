@@ -206,28 +206,23 @@ for (const skillFile of skillFiles) {
 }
 
 const expectedDefinitions = ["issue-coordinator.md", "pi-reviewer.md", "planner.md", "reviewer.md", "scout.md", "worker.md"];
-for (const directory of ["subagents", "teams"]) {
-  let actual = [];
-  try {
-    actual = readdirSync(join(root, directory)).filter((name) => name.endsWith(".md")).sort();
-  } catch (error) {
-    fail(`cannot read ${directory}/: ${error.message}`);
-    continue;
-  }
-  if (!sameJson(actual, expectedDefinitions)) {
-    fail(`${directory}/ definitions must be exactly: ${expectedDefinitions.join(", ")}; found: ${actual.join(", ")}`);
-  }
-  for (const name of actual) {
-    const stat = lstatSync(join(root, directory, name));
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
-      fail(`${directory}/${name} must be an independent ordinary file`);
-    }
+let actualDefinitions = [];
+try {
+  actualDefinitions = readdirSync(join(root, "subagents")).filter((name) => name.endsWith(".md")).sort();
+} catch (error) {
+  fail(`cannot read subagents/: ${error.message}`);
+}
+if (!sameJson(actualDefinitions, expectedDefinitions)) {
+  fail(`subagents/ definitions must be exactly: ${expectedDefinitions.join(", ")}; found: ${actualDefinitions.join(", ")}`);
+}
+for (const name of actualDefinitions) {
+  const stat = lstatSync(join(root, "subagents", name));
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+    fail(`subagents/${name} must be an independent ordinary file`);
   }
 }
-for (const name of expectedDefinitions) {
-  const subagent = readFileSync(join(root, "subagents", name));
-  const team = readFileSync(join(root, "teams", name));
-  if (!subagent.equals(team)) fail(`subagents/${name} and teams/${name} differ`);
+if (existsSync(join(root, "teams"))) {
+  fail("legacy teams/ definition directory must be absent; Pi Teams uses subagents/");
 }
 
 let tracked = [];
@@ -254,7 +249,6 @@ for (const requiredAgentEntry of [
   "agent/settings.json",
   "agent/skills",
   "agent/subagents",
-  "agent/teams",
   "agent/procedures",
 ]) {
   if (!tracked.includes(requiredAgentEntry)) {
@@ -303,7 +297,6 @@ const allowedSymlinks = new Map([
   ["agent/configs", "../configs"],
   ["agent/skills", "../skills"],
   ["agent/subagents", "../subagents"],
-  ["agent/teams", "../teams"],
   ["agent/procedures", "../procedures"],
 ]);
 try {
@@ -374,7 +367,7 @@ for (const ignoredPath of [
 notes.push(`${rootSettings?.packages?.length ?? 0} root package paths`);
 notes.push(`${agentSettings?.packages?.length ?? 0} agent-dir package paths`);
 notes.push(`${skillFiles.length} global skills`);
-notes.push(`${expectedDefinitions.length} synchronized subagent/team definitions`);
+notes.push(`${expectedDefinitions.length} shared subagent/team definitions`);
 
 if (failures.length > 0) {
   console.error("Global Pi configuration validation failed:");

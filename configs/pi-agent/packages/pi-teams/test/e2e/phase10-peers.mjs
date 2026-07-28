@@ -76,7 +76,7 @@ const scratch = join(WORLDS, "phase10-world");
 rmSync(scratch, { recursive: true, force: true });
 const home = join(scratch, "home");
 const project = join(scratch, "project");
-const defs = join(home, ".pi", "agent", "teams");
+const defs = join(home, ".pi", "agent", "subagents");
 mkdirSync(defs, { recursive: true });
 mkdirSync(project, { recursive: true });
 // talker: peers ON by default; loner: peers OFF by default.

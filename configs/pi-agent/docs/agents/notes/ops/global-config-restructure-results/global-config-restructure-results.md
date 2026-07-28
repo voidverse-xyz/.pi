@@ -13,8 +13,7 @@ Repository-owned directories now use lowercase hyphen-case. The shared roots are
 - `settings.json`: selected theme plus 25 relative local-package paths
 - `keybindings.json`: `Alt+T` thinking cycle and `Alt+M` model cycle
 - `skills/`: 38 globally discoverable skills
-- `subagents/`: five production `pi-subagents` definitions
-- `teams/`: five byte-identical but independent `pi-teams` definitions
+- `subagents/`: production definitions shared by `pi-subagents` and `pi-teams`
 - `scripts/validate-global-config.mjs`: clone-safety and resource validation
 - `README.md`: fresh install, cutover, rollback, security, and validation
 

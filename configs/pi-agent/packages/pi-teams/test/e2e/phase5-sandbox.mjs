@@ -30,7 +30,7 @@ console.log("system-deny (pure):");
 await test("denies the state tree + type-def dirs, ancestors; allows project files", () => {
 	const id = (p) => p; // identity realpath (no fs)
 	const stateTree = "/home/u/.pi/agent/sessions/--proj--/teams";
-	const typeDefs = "/proj/.pi/teams";
+	const typeDefs = "/proj/.pi/subagents";
 	const deny = makeSystemDenyCheck([stateTree, typeDefs], id);
 	assert.equal(deny(join(stateTree, "sess-A/registry.json")).denied, true, "below state tree");
 	assert.equal(deny(stateTree).denied, true, "the state tree itself");
@@ -80,9 +80,16 @@ const scratch = join(WORLDS, "phase5-world");
 rmSync(scratch, { recursive: true, force: true });
 const home = join(scratch, "home");
 const project = join(scratch, "project");
-mkdirSync(join(home, ".pi", "agent", "teams"), { recursive: true });
+const globalDefinitionsDir = join(home, ".pi", "agent", "subagents");
+const projectDefinitionsDir = join(project, ".pi", "subagents");
+const globalDefinitionSentinel = join(globalDefinitionsDir, "global-sentinel.md");
+const projectDefinitionSentinel = join(projectDefinitionsDir, "project-sentinel.md");
+mkdirSync(globalDefinitionsDir, { recursive: true });
+mkdirSync(projectDefinitionsDir, { recursive: true });
 mkdirSync(join(project, "src"), { recursive: true });
-writeFileSync(join(home, ".pi", "agent", "teams", "coder.md"), ["---", "name: coder", "description: writes code", "model: mock/mock-1", "projectContext: false", "tools: [read, write, bash]", "---", "You are CODER."].join("\n"));
+writeFileSync(join(globalDefinitionsDir, "coder.md"), ["---", "name: coder", "description: writes code", "model: mock/mock-1", "projectContext: false", "tools: [read, write, bash]", "---", "You are CODER."].join("\n"));
+writeFileSync(globalDefinitionSentinel, "global definition sentinel");
+writeFileSync(projectDefinitionSentinel, "project definition sentinel");
 
 // Confirm port: record requests; approve unless the command/path contains DENY.
 const confirmCalls = [];
@@ -158,6 +165,22 @@ await test("write to the state tree is hard-denied BEFORE any confirmation", asy
 	// registry.json legitimately changes (the w2 spawn writes it) — assert only
 	// that the agent's payload never landed.
 	assert.ok(!readFileSync(target, "utf8").includes("PWNED"), "state tree not overwritten by the agent");
+});
+
+await test("writes to shared global and project definitions are hard-denied", async () => {
+	await runScripted("d1", { name: "write", args: { path: globalDefinitionSentinel, content: "PWNED" } });
+	assert.equal(confirmCalls.length, 0, "global definition write blocked before confirmation");
+	assert.equal(readFileSync(globalDefinitionSentinel, "utf8"), "global definition sentinel");
+
+	await runScripted("d2", { name: "write", args: { path: projectDefinitionSentinel, content: "PWNED" } });
+	assert.equal(confirmCalls.length, 0, "project definition write blocked before confirmation");
+	assert.equal(readFileSync(projectDefinitionSentinel, "utf8"), "project definition sentinel");
+});
+
+await test("bash references to shared definitions are hard-denied", async () => {
+	await runScripted("d3", { name: "bash", args: { command: `printf PWNED >> ${globalDefinitionSentinel}` } });
+	assert.equal(confirmCalls.length, 0, "definition-targeting bash blocked before confirmation");
+	assert.equal(readFileSync(globalDefinitionSentinel, "utf8"), "global definition sentinel");
 });
 
 await test("a denied confirmation blocks the write", async () => {

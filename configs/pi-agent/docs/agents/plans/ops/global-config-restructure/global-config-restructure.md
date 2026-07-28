@@ -17,7 +17,7 @@ The repository will become a directly cloneable Pi global configuration: cloning
 - Sessions and managed package installs are runtime state under `~/.pi/agent/sessions`, `npm`, and `git`, so they must not be tracked (`@earendil-works/pi-coding-agent/README.md:238,431`).
 - Paths in global `settings.json` resolve relative to `~/.pi/agent`, which permits portable `./configs/pi-agent/packages/...` entries (`@earendil-works/pi-coding-agent/docs/settings.md:234`).
 - Pi auto-discovers global skills, prompts, extensions, and themes from their documented global resource directories (`@earendil-works/pi-coding-agent/README.md:335-400`).
-- The active custom runtimes require global type libraries at `subagents/` and `teams/` (`configs/pi-agent/packages/pi-subagents/extensions/subagents/store/layout.ts:171`; `configs/pi-agent/packages/pi-teams/extensions/teams/store/layout.ts:174`).
+- The active custom runtimes share the global type library at `subagents/`; Pi Teams keeps separate settings and runtime state but resolves the same definitions as Pi Subagents.
 - The current Git tree has no tracked symlinks and no tracked live credential/runtime files. The active settings use 25 absolute package paths; these must become relative.
 
 ## Design and migration manifest
@@ -27,7 +27,7 @@ The repository will become a directly cloneable Pi global configuration: cloning
 - Case-rename `Skills/` to `skills/` through an intermediate path so the change is represented correctly with `core.ignorecase=true`.
 - Case-rename `Subagents/` to `subagents/` through an intermediate path.
 - Move the two test-only definitions from `subagents/` to `configs/pi-agent/packages/pi-subagents/test/fixtures/type-definitions/`.
-- Copy the five production type definitions from `subagents/` to `teams/` as independent regular files because the two extensions use different fixed directories and protect those libraries from linked-file mutation.
+- Keep one canonical production type-definition library in `subagents/`; both runtimes discover it and protect it from linked-file mutation.
 - Move `configs/pi-agent/.pi/agent/keybindings.json` to root `keybindings.json`.
 - Add root `settings.json` containing only the selected theme and 25 relative package paths.
 - Keep reusable Markdown procedures in nested `procedures/<domain>/` directories. Reserve top-level `procedures/*.js` files for executable saved `pi-procedure` scripts; the loader ignores the nested Markdown procedures.

@@ -43,6 +43,6 @@ Keybindings are stored at root `keybindings.json` and mirrored in `agent/keybind
 
 ## Layout and activation
 
-Each package contains `package.json` with the `pi-package` keyword and one or more extension entry points under `extensions/`. Root `skills/` is Pi's global skill library, and root `subagents/` plus `teams/` provide production type definitions for their respective runtimes. The `agent/` shims expose those same resources from the effective Pi agent directory without tracking credentials or runtime state. After changing enabled packages or resources, run `/reload` in Pi or restart it.
+Each package contains `package.json` with the `pi-package` keyword and one or more extension entry points under `extensions/`. Root `skills/` is Pi's global skill library, and root `subagents/` is the production type-definition library shared by Pi Subagents and Pi Teams. The `agent/` shims expose those same resources from the effective Pi agent directory without tracking credentials or runtime state. After changing enabled packages or resources, run `/reload` in Pi or restart it.
 
 Only reviewed portable source and configuration belong in the tracked global configuration.
