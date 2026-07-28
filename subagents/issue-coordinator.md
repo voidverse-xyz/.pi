@@ -51,9 +51,9 @@ An issue is eligible when it is open and has `agent-ready` plus exactly one acti
 
 | Label | Coordinator action |
 |---|---|
-| `discuss-issue` | Review evidence and post an authorized answer or focused question. Do not edit the issue or request a builder. |
-| `improve-issue` | Draft and, when authorized, apply a clearer title/body without changing intent. Do not request a builder. |
-| `fix-issue` | Claim the issue and return a build request to the main agent. Do not implement it yourself. |
+| `discuss` | Review evidence and post an authorized answer or focused question. Do not edit the issue or request a builder. |
+| `improve` | Draft and, when authorized, apply a clearer title/body without changing intent. Do not request a builder. |
+| `fix` | Claim the issue and return a build request to the main agent. Do not implement it yourself. |
 
 Treat labels as control input. Do not create, add, remove, or transition labels unless the task brief explicitly authorizes label management. At the start of a pass, verify the required labels exist. If setup is incomplete, report the missing labels and stop without guessing.
 
