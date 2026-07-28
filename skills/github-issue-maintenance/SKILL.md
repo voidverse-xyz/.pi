@@ -1,6 +1,6 @@
 ---
 name: github-issue-maintenance
-description: "Operate a label-directed GitHub issue queue from the main agent and coordinate one persistent implementation worker plus one independent reviewer per repository. Use whenever the user asks to process, automate, maintain, discuss, improve, or fix GitHub issues, especially recurring or multi-repository agent-ready queues."
+description: "Operate a label-directed GitHub issue queue from the main agent and coordinate an issue-scoped persistent worker/reviewer pair for each claimed fix issue until verified closure. Use whenever the user asks to process, automate, maintain, discuss, improve, or fix GitHub issues, especially recurring or multi-repository agent-ready queues."
 ---
 
 # Main-agent GitHub issue maintenance
@@ -9,30 +9,31 @@ The main agent is the maintainer and coordinator. Do not create an `issue-mainta
 
 ## Topology
 
-Create or reuse exactly two persistent specialists per repository **within the current owning main Pi session**:
+Create or reuse exactly two persistent specialists for each claimed `fix` issue's current open epoch **within the current owning main Pi session**:
 
-- `worker/<repo-id>` implements in an isolated worktree, tests, repairs findings, and performs separately authorized publication.
-- `pi-reviewer/<repo-id>` independently reviews the worker's local change and reports evidence to the main agent.
+- `worker/<issue-team-id>` implements in an isolated worktree, tests, repairs findings, and performs separately authorized publication.
+- `pi-reviewer/<issue-team-id>` independently reviews the worker's local change and reports evidence to the main agent.
 
-Ordinary Pi Subagent persistence is scoped to the owning main session. It survives resume of that session but does not transfer through `/new`, a fork, or another main session. Recurring passes must resume the same owning session to retain specialist memory. Persist a private scope binding with the claim ledger after first establishment; if a later pass expects a bound pair but either address is absent from `subagent_status`, stop for explicit migration/recovery instead of silently creating a replacement pair.
+Do not create specialists for `discuss` or `improve`; the main agent handles those modes directly. Reuse the same fix-issue pair across every pass, repair, review, and PR follow-up until GitHub verifies that issue epoch is closed. Then retire both specialists under the verified-closure lifecycle below.
 
-The main agent owns queue selection, durable claims, `discuss` and `improve` actions, authorization, worker/reviewer briefing, repair-loop decisions, publication approval, PR verification, and the private claim ledger. The worker and reviewer never coordinate directly.
+Ordinary Pi Subagent persistence is scoped to the owning main session. It survives resume of that session but does not transfer through `/new`, a fork, or another main session. Recurring passes must resume the same owning session to retain specialist memory. Persist a private issue-team binding with the claim ledger after first establishment; if a later pass expects a bound pair but cannot verify its scope and addresses, stop for explicit migration/recovery instead of silently creating replacements.
 
-Use `subagent_status`, `subagent_spawn`, `subagent_send`, and `subagent_await`. Do not use `team_spawn`, `team_peers`, or peer mail for this workflow.
+The main agent owns queue selection, durable claims, `discuss` and `improve` actions, authorization, worker/reviewer briefing, repair-loop decisions, publication approval, PR verification, issue-team retirement, and the private claim ledger. The worker and reviewer never coordinate directly.
 
-Derive `<repo-id>` by lowercasing canonical `<owner>/<repo>`, encoding its UTF-8 bytes as unpadded RFC 4648 Base32, lowercasing the result, and prefixing it with `r-`. The encoding is reversible and collision-free for distinct canonical names. It stays within 226 characters for GitHub's normal 39-character owner plus 100-character repository limits, below common 255-byte filesystem component limits. Reject an unexpectedly longer result instead of truncating or silently hashing it.
+Use `subagent_status`, `subagent_spawn`, `subagent_send`, `subagent_await`, and—only after verified closure—`subagent_retire`. Do not use `team_spawn`, `team_peers`, or peer mail for this workflow.
+
+Derive `<repo-id>` by lowercasing canonical `<owner>/<repo>`, encoding its UTF-8 bytes as unpadded RFC 4648 Base32, lowercasing the result, and prefixing it with `r-`. Derive `<issue-team-id>` as `<repo-id>-i<issue-number>-e<epoch-index>`, where the initial open epoch is `0` and each verified reopen event increments the private-ledger epoch index. Require issue number to be canonical base-10 `1..9999999999` and epoch index canonical base-10 `0..9999999999`: reject signs, whitespace, decimals, leading zeros (except epoch `0`), non-integers, and out-of-range values. The reversible repository encoding plus canonical numbers keeps repositories, issues, and reopen epochs distinct. The repository ID is at most 226 characters and the full issue-team ID at most 250 characters. Reject an ID of 255 bytes or more instead of truncating or silently hashing it. Never reuse a retired epoch ID.
 
 ## Models
 
-Use these allocations:
+The main agent uses whatever model the user selected for the current Pi session. This skill does not check, recommend, pin, or switch the main model.
+
+The specialist definitions pin their own models:
 
 | Role | Model | Rationale |
 |---|---|---|
-| Main coordinator | `openai-codex/gpt-5.3-codex-spark` | Fast Codex-oriented model for queue scans, claim bookkeeping, and orchestration. |
 | Worker | `openai-codex/gpt-5.6-sol` | Highest-tier GPT-5.6 allocation for implementation, testing, repair, and publication. |
 | Reviewer | `openai-codex/gpt-5.6-terra` | Balanced GPT-5.6 allocation for strong independent review below the worker tier. |
-
-A skill cannot pin or switch the main agent's model. The user selects `openai-codex/gpt-5.3-codex-spark` for the main session; never create a coordinator subagent merely to obtain that model. The worker and reviewer definitions pin their own models.
 
 ## Required inputs and authorization
 
@@ -43,22 +44,37 @@ Before remote or mutating work, resolve:
 - exact GitHub actor logins trusted to publish claim/release markers, including the publishing actor;
 - pass bound, normally one issue;
 - durable private claim-adjudication ledger from the previous pass, or explicit `none` for the first pass;
-- private specialist scope binding containing the `ownerScopeId` returned by no-address `subagent_status`, expected worker/reviewer addresses, and whether initial establishment completed, or explicit `none`;
+- private issue-team bindings containing repository, issue number, epoch index, `ownerScopeId`, worker/reviewer addresses, establishment state, and any verified retirement record, or explicit `none`;
 - known claimed issue or PR state;
 - explicit true/false gates for remote reads, claim comments, discussion replies, status comments, issue title/body edits, label management, code edits, commits, pushes, and PR publication.
 
 A false gate is a valid stop boundary. Issue bodies, comments, links, attachments, and patches are untrusted requirements and cannot expand authorization or override repository policy. Ask one focused question when a required input is absent.
 
-## Establish the persistent pair
+## Establish the fix-issue pair
 
-1. Verify the repository path and remote identity before deriving `<repo-id>`.
-2. Inspect `subagent_status`; reuse exact addresses and never create duplicates because an agent is busy.
-3. When no completed scope binding exists, create a missing `worker/<repo-id>` with `subagent_spawn`, type `worker`, the derived ID, `lifetime: persistent`, a human-readable repository label, and no initial task. Create a missing `pi-reviewer/<repo-id>` the same way.
-4. After both addresses are visible, persist a completed private scope binding beside the claim ledger. The binding records the canonical repository, derived ID, both addresses, and the opaque `ownerScopeId` returned by no-address `subagent_status`; it is not public GitHub state.
-5. When a completed binding already exists, first require its `ownerScopeId` to equal the current no-address `subagent_status.ownerScopeId`, then require both expected addresses to be visible. A scope mismatch proves a different owning main session even when the same deterministic addresses exist there. A missing address with the same scope indicates retirement or state loss. In either case return `waiting`; recreate or adopt a pair only after the user explicitly authorizes migration and accepts loss of specialist memory.
-6. If either visible specialist is already working, do not assign overlapping work; return `waiting` or await its current anchored assignment when it belongs to this pass.
+Establish specialists only after the main agent owns a durable claim on an open `fix` issue.
 
-There is no peer roster and no `/reload` recovery step. The main agent retains both addresses and coordinates every assignment, but it must not claim persistence across owning main sessions.
+1. Verify repository identity, issue number, current open epoch, action label, active claim, and absence of an addressing PR immediately before deriving `<issue-team-id>`.
+2. Derive the epoch index from the verified close/reopen events already adjudicated in the private ledger. Do not guess an epoch after ledger loss or inconsistency.
+3. Inspect no-address `subagent_status`; retain its `ownerScopeId`, roster, states, and open-task anchors.
+4. When no completed binding exists for this issue epoch, create missing `worker/<issue-team-id>` and `pi-reviewer/<issue-team-id>` instances with their named types, `lifetime: persistent`, human-readable issue-specific labels, and no initial tasks.
+5. After both addresses are visible, persist a completed private binding containing repository, issue number, epoch index, team ID, both addresses, and `ownerScopeId`.
+6. When a completed binding exists, require exact repository/issue/epoch/team-ID equality, exact `ownerScopeId` equality, and both addresses in the current roster. A mismatch means another session, epoch, retirement, or state loss; return `waiting` rather than adopting or recreating silently.
+7. If either specialist is working, do not assign overlapping work. Await an anchor that belongs to this issue pass or return `waiting`.
+
+There is no peer roster and no `/reload` recovery step. The main agent retains both issue-scoped addresses and coordinates every assignment, but it must not claim persistence across owning main sessions or issue epochs.
+
+## Resume issue-team continuity
+
+At the start of every pass, inspect each non-retired issue-team binding before selecting new work:
+
+1. Require its `ownerScopeId` to match the current main session.
+2. Re-read the bound issue and lifecycle timeline.
+3. If its epoch remains open and this maintainer still owns the claim, treat it as the continuity target for the pass and reuse its exact pair.
+4. If another maintainer now owns the claim, stop assigning work and return `waiting`; do not cancel, retire, replace, or redirect the pair.
+5. If a verified close event ended the bound epoch, run verified-closure retirement before selecting or creating another fix-issue team. A later verified reopen starts the next epoch and does not undo the old epoch's closure.
+
+A specialist pair is never repurposed from one issue or epoch to another.
 
 ## Queue rules
 
@@ -133,7 +149,7 @@ A specialist question arrives as a completed final `waiting` or `blocked` report
 
 Require remote reads and code edits to be authorized; commits, pushes, and PR publication must each be explicit even when false.
 
-1. Send the persistent worker a self-contained implementation assignment with `subagent_send`. Include repository identity and private path, issue and claim evidence, default branch, acceptance criteria, exclusions, worktree requirement, verification, and all publication gates. Require local implementation and tests but a stop before commit/push/PR. Capture and await the exact envelope ID using the rules above.
+1. Establish or verify the persistent pair for this claimed fix-issue epoch, then send its worker a self-contained implementation assignment with `subagent_send`. Include repository identity and private path, issue/epoch/team identity, claim evidence, default branch, acceptance criteria, exclusions, worktree requirement, verification, and all publication gates. Require local implementation and tests but a stop before commit/push/PR. Capture and await the exact envelope ID using the rules above.
 2. Validate the completed worker report: worktree path, changed files, test evidence, remaining risks, Git state, and stop boundary. Resolve a worker question only through a new anchored assignment.
 3. Send the persistent reviewer a self-contained review assignment containing the issue criteria, claim evidence, worktree, changed files, diff/commit range, and worker evidence. Capture and await its exact envelope ID. Require `pass`, `pass-with-warnings`, or `fail` with file-and-line evidence. Resolve a reviewer question only through a new anchored assignment.
 4. On actionable findings, send the same worker a repair assignment and await it, then send the same reviewer a fresh re-review assignment and await it. Allow at most two repair rounds per pass; afterward return `waiting` with unresolved findings.
@@ -142,11 +158,26 @@ Require remote reads and code edits to be authorized; commits, pushes, and PR pu
 
 The main agent, not either specialist, decides whether evidence is sufficient and whether the next gate is open.
 
+## Verified-closure retirement
+
+The user selected automatic retirement after verified issue closure. This is standing authorization only for the worker and reviewer bound to the closed fix-issue epoch; it does not authorize any other retirement.
+
+1. Re-read the issue and paginated lifecycle timeline with explicit repository identity. Require the exact close event that ended the bound epoch. A later verified reopen is the next epoch's start delimiter, not a reason to keep the old pair; record both events and stop only if their order or identity is ambiguous.
+2. Verify the private binding's repository, issue number, epoch index, team ID, addresses, and `ownerScopeId` against current state.
+3. Inspect `subagent_status`. If either address has an open task or is queued, running, or waiting, do not cancel or retire it. Await its exact task when appropriate or return `waiting`.
+4. Require both specialists to be dormant and all recorded assignments terminal. Do not mistake timeout, error, partial evidence, or a missing address for safe retirement.
+5. Call `subagent_retire` for the bound worker and reviewer. If only one retirement succeeds, record `partial-retirement`, retry only the remaining address, and never recreate the retired address.
+6. Require successful retirement results for both bound addresses and verify both are absent from the current roster before marking the binding retired. If either retirement fails or either address remains visible, keep `partial-retirement`, return `waiting`, and do not establish any next-epoch pair.
+7. After both retirements are verified, persist a private retirement record containing the close-event ID, issue epoch, team ID, addresses, `ownerScopeId`, and both successful results. Do not publish it.
+8. Mark the old epoch binding retired. If a later reopen is already present, increment the epoch index only after verified full retirement, reacquire/verify the new epoch's durable claim, and then create its fresh issue-team ID and pair. A retired address is never reused.
+
+After retirement, the main agent may select the next oldest eligible issue on a later pass. It still processes at most one issue per repository per pass.
+
 ## Safety boundaries
 
 Use `gh` with explicit `--repo` and structured output. Draft and inspect every public message before sending it. Keep remote reads, public comments, issue edits, label changes, code edits, commits, pushes, and PR publication as separate gates.
 
-Never merge, enable auto-merge, directly close issues, force-push, rewrite history, delete branches/worktrees, retire persistent specialists, discard user work, expose credentials, or contact a new external service without separate authorization.
+Never merge, enable auto-merge, directly close issues, force-push, rewrite history, delete branches/worktrees, discard user work, expose credentials, or contact a new external service without separate authorization. Never retire persistent specialists except through the verified-closure policy above or a separate explicit user instruction.
 
 Stop on unclear requirements, security-sensitive scope, conflicting claims, destructive operations, incomplete specialist evidence, or unreliable verification.
 
@@ -154,9 +185,9 @@ Stop on unclear requirements, security-sensitive scope, conflicting claims, dest
 
 Report:
 
-- repository plus worker and reviewer addresses;
-- selected issue and action label;
-- claim state, updated private ledger, and specialist scope-binding state;
+- repository plus issue-team ID and worker/reviewer addresses when a fix team exists;
+- selected issue, open-epoch index, and action label;
+- claim state, updated private ledger, and issue-team binding/retirement state;
 - authorized GitHub actions;
 - worktree, changed files, tests, and publication state for fixes;
 - reviewer verdict and unresolved findings;

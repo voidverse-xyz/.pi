@@ -253,7 +253,7 @@ const issueMaintenanceEvalItems = issueMaintenanceEvals?.evals;
 if (!Array.isArray(issueMaintenanceEvalItems)) {
   fail("github-issue-maintenance evals must be an array");
 } else {
-  const expectedEvalIds = Array.from({ length: 14 }, (_, index) => index + 1);
+  const expectedEvalIds = Array.from({ length: 18 }, (_, index) => index + 1);
   const actualEvalIds = issueMaintenanceEvalItems.map((item) => item?.id);
   if (!sameJson(actualEvalIds, expectedEvalIds)) {
     fail(`github-issue-maintenance eval IDs must be ${expectedEvalIds.join(", ")}`);
@@ -273,12 +273,91 @@ for (const requiredText of [
   "subagent_spawn",
   "subagent_send",
   "subagent_await",
+  "subagent_retire",
   "ownerScopeId",
+  "<issue-team-id>",
+  "whatever model the user selected",
+  "automatic retirement after verified issue closure",
+  "Never reuse a retired epoch ID",
+  "canonical base-10 `1..9999999999`",
+  "canonical base-10 `0..9999999999`",
+  "repository ID is at most 226 characters",
+  "issue-team ID at most 250 characters",
+  "Establish specialists only after the main agent owns a durable claim",
+  "Reuse the same fix-issue pair across every pass",
+  "later verified reopen is the next epoch's start delimiter",
+  "partial-retirement",
+  "do not establish any next-epoch pair",
+  "Review cannot be bypassed",
+  "commits, pushes, and PR publication must each be explicit",
+  "never in public GitHub text",
   "status: \"error\"",
   "status: \"retired\"",
 ]) {
   if (!issueMaintenanceSkill.includes(requiredText)) {
     fail(`github-issue-maintenance is missing required orchestration guidance: ${requiredText}`);
+  }
+}
+const issueMaintenanceNote = readFileSync(join(root, "configs", "pi-agent", "docs", "agents", "notes", "pi-agent", "main-agent-issue-maintenance", "main-agent-issue-maintenance.md"), "utf8");
+const issueMaintenanceEvalText = JSON.stringify(issueMaintenanceEvals);
+for (const [source, content] of [["skill", issueMaintenanceSkill], ["note", issueMaintenanceNote], ["evals", issueMaintenanceEvalText]]) {
+  if (content.includes("gpt-5.3-codex-spark")) {
+    fail(`github-issue-maintenance ${source} must not pin or recommend a main-agent model`);
+  }
+}
+const modelsSection = issueMaintenanceSkill.match(/## Models\n\n([\s\S]*?)\n\n## Required inputs and authorization/)?.[1];
+const specialistModelsMarker = "The specialist definitions pin their own models:";
+const expectedMainModelPolicy = "The main agent uses whatever model the user selected for the current Pi session. This skill does not check, recommend, pin, or switch the main model.";
+const mainModelPolicy = modelsSection?.split(specialistModelsMarker)[0].trim();
+if (mainModelPolicy !== expectedMainModelPolicy) {
+  fail("github-issue-maintenance main-model policy must be exactly model-neutral");
+}
+const mainModelRow = issueMaintenanceNote.match(/^\| Main coordinator \| ([^|]+) \|$/m)?.[1].trim();
+if (mainModelRow !== "Whatever model the user selected for the active Pi session." || mainModelRow.includes("/")) {
+  fail("main-agent issue maintenance note must leave the main model user-selected");
+}
+const expectedModelEval = "Uses whatever model the user selected for the main Pi session without checking or recommending one; worker pins openai-codex/gpt-5.6-sol and reviewer pins openai-codex/gpt-5.6-terra.";
+if (issueMaintenanceEvalItems?.find((item) => item?.id === 10)?.expected_output !== expectedModelEval) {
+  fail("github-issue-maintenance model eval must enforce a model-neutral main agent");
+}
+const criticalEvalClauses = new Map([
+  [1, ["active main agent", "only for a durably claimed fix-issue epoch"]],
+  [3, ["does not create, wake, or reserve worker/reviewer addresses"]],
+  [4, ["-i<issue>-e<epoch>", "never reuses a retired epoch ID"]],
+  [5, ["repository, issue, epoch, team ID, addresses, and ownerScopeId"]],
+  [6, ["Refuses review bypass", "separate worker assignment"]],
+  [7, ["226-character repository ID", "250-character issue-team ID", "canonical decimal bounds"]],
+  [8, ["without a durable claim", "creates no issue worker/reviewer pair"]],
+  [9, ["excludes local paths", "scope/team/session identifiers"]],
+  [11, ["different owning main session", "stops rather than adopting"]],
+  [12, ["changed edit time or body hash", "never promotes the rejected claim"]],
+  [13, ["no publication or automatic replacement", "does not claim the issue team is safe to retire"]],
+  [14, ["old anchor as consumed", "new {to, anchorId} target"]],
+  [15, ["Reuses the exact worker and reviewer", "until verified closure"]],
+  [16, ["later reopen starts epoch 1", "retires the old pair", "fresh non-reused epoch-1 pair"]],
+  [17, ["canonical base-10 1..9999999999", "canonical base-10 0..9999999999"]],
+  [18, ["partial-retirement", "does not create the epoch-1 pair", "both old addresses are verified retired and absent"]],
+]);
+for (const [id, clauses] of criticalEvalClauses) {
+  const output = issueMaintenanceEvalItems?.find((item) => item?.id === id)?.expected_output ?? "";
+  for (const clause of clauses) {
+    if (!output.includes(clause)) fail(`github-issue-maintenance eval ${id} is missing required clause: ${clause}`);
+  }
+}
+for (const requiredText of [
+  "<repo-id>-i<issue-number>-e<epoch-index>",
+  "Whatever model the user selected",
+  "canonical base-10 `1..9999999999`",
+  "canonical base-10 `0..9999999999`",
+  "repository ID is at most 226 characters",
+  "issue-team ID at most 250 characters",
+  "close and reopen both occurred between passes",
+  "partial-retirement",
+  "creates no next-epoch pair",
+  "fresh pair",
+]) {
+  if (!issueMaintenanceNote.includes(requiredText)) {
+    fail(`main-agent issue maintenance note is missing: ${requiredText}`);
   }
 }
 const delegatedReviewPaths = [
