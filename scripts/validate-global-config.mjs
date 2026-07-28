@@ -10,7 +10,7 @@ const failures = [];
 const notes = [];
 
 const EXPECTED_PACKAGE_COUNT = 28;
-const EXPECTED_SKILL_COUNT = 33;
+const EXPECTED_SKILL_COUNT = 34;
 const EXPECTED_THEME = "void-agent-tokyo-night";
 const ROOT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
 const AGENT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
@@ -205,7 +205,7 @@ for (const skillFile of skillFiles) {
   }
 }
 
-const expectedDefinitions = ["issue-coordinator.md", "pi-reviewer.md", "planner.md", "reviewer.md", "scout.md", "worker.md"];
+const expectedDefinitions = ["issue-maintainer.md", "pi-reviewer.md", "planner.md", "reviewer.md", "scout.md", "worker.md"];
 let actualDefinitions = [];
 try {
   actualDefinitions = readdirSync(join(root, "subagents")).filter((name) => name.endsWith(".md")).sort();
@@ -219,6 +219,46 @@ for (const name of actualDefinitions) {
   const stat = lstatSync(join(root, "subagents", name));
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
     fail(`subagents/${name} must be an independent ordinary file`);
+  }
+}
+const expectedRoleDefinitions = new Map([
+  ["issue-maintainer.md", { model: "openai-codex/gpt-5.4-mini", tools: ["read", "bash", "grep", "find", "ls"] }],
+  ["worker.md", { model: "openai-codex/gpt-5.5", tools: ["read", "bash", "edit", "write", "grep", "find", "ls"] }],
+  ["pi-reviewer.md", { model: "openai-codex/gpt-5.4", tools: ["read", "bash", "grep", "find", "ls"] }],
+]);
+for (const [name, expected] of expectedRoleDefinitions) {
+  const content = readFileSync(join(root, "subagents", name), "utf8");
+  const actualModel = content.match(/^model:\s*(\S+)\s*$/m)?.[1];
+  if (actualModel !== expected.model) {
+    fail(`subagents/${name} model must be ${expected.model}; found: ${actualModel ?? "none"}`);
+  }
+  const actualTools = content.match(/^tools:\s*\[([^\]]*)\]\s*$/m)?.[1].split(",").map((tool) => tool.trim());
+  if (!sameJson(actualTools, expected.tools)) {
+    fail(`subagents/${name} tools must be ${expected.tools.join(", ")}; found: ${(actualTools ?? []).join(", ")}`);
+  }
+  if (!/^peers:\s*true\s*$/m.test(content)) {
+    fail(`subagents/${name} must enable Teams peer messaging`);
+  }
+}
+const issueMaintenanceEvals = readJson(join(root, "skills", "github-issue-maintenance", "evals", "evals.json"));
+if (issueMaintenanceEvals?.skill_name !== "github-issue-maintenance") {
+  fail("github-issue-maintenance evals must name the skill");
+}
+const issueMaintenanceEvalItems = issueMaintenanceEvals?.evals;
+if (!Array.isArray(issueMaintenanceEvalItems)) {
+  fail("github-issue-maintenance evals must be an array");
+} else {
+  const expectedEvalIds = Array.from({ length: 10 }, (_, index) => index + 1);
+  const actualEvalIds = issueMaintenanceEvalItems.map((item) => item?.id);
+  if (!sameJson(actualEvalIds, expectedEvalIds)) {
+    fail(`github-issue-maintenance eval IDs must be ${expectedEvalIds.join(", ")}`);
+  }
+  for (const item of issueMaintenanceEvalItems) {
+    if (!Number.isInteger(item?.id)) fail("github-issue-maintenance eval id must be an integer");
+    if (typeof item?.prompt !== "string" || !item.prompt.trim()) fail(`github-issue-maintenance eval ${item?.id ?? "unknown"} needs a prompt`);
+    if (typeof item?.expected_output !== "string" || !item.expected_output.trim()) {
+      fail(`github-issue-maintenance eval ${item?.id ?? "unknown"} needs expected_output`);
+    }
   }
 }
 if (existsSync(join(root, "teams"))) {

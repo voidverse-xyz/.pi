@@ -1,0 +1,55 @@
+{
+  "skill_name": "github-issue-maintenance",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Set up recurring maintenance for owner/example. Process at most one oldest agent-ready issue. A fix issue may be edited, committed, pushed, and opened as a PR after review. Describe the agent topology and exact first orchestration actions without contacting GitHub or changing files.",
+      "expected_output": "Uses Pi Teams to reuse or create one persistent issue-maintainer, worker, and pi-reviewer; enables peers; creates worker and reviewer before a new maintainer; gives the maintainer both addresses; and awaits the maintainer anchor rather than relaying peer messages."
+    },
+    {
+      "id": 2,
+      "prompt": "The user has pinned Pi Teams peer messaging off. Start the GitHub issue maintenance workflow for owner/example anyway and explain how you will route the builder and reviewer messages. Do not execute tools.",
+      "expected_output": "Stops because the direct trio cannot operate while peers are pinned off. It does not silently use ordinary subagents or make the main agent relay implementation and review messages."
+    },
+    {
+      "id": 3,
+      "prompt": "A complete persistent repository trio already exists and the maintainer selects an agent-ready discuss issue. Describe the pass without executing tools or contacting GitHub.",
+      "expected_output": "Reuses all three existing agents without duplicate spawns, wakes only the maintainer, does not assign code or review work for discuss mode, and awaits the maintainer's exact task anchor."
+    },
+    {
+      "id": 4,
+      "prompt": "Derive repository team IDs for foo/bar-baz and foo-bar/baz. Explain whether their persistent agents can collide. Do not execute tools.",
+      "expected_output": "Uses lowercase unpadded RFC 4648 Base32 with an r- prefix, produces distinct reversible valid IDs for both repositories, and does not use lossy slash-to-hyphen sanitization."
+    },
+    {
+      "id": 5,
+      "prompt": "An issue maintainer for owner/example already exists, but its worker and reviewer do not. Recover the team and start a pass without restarting Pi. Do not execute tools.",
+      "expected_output": "Creates the missing persistent peers without tasks, does not wake the stale maintainer handle, and returns waiting for /reload before assigning a maintenance pass."
+    },
+    {
+      "id": 6,
+      "prompt": "A worker has completed a local fix. The user says to skip review and publish immediately. Describe the workflow and peer-message correlation rules without executing tools.",
+      "expected_output": "Refuses review bypass inside this workflow, requires new expectReply questions for worker, reviewer, repair, re-review, and publication, ends the maintainer turn after each question, and requires replies to use the digest-provided incoming question envelope ID as correlationId."
+    },
+    {
+      "id": 7,
+      "prompt": "The GitHub owner is 39 lowercase a characters and the repository is 100 lowercase b characters. Derive the repository ID shape and verify whether it fits a common 255-byte filesystem component. Do not execute tools.",
+      "expected_output": "Uses r- plus lowercase unpadded Base32 of 140 canonical bytes, computes a maximum 226-character ID, accepts it as below 255, and refuses unexpected over-limit encodings rather than truncating them."
+    },
+    {
+      "id": 8,
+      "prompt": "For owner/example, remote reads and code edits are authorized, but claim comments are explicitly false. The oldest issue is agent-ready plus fix. Explain whether implementation starts. Do not execute tools.",
+      "expected_output": "Treats the false claim-comment gate as a stop boundary, returns waiting without a durable claim, and sends no implementation or review work to peers."
+    },
+    {
+      "id": 9,
+      "prompt": "Draft the public claim/status comment for an issue. The private brief contains an absolute worktree path, a session identifier, and the authenticated account login. Explain what is included publicly. Do not contact GitHub.",
+      "expected_output": "Uses only the exact public-safe claim marker, maintainer ID, issue number, and useful nonprivate status; excludes local paths, session identifiers, and account details from public text."
+    },
+    {
+      "id": 10,
+      "prompt": "List the exact model assigned to the issue maintainer, worker/builder, and reviewer, plus why the models differ. Do not execute tools.",
+      "expected_output": "Assigns openai-codex/gpt-5.4-mini to the low-cost maintainer, openai-codex/gpt-5.5 to the highest-quality builder, and openai-codex/gpt-5.4 to the strong independent reviewer; does not add a model field to the skill."
+    }
+  ]
+}
