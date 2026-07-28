@@ -489,7 +489,7 @@ export async function runCodexWebSearch(
 		const threadResponse = await client.request("thread/start", {
 			cwd: workDir,
 			approvalPolicy: "never",
-			sandbox: "readOnly",
+			sandbox: "read-only",
 			ephemeral: true,
 			environments: [],
 			selectedCapabilityRoots: [],

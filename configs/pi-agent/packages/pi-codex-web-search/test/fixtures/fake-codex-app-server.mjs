@@ -55,7 +55,7 @@ input.on("line", (line) => {
 	if (message.method === "thread/start") {
 		const params = message.params ?? {};
 		const isolated = params.ephemeral === true
-			&& params.sandbox === "readOnly"
+			&& params.sandbox === "read-only"
 			&& params.approvalPolicy === "never"
 			&& Array.isArray(params.environments)
 			&& params.environments.length === 0

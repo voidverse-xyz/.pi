@@ -14,10 +14,12 @@ The implementation targets Codex app-server v2 as shipped in `rust-v0.145.0`:
 - `account/read` reports the active ChatGPT-backed account without returning a
   token;
 - `thread/start` accepts an ephemeral thread, instruction overrides, config
-  overrides, and experimental environment selection;
+  overrides, experimental environment selection, and the kebab-case sandbox mode
+  `read-only`;
 - an empty `environments` array disables execution environments;
-- `turn/start` accepts another empty environment selection, read-only sandbox
-  policy, `approvalPolicy: "never"`, and an output JSON schema;
+- `turn/start` accepts another empty environment selection, the distinct
+  camel-case sandbox-policy discriminant `readOnly`, `approvalPolicy: "never"`,
+  and an output JSON schema;
 - `item/completed` provides authoritative `webSearch` and `agentMessage` items;
 - `turn/completed` terminates the request.
 
