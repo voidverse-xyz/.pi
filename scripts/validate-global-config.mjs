@@ -10,7 +10,7 @@ const failures = [];
 const notes = [];
 
 const EXPECTED_PACKAGE_COUNT = 28;
-const EXPECTED_SKILL_COUNT = 34;
+const EXPECTED_SKILL_COUNT = 33;
 const EXPECTED_THEME = "void-agent-tokyo-night";
 const ROOT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
 const AGENT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
@@ -205,7 +205,7 @@ for (const skillFile of skillFiles) {
   }
 }
 
-const expectedDefinitions = ["pi-reviewer.md", "planner.md", "reviewer.md", "scout.md", "worker.md"];
+const expectedDefinitions = ["issue-coordinator.md", "pi-reviewer.md", "planner.md", "reviewer.md", "scout.md", "worker.md"];
 for (const directory of ["subagents", "teams"]) {
   let actual = [];
   try {
