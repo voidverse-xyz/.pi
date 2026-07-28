@@ -1,7 +1,7 @@
 ---
 name: worker
 description: Implementation worker with full coding capabilities, isolated-worktree discipline, and direct peer handoff support.
-model: openai-codex/gpt-5.5
+model: openai-codex/gpt-5.6-sol
 thinking: high
 projectContext: true
 tools: [read, bash, edit, write, grep, find, ls]

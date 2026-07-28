@@ -21,9 +21,9 @@ Use the role models pinned by the definitions; do not replace them with the main
 
 | Role | Model | Cost/quality decision |
 |---|---|---|
-| Issue maintainer | `openai-codex/gpt-5.4-mini` | Cheapest of the trio for queue scanning, claim bookkeeping, and coordination. |
-| Worker / builder | `openai-codex/gpt-5.5` | Highest-quality role for implementation, tests, and publication decisions. |
-| Reviewer | `openai-codex/gpt-5.4` | Strong independent analysis without paying builder-model cost. |
+| Issue maintainer | `openai-codex/gpt-5.3-codex-spark` | Fast Codex-oriented model for queue scanning, claim bookkeeping, and coordination. |
+| Worker / builder | `openai-codex/gpt-5.6-sol` | Highest-tier GPT-5.6 allocation for implementation, tests, repair, and publication decisions. |
+| Reviewer | `openai-codex/gpt-5.6-terra` | Balanced GPT-5.6 allocation for strong independent review below the builder tier. |
 
 Skills do not have a Pi model field and run on the main agent's active model; do not invent a model field in this skill.
 

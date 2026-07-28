@@ -222,9 +222,9 @@ for (const name of actualDefinitions) {
   }
 }
 const expectedRoleDefinitions = new Map([
-  ["issue-maintainer.md", { model: "openai-codex/gpt-5.4-mini", tools: ["read", "bash", "grep", "find", "ls"] }],
-  ["worker.md", { model: "openai-codex/gpt-5.5", tools: ["read", "bash", "edit", "write", "grep", "find", "ls"] }],
-  ["pi-reviewer.md", { model: "openai-codex/gpt-5.4", tools: ["read", "bash", "grep", "find", "ls"] }],
+  ["issue-maintainer.md", { model: "openai-codex/gpt-5.3-codex-spark", tools: ["read", "bash", "grep", "find", "ls"] }],
+  ["worker.md", { model: "openai-codex/gpt-5.6-sol", tools: ["read", "bash", "edit", "write", "grep", "find", "ls"] }],
+  ["pi-reviewer.md", { model: "openai-codex/gpt-5.6-terra", tools: ["read", "bash", "grep", "find", "ls"] }],
 ]);
 for (const [name, expected] of expectedRoleDefinitions) {
   const content = readFileSync(join(root, "subagents", name), "utf8");

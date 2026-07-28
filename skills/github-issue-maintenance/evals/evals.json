@@ -49,7 +49,7 @@
     {
       "id": 10,
       "prompt": "List the exact model assigned to the issue maintainer, worker/builder, and reviewer, plus why the models differ. Do not execute tools.",
-      "expected_output": "Assigns openai-codex/gpt-5.4-mini to the low-cost maintainer, openai-codex/gpt-5.5 to the highest-quality builder, and openai-codex/gpt-5.4 to the strong independent reviewer; does not add a model field to the skill."
+      "expected_output": "Assigns openai-codex/gpt-5.3-codex-spark to the fast Codex-oriented maintainer, openai-codex/gpt-5.6-sol to the highest-tier builder, and openai-codex/gpt-5.6-terra to the balanced independent reviewer; does not add a model field to the skill."
     }
   ]
 }

@@ -1,7 +1,7 @@
 ---
 name: issue-maintainer
 description: Persistent GitHub issue maintainer that owns label-directed queue selection, durable claims, discussion, issue improvement, and direct coordination of a paired worker and reviewer without editing source code.
-model: openai-codex/gpt-5.4-mini
+model: openai-codex/gpt-5.3-codex-spark
 thinking: high
 projectContext: true
 tools: [read, bash, grep, find, ls]

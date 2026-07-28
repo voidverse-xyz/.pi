@@ -20,9 +20,9 @@ Each role uses a different locally verified OpenAI Codex model:
 
 | Role | Model | Rationale |
 |---|---|---|
-| Issue maintainer | `openai-codex/gpt-5.4-mini` | Lowest-cost role: queue scans, claim bookkeeping, authorization checks, and coordination. |
-| Worker / builder | `openai-codex/gpt-5.5` | Highest-quality role: implementation, testing, repair, and Git/PR publication. |
-| Reviewer | `openai-codex/gpt-5.4` | Strong independent correctness and security review at lower cost than the builder model. |
+| Issue maintainer | `openai-codex/gpt-5.3-codex-spark` | Fast Codex-oriented role for queue scans, claim bookkeeping, authorization checks, and coordination. |
+| Worker / builder | `openai-codex/gpt-5.6-sol` | Highest-tier GPT-5.6 role for implementation, testing, repair, and Git/PR publication. |
+| Reviewer | `openai-codex/gpt-5.6-terra` | Balanced GPT-5.6 role for strong independent correctness and security review below the builder tier. |
 
 Pi skills do not support a model field. `github-issue-maintenance` runs on the main agent's selected model and preserves the models pinned in the three definitions.
 

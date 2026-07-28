@@ -1,7 +1,7 @@
 ---
 name: pi-reviewer
 description: Independent code review specialist for correctness, security, lifecycle, and maintainability with direct peer reply support.
-model: openai-codex/gpt-5.4
+model: openai-codex/gpt-5.6-terra
 thinking: high
 projectContext: true
 tools: [read, bash, grep, find, ls]
