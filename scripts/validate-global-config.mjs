@@ -205,7 +205,7 @@ for (const skillFile of skillFiles) {
   }
 }
 
-const expectedDefinitions = ["pi-reviewer.md", "planner.md", "reviewer.md", "scout.md", "worker.md"];
+const expectedDefinitions = ["planner.md", "reviewer.md", "scout.md", "worker.md"];
 let actualDefinitions = [];
 try {
   actualDefinitions = readdirSync(join(root, "subagents")).filter((name) => name.endsWith(".md")).sort();
@@ -223,7 +223,7 @@ for (const name of actualDefinitions) {
 }
 const expectedRoleDefinitions = new Map([
   ["worker.md", { model: "openai-codex/gpt-5.6-sol", tools: ["read", "bash", "edit", "write", "grep", "find", "ls"] }],
-  ["pi-reviewer.md", { model: "openai-codex/gpt-5.6-terra", tools: ["read", "bash", "grep", "find", "ls"] }],
+  ["reviewer.md", { model: "openai-codex/gpt-5.6-terra", tools: ["read", "bash", "grep", "find", "ls"] }],
 ]);
 for (const [name, expected] of expectedRoleDefinitions) {
   const content = readFileSync(join(root, "subagents", name), "utf8");
@@ -239,10 +239,10 @@ for (const [name, expected] of expectedRoleDefinitions) {
     fail(`subagents/${name} must route coordination through the main agent`);
   }
 }
-const issueReviewerDefinition = readFileSync(join(root, "subagents", "pi-reviewer.md"), "utf8");
+const issueReviewerDefinition = readFileSync(join(root, "subagents", "reviewer.md"), "utf8");
 for (const requiredText of ["## Decision", "completed | waiting | blocked", "## Question / blocker", "not-completed"]) {
   if (!issueReviewerDefinition.includes(requiredText)) {
-    fail(`subagents/pi-reviewer.md is missing continuation guidance: ${requiredText}`);
+    fail(`subagents/reviewer.md is missing continuation guidance: ${requiredText}`);
   }
 }
 const issueMaintenanceEvals = readJson(join(root, "skills", "github-issue-maintenance", "evals", "evals.json"));

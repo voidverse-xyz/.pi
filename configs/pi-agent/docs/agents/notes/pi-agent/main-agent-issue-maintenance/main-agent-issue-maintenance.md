@@ -9,7 +9,7 @@ The main agent uses whatever model the user selected for the current Pi session.
 Only a durably claimed `fix` issue receives specialists. For each open issue epoch, the main agent creates or reuses two ordinary persistent Pi Subagents:
 
 - `worker/<issue-team-id>` owns isolated-worktree implementation, tests, repairs, and separately authorized commit/push/PR publication.
-- `pi-reviewer/<issue-team-id>` independently reviews local worker changes and returns file-and-line evidence.
+- `reviewer/<issue-team-id>` independently reviews local worker changes and returns file-and-line evidence.
 
 `discuss` and `improve` issues are handled entirely by the main agent and receive no worker/reviewer pair. “Team” here means the active main agent coordinating these two Pi Subagents; it does not use Pi Teams peer messaging.
 

@@ -7,7 +7,7 @@ Pi Subagents and Pi Teams now resolve typed agent definitions from the same cano
 - global: `~/.pi/agent/subagents/<type>.md`
 - trusted project: `<project>/.pi/subagents/<type>.md`
 
-The root `subagents/` directory is therefore the only tracked production definition library. The former root `teams/` copies and `agent/teams` compatibility shim were removed.
+The root `subagents/` directory is therefore the only tracked production definition library. Its shared inventory includes `planner.md`, `reviewer.md`, `scout.md`, and `worker.md`; Pi Teams continues to discover the planner and scout there. The former root `teams/` copies and `agent/teams` compatibility shim were removed.
 
 ## Boundaries
 

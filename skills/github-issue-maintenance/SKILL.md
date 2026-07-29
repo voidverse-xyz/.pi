@@ -12,7 +12,7 @@ The main agent is the maintainer and coordinator. Do not create an `issue-mainta
 Create or reuse exactly two persistent specialists for each claimed `fix` issue's current open epoch **within the current owning main Pi session**:
 
 - `worker/<issue-team-id>` implements in an isolated worktree, tests, repairs findings, and performs separately authorized publication.
-- `pi-reviewer/<issue-team-id>` independently reviews the worker's local change and reports evidence to the main agent.
+- `reviewer/<issue-team-id>` independently reviews the worker's local change and reports evidence to the main agent.
 
 Do not create specialists for `discuss` or `improve`; the main agent handles those modes directly. Reuse the same fix-issue pair across every pass, repair, review, and PR follow-up until GitHub verifies that issue epoch is closed. Then retire both specialists under the verified-closure lifecycle below.
 
@@ -57,7 +57,7 @@ Establish specialists only after the main agent owns a durable claim on an open 
 1. Verify repository identity, issue number, current open epoch, action label, active claim, and absence of an addressing PR immediately before deriving `<issue-team-id>`.
 2. Derive the epoch index from the verified close/reopen events already adjudicated in the private ledger. Do not guess an epoch after ledger loss or inconsistency.
 3. Inspect no-address `subagent_status`; retain its `ownerScopeId`, roster, states, and open-task anchors.
-4. When no completed binding exists for this issue epoch, create missing `worker/<issue-team-id>` and `pi-reviewer/<issue-team-id>` instances with their named types, `lifetime: persistent`, human-readable issue-specific labels, and no initial tasks.
+4. When no completed binding exists for this issue epoch, create missing `worker/<issue-team-id>` and `reviewer/<issue-team-id>` instances with their named types, `lifetime: persistent`, human-readable issue-specific labels, and no initial tasks.
 5. After both addresses are visible, persist a completed private binding containing repository, issue number, epoch index, team ID, both addresses, and `ownerScopeId`.
 6. When a completed binding exists, require exact repository/issue/epoch/team-ID equality, exact `ownerScopeId` equality, and both addresses in the current roster. A mismatch means another session, epoch, retirement, or state loss; return `waiting` rather than adopting or recreating silently.
 7. If either specialist is working, do not assign overlapping work. Await an anchor that belongs to this issue pass or return `waiting`.
