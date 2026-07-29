@@ -1,5 +1,7 @@
 # Power Matrix — Interaction Contract
 
+> **Historical — superseded.** This matrix documents an earlier team-capable design. The active hub-and-spoke contract is in `03-tool-surface.md` and the current implementation note.
+
 Decided 2026-07-09. Governing principle (D9): the main agent is the *user* of its
 subagents — but with deliberately trimmed powers (D10). Subagent→subagent is a
 further-reduced subset. Approvals never flow downhill.

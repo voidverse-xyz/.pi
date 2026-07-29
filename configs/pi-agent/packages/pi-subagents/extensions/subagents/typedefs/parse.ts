@@ -10,8 +10,8 @@
  * Schema: name, description, model, thinking, projectContext, tools.
  *
  * TOLERANT to foreign keys: an UNKNOWN top-level field is a WARNING, not an
- * error — a pi-teams def (with e.g. `peers: false`) copied into a subagents
- * type dir just works, its teams-only knobs ignored. Malformed known fields are
+ * error — a shared definition with a Teams-only field such as `peers: false`
+ * also works in Subagents, with that field ignored. Malformed known fields are
  * still hard errors (a capability grant must never be silently mis-parsed).
  *
  * Pure module: no fs.

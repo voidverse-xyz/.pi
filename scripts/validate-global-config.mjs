@@ -10,7 +10,7 @@ const failures = [];
 const notes = [];
 
 const EXPECTED_PACKAGE_COUNT = 28;
-const EXPECTED_SKILL_COUNT = 33;
+const EXPECTED_SKILL_COUNT = 34;
 const EXPECTED_THEME = "void-agent-tokyo-night";
 const ROOT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
 const AGENT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
@@ -205,29 +205,258 @@ for (const skillFile of skillFiles) {
   }
 }
 
-const expectedDefinitions = ["pi-reviewer.md", "planner.md", "reviewer.md", "scout.md", "worker.md"];
-for (const directory of ["subagents", "teams"]) {
-  let actual = [];
-  try {
-    actual = readdirSync(join(root, directory)).filter((name) => name.endsWith(".md")).sort();
-  } catch (error) {
-    fail(`cannot read ${directory}/: ${error.message}`);
-    continue;
+const expectedDefinitions = ["planner.md", "reviewer.md", "scout.md", "worker.md"];
+let actualDefinitions = [];
+try {
+  actualDefinitions = readdirSync(join(root, "subagents")).filter((name) => name.endsWith(".md")).sort();
+} catch (error) {
+  fail(`cannot read subagents/: ${error.message}`);
+}
+if (!sameJson(actualDefinitions, expectedDefinitions)) {
+  fail(`subagents/ definitions must be exactly: ${expectedDefinitions.join(", ")}; found: ${actualDefinitions.join(", ")}`);
+}
+for (const name of actualDefinitions) {
+  const stat = lstatSync(join(root, "subagents", name));
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+    fail(`subagents/${name} must be an independent ordinary file`);
   }
-  if (!sameJson(actual, expectedDefinitions)) {
-    fail(`${directory}/ definitions must be exactly: ${expectedDefinitions.join(", ")}; found: ${actual.join(", ")}`);
+}
+const expectedRoleDefinitions = new Map([
+  ["worker.md", { model: "openai-codex/gpt-5.6-sol", tools: ["read", "bash", "edit", "write", "grep", "find", "ls"] }],
+  ["reviewer.md", { model: "openai-codex/gpt-5.6-terra", tools: ["read", "bash", "grep", "find", "ls"] }],
+]);
+for (const [name, expected] of expectedRoleDefinitions) {
+  const content = readFileSync(join(root, "subagents", name), "utf8");
+  const actualModel = content.match(/^model:\s*(\S+)\s*$/m)?.[1];
+  if (actualModel !== expected.model) {
+    fail(`subagents/${name} model must be ${expected.model}; found: ${actualModel ?? "none"}`);
   }
-  for (const name of actual) {
-    const stat = lstatSync(join(root, directory, name));
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
-      fail(`${directory}/${name} must be an independent ordinary file`);
+  const actualTools = content.match(/^tools:\s*\[([^\]]*)\]\s*$/m)?.[1].split(",").map((tool) => tool.trim());
+  if (!sameJson(actualTools, expected.tools)) {
+    fail(`subagents/${name} tools must be ${expected.tools.join(", ")}; found: ${(actualTools ?? []).join(", ")}`);
+  }
+  if (!/^peers:\s*false\s*$/m.test(content)) {
+    fail(`subagents/${name} must route coordination through the main agent`);
+  }
+}
+const issueReviewerDefinition = readFileSync(join(root, "subagents", "reviewer.md"), "utf8");
+for (const requiredText of ["## Decision", "completed | waiting | blocked", "## Question / blocker", "not-completed"]) {
+  if (!issueReviewerDefinition.includes(requiredText)) {
+    fail(`subagents/reviewer.md is missing continuation guidance: ${requiredText}`);
+  }
+}
+const issueMaintenanceEvals = readJson(join(root, "skills", "github-issue-maintenance", "evals", "evals.json"));
+if (issueMaintenanceEvals?.skill_name !== "github-issue-maintenance") {
+  fail("github-issue-maintenance evals must name the skill");
+}
+const issueMaintenanceEvalItems = issueMaintenanceEvals?.evals;
+if (!Array.isArray(issueMaintenanceEvalItems)) {
+  fail("github-issue-maintenance evals must be an array");
+} else {
+  const expectedEvalIds = Array.from({ length: 18 }, (_, index) => index + 1);
+  const actualEvalIds = issueMaintenanceEvalItems.map((item) => item?.id);
+  if (!sameJson(actualEvalIds, expectedEvalIds)) {
+    fail(`github-issue-maintenance eval IDs must be ${expectedEvalIds.join(", ")}`);
+  }
+  for (const item of issueMaintenanceEvalItems) {
+    if (!Number.isInteger(item?.id)) fail("github-issue-maintenance eval id must be an integer");
+    if (typeof item?.prompt !== "string" || !item.prompt.trim()) fail(`github-issue-maintenance eval ${item?.id ?? "unknown"} needs a prompt`);
+    if (typeof item?.expected_output !== "string" || !item.expected_output.trim()) {
+      fail(`github-issue-maintenance eval ${item?.id ?? "unknown"} needs expected_output`);
     }
   }
 }
-for (const name of expectedDefinitions) {
-  const subagent = readFileSync(join(root, "subagents", name));
-  const team = readFileSync(join(root, "teams", name));
-  if (!subagent.equals(team)) fail(`subagents/${name} and teams/${name} differ`);
+const issueMaintenanceSkill = readFileSync(join(root, "skills", "github-issue-maintenance", "SKILL.md"), "utf8");
+for (const requiredText of [
+  "Do not create an `issue-maintainer` subagent",
+  "within the current owning main Pi session",
+  "subagent_spawn",
+  "subagent_send",
+  "subagent_await",
+  "subagent_retire",
+  "ownerScopeId",
+  "<issue-team-id>",
+  "whatever model the user selected",
+  "automatic retirement after verified issue closure",
+  "Never reuse a retired epoch ID",
+  "canonical base-10 `1..9999999999`",
+  "canonical base-10 `0..9999999999`",
+  "repository ID is at most 226 characters",
+  "issue-team ID at most 250 characters",
+  "Establish specialists only after the main agent owns a durable claim",
+  "Reuse the same fix-issue pair across every pass",
+  "later verified reopen is the next epoch's start delimiter",
+  "partial-retirement",
+  "do not establish any next-epoch pair",
+  "Review cannot be bypassed",
+  "commits, pushes, and PR publication must each be explicit",
+  "never in public GitHub text",
+  "status: \"error\"",
+  "status: \"retired\"",
+]) {
+  if (!issueMaintenanceSkill.includes(requiredText)) {
+    fail(`github-issue-maintenance is missing required orchestration guidance: ${requiredText}`);
+  }
+}
+const issueMaintenanceNote = readFileSync(join(root, "configs", "pi-agent", "docs", "agents", "notes", "pi-agent", "main-agent-issue-maintenance", "main-agent-issue-maintenance.md"), "utf8");
+const issueMaintenanceEvalText = JSON.stringify(issueMaintenanceEvals);
+for (const [source, content] of [["skill", issueMaintenanceSkill], ["note", issueMaintenanceNote], ["evals", issueMaintenanceEvalText]]) {
+  if (content.includes("gpt-5.3-codex-spark")) {
+    fail(`github-issue-maintenance ${source} must not pin or recommend a main-agent model`);
+  }
+}
+const modelsSection = issueMaintenanceSkill.match(/## Models\n\n([\s\S]*?)\n\n## Required inputs and authorization/)?.[1];
+const specialistModelsMarker = "The specialist definitions pin their own models:";
+const expectedMainModelPolicy = "The main agent uses whatever model the user selected for the current Pi session. This skill does not check, recommend, pin, or switch the main model.";
+const mainModelPolicy = modelsSection?.split(specialistModelsMarker)[0].trim();
+if (mainModelPolicy !== expectedMainModelPolicy) {
+  fail("github-issue-maintenance main-model policy must be exactly model-neutral");
+}
+const mainModelRow = issueMaintenanceNote.match(/^\| Main coordinator \| ([^|]+) \|$/m)?.[1].trim();
+if (mainModelRow !== "Whatever model the user selected for the active Pi session." || mainModelRow.includes("/")) {
+  fail("main-agent issue maintenance note must leave the main model user-selected");
+}
+const expectedModelEval = "Uses whatever model the user selected for the main Pi session without checking or recommending one; worker pins openai-codex/gpt-5.6-sol and reviewer pins openai-codex/gpt-5.6-terra.";
+if (issueMaintenanceEvalItems?.find((item) => item?.id === 10)?.expected_output !== expectedModelEval) {
+  fail("github-issue-maintenance model eval must enforce a model-neutral main agent");
+}
+const criticalEvalClauses = new Map([
+  [1, ["active main agent", "only for a durably claimed fix-issue epoch"]],
+  [3, ["does not create, wake, or reserve worker/reviewer addresses"]],
+  [4, ["-i<issue>-e<epoch>", "never reuses a retired epoch ID"]],
+  [5, ["repository, issue, epoch, team ID, addresses, and ownerScopeId"]],
+  [6, ["Refuses review bypass", "separate worker assignment"]],
+  [7, ["226-character repository ID", "250-character issue-team ID", "canonical decimal bounds"]],
+  [8, ["without a durable claim", "creates no issue worker/reviewer pair"]],
+  [9, ["excludes local paths", "scope/team/session identifiers"]],
+  [11, ["different owning main session", "stops rather than adopting"]],
+  [12, ["changed edit time or body hash", "never promotes the rejected claim"]],
+  [13, ["no publication or automatic replacement", "does not claim the issue team is safe to retire"]],
+  [14, ["old anchor as consumed", "new {to, anchorId} target"]],
+  [15, ["Reuses the exact worker and reviewer", "until verified closure"]],
+  [16, ["later reopen starts epoch 1", "retires the old pair", "fresh non-reused epoch-1 pair"]],
+  [17, ["canonical base-10 1..9999999999", "canonical base-10 0..9999999999"]],
+  [18, ["partial-retirement", "does not create the epoch-1 pair", "both old addresses are verified retired and absent"]],
+]);
+for (const [id, clauses] of criticalEvalClauses) {
+  const output = issueMaintenanceEvalItems?.find((item) => item?.id === id)?.expected_output ?? "";
+  for (const clause of clauses) {
+    if (!output.includes(clause)) fail(`github-issue-maintenance eval ${id} is missing required clause: ${clause}`);
+  }
+}
+for (const requiredText of [
+  "<repo-id>-i<issue-number>-e<epoch-index>",
+  "Whatever model the user selected",
+  "canonical base-10 `1..9999999999`",
+  "canonical base-10 `0..9999999999`",
+  "repository ID is at most 226 characters",
+  "issue-team ID at most 250 characters",
+  "close and reopen both occurred between passes",
+  "partial-retirement",
+  "creates no next-epoch pair",
+  "fresh pair",
+]) {
+  if (!issueMaintenanceNote.includes(requiredText)) {
+    fail(`main-agent issue maintenance note is missing: ${requiredText}`);
+  }
+}
+const delegatedReviewPaths = [
+  join(root, "procedures", "reviews", "delegated-review-results", "delegated-review-results.md"),
+  join(root, "configs", "pi-agent", "docs", "agents", "procedures", "reviews", "delegated-review-results", "delegated-review-results.md"),
+];
+const delegatedReviewProcedures = delegatedReviewPaths.map((path) => readFileSync(path, "utf8"));
+if (delegatedReviewProcedures[0] !== delegatedReviewProcedures[1]) {
+  fail("delegated-review-results procedure copies must stay synchronized");
+}
+for (const obsoleteText of ["waitFor:", "subagent_collect", "`attention`"]) {
+  if (delegatedReviewProcedures[0].includes(obsoleteText)) {
+    fail(`delegated-review-results uses obsolete Pi Subagents guidance: ${obsoleteText}`);
+  }
+}
+for (const requiredText of ["targets:", "anchorId:", "completed", "error", "retired", "timeout", "new envelope ID"]) {
+  if (!delegatedReviewProcedures[0].includes(requiredText)) {
+    fail(`delegated-review-results is missing current lifecycle guidance: ${requiredText}`);
+  }
+}
+const currentSubagentDocs = [
+  join(root, "configs", "subagent-docs", "03-tool-surface.md"),
+  join(root, "configs", "pi-agent", "packages", "pi-subagents", "README.md"),
+  join(root, "configs", "pi-agent", "docs", "agents", "notes", "architecture", "session-scoped-subagents-implementation", "session-scoped-subagents-implementation.md"),
+  join(root, "configs", "pi-agent", "docs", "agents", "plans", "pi-agent", "subagent-session-ownership-and-result-delivery", "subagent-session-ownership-and-result-delivery.md"),
+  join(root, "configs", "pi-agent", "docs", "agents", "plans", "pi-agent", "pi-subagents", "pi-subagents.md"),
+];
+for (const docPath of currentSubagentDocs) {
+  const content = readFileSync(docPath, "utf8");
+  for (const obsoleteText of ["waitFor:", "subagent_collect", "status:\"attention\"", "completed: [...]", "adopt-legacy", "pi-agents"]) {
+    if (content.includes(obsoleteText)) {
+      fail(`${rel(docPath)} uses obsolete Pi Subagents guidance: ${obsoleteText}`);
+    }
+  }
+}
+const activeToolSurface = readFileSync(currentSubagentDocs[0], "utf8");
+for (const requiredText of ["ownerScopeId", "outcomes", "completed", "error", "retired", "new envelope ID"]) {
+  if (!activeToolSurface.includes(requiredText)) {
+    fail(`current Pi Subagents tool surface is missing: ${requiredText}`);
+  }
+}
+const currentSubagentPlan = readFileSync(currentSubagentDocs[4], "utf8");
+for (const requiredText of [
+  "payload.terminalAnchors",
+  "drained-turn snapshot",
+  "all and only its stamped targets",
+  "Pre-migration final reports without the list",
+  "legacy unscoped error",
+  "`completed` or `error`",
+  "`retired`",
+]) {
+  if (!currentSubagentPlan.includes(requiredText)) {
+    fail(`current Pi Subagents plan is missing exact-anchor guidance: ${requiredText}`);
+  }
+}
+if (currentSubagentPlan.includes("correlationId === anchorId && final === true")) {
+  fail("current Pi Subagents plan uses the retired correlation-only await matcher");
+}
+const historicalSubagentDocs = [
+  join(root, "configs", "subagent-docs", "00-design-log.md"),
+  join(root, "configs", "subagent-docs", "01-power-matrix.md"),
+  join(root, "configs", "subagent-docs", "02-envelope-contract.md"),
+  join(root, "configs", "subagent-docs", "04-type-schema.md"),
+  join(root, "configs", "subagent-docs", "05-tui-spec.md"),
+  join(root, "configs", "subagent-docs", "06-architecture.md"),
+  join(root, "configs", "subagent-docs", "pi-agents-historical-implementation.html"),
+  join(root, "configs", "pi-agent", "docs", "agents", "plans", "architecture", "session-scoped-subagents-and-reliable-results", "session-scoped-subagents-and-reliable-results.md"),
+  join(root, "configs", "pi-agent", "docs", "agents", "notes", "architecture", "session-scoped-subagents-impact", "session-scoped-subagents-impact.md"),
+];
+for (const docPath of historicalSubagentDocs) {
+  if (!readFileSync(docPath, "utf8").slice(0, 600).toLowerCase().includes("superseded")) {
+    fail(`${rel(docPath)} must be marked as superseded historical guidance`);
+  }
+}
+const subagentCoreSource = readFileSync(join(root, "configs", "pi-agent", "packages", "pi-subagents", "extensions", "subagents", "core.ts"), "utf8");
+const subagentToolSource = readFileSync(join(root, "configs", "pi-agent", "packages", "pi-subagents", "extensions", "subagents", "tools", "main-agent.ts"), "utf8");
+const subagentRuntimeSource = readFileSync(join(root, "configs", "pi-agent", "packages", "pi-subagents", "extensions", "subagents", "runtime", "in-process.ts"), "utf8");
+const subagentAwaitTest = readFileSync(join(root, "configs", "pi-agent", "packages", "pi-subagents", "test", "e2e", "phase4-await.mjs"), "utf8");
+const subagentResumeTest = readFileSync(join(root, "configs", "pi-agent", "packages", "pi-subagents", "test", "e2e", "phase7-resume.mjs"), "utf8");
+if (!subagentCoreSource.includes("ownerScopeId") || !subagentCoreSource.includes("createHash(\"sha256\")")) {
+  fail("pi-subagents core must derive an opaque ownerScopeId");
+}
+if (!subagentToolSource.includes("ownerScopeId: core.ownerScopeId")) {
+  fail("subagent_status must return ownerScopeId");
+}
+if (!subagentResumeTest.includes("owner scope fingerprint survives resume") || !subagentResumeTest.includes("createStatusTool")) {
+  fail("pi-subagents resume tests must cover ownerScopeId continuity and status exposure");
+}
+if (!subagentRuntimeSource.includes('terminal.kind === "legacy-unscoped-error" || terminal.anchors.includes(target.anchorId)')) {
+  fail("pi-subagents await must distinguish legacy unscoped errors from modern empty snapshots");
+}
+if (!subagentAwaitTest.includes("explicit empty error snapshot resolves nothing")) {
+  fail("pi-subagents await tests must cover modern empty and legacy unscoped errors");
+}
+if (existsSync(join(root, "configs", "subagent-docs", "pi-agents-current-implementation.html"))) {
+  fail("obsolete current-implementation HTML name must not remain");
+}
+if (existsSync(join(root, "teams"))) {
+  fail("legacy teams/ definition directory must be absent; Pi Teams uses subagents/");
 }
 
 let tracked = [];
@@ -254,7 +483,6 @@ for (const requiredAgentEntry of [
   "agent/settings.json",
   "agent/skills",
   "agent/subagents",
-  "agent/teams",
   "agent/procedures",
 ]) {
   if (!tracked.includes(requiredAgentEntry)) {
@@ -303,7 +531,6 @@ const allowedSymlinks = new Map([
   ["agent/configs", "../configs"],
   ["agent/skills", "../skills"],
   ["agent/subagents", "../subagents"],
-  ["agent/teams", "../teams"],
   ["agent/procedures", "../procedures"],
 ]);
 try {
@@ -374,7 +601,7 @@ for (const ignoredPath of [
 notes.push(`${rootSettings?.packages?.length ?? 0} root package paths`);
 notes.push(`${agentSettings?.packages?.length ?? 0} agent-dir package paths`);
 notes.push(`${skillFiles.length} global skills`);
-notes.push(`${expectedDefinitions.length} synchronized subagent/team definitions`);
+notes.push(`${expectedDefinitions.length} shared subagent/team definitions`);
 
 if (failures.length > 0) {
   console.error("Global Pi configuration validation failed:");

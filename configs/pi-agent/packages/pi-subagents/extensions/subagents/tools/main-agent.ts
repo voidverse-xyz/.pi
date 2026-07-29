@@ -282,8 +282,8 @@ export function createStatusTool(getCore: GetCore): ToolDefinition<typeof Status
 		name: "subagent_status",
 		label: "Subagent status",
 		description:
-			"Inspect subagents. With no address: the full roster (address, state, vitals) plus open task anchors. With an " +
-			"address: detail plus the last transcript entries (read-only; never perturbs the agent).",
+			"Inspect subagents. With no address: the owning-session scope fingerprint, full roster (address, state, vitals), " +
+			"and open task anchors. With an address: detail plus the last transcript entries (read-only; never perturbs the agent).",
 		parameters: StatusParams,
 		async execute(_toolCallId, params) {
 			const core = getCore();
@@ -294,7 +294,7 @@ export function createStatusTool(getCore: GetCore): ToolDefinition<typeof Status
 					return jsonResult(detail);
 				}
 				const roster = await core.status();
-				return jsonResult({ agents: roster, count: roster.length, openTasks: core.openTasks() });
+				return jsonResult({ ownerScopeId: core.ownerScopeId, agents: roster, count: roster.length, openTasks: core.openTasks() });
 			} catch (error) {
 				return errorResult(error);
 			}

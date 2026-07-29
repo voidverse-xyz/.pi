@@ -1,8 +1,8 @@
 /**
  * typedefs/discover.ts — locate and read type-definition `.md` files (D6).
  *
- * Discovery: global `~/.pi/agent/teams/<type>.md` and project
- * `<cwd>/.pi/teams/<type>.md`. Project defs WIN on name conflict, but only
+ * Discovery: the shared global `~/.pi/agent/subagents/<type>.md` and project
+ * `<cwd>/.pi/subagents/<type>.md` libraries. Project defs WIN on name conflict, but only
  * when the project is trusted (v1 finding #7) — an untrusted project's defs are
  * neither listed, read, nor allowed to shadow a global def.
  *
@@ -24,7 +24,7 @@ export function sha256(text: string): string {
 
 export interface DiscoverOptions {
 	/**
-	 * Whether the project's `.pi/teams` defs are trusted (Pi project-trust).
+	 * Whether the project's shared `.pi/subagents` defs are trusted (Pi project-trust).
 	 * Defaults to FALSE (fail-closed): an untrusted project's defs are neither
 	 * listed, read, nor allowed to shadow a global def. Callers with a real trust
 	 * signal must pass it explicitly.

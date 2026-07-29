@@ -1,5 +1,7 @@
 # Pi Subagents Extension — Design Log
 
+> **Historical — superseded.** This decision log preserves earlier designs and retired APIs. Do not use it as an active contract; use `03-tool-surface.md` and the current implementation note.
+
 Working doc. One decision per entry, with rationale. Specs split into their own files as they firm up.
 
 ## Process

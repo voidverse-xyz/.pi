@@ -1,5 +1,7 @@
 # TUI Spec — Subagent Visibility & Control
 
+> **Historical — superseded.** This TUI specification describes retired controls and states. Use the current package README, implementation, and `03-tool-surface.md`.
+
 Decided 2026-07-09 (D8, D17, D22). Four components. All rendering uses Pi's own
 transcript components where sessions are shown (D7).
 

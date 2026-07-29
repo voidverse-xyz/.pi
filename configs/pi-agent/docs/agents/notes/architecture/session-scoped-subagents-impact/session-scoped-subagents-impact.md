@@ -1,5 +1,7 @@
 # Session-scoped subagents: impact and breaking-change assessment
 
+> **Historical pre-implementation analysis — superseded.** The architecture and command proposals below are archival. Use `configs/subagent-docs/03-tool-surface.md` and the current implementation note for active behavior.
+
 Date: 2026-07-12
 Status: analysis only; no implementation decision
 Follow-up plan: `configs/pi-agent/docs/agents/plans/architecture/session-scoped-subagents-and-reliable-results/session-scoped-subagents-and-reliable-results.md`

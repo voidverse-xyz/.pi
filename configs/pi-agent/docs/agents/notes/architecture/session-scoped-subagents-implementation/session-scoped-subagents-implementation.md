@@ -1,38 +1,37 @@
-# Session-scoped subagents implementation
+# Session-scoped Pi Subagents implementation
 
 Implemented: 2026-07-13
-Plan: `configs/pi-agent/docs/agents/plans/architecture/session-scoped-subagents-and-reliable-results/session-scoped-subagents-and-reliable-results.md`
+
+Current contract refreshed: 2026-07-28
 
 ## Delivered
 
-- Mutable state is keyed by stable main Pi session ID beneath a versioned project container; type libraries, settings, trust, cwd, and project context remain shared.
-- Reload/resume restore the same scope; new/fork start empty; fork visibly discloses that workers were not inherited.
-- Persisted autonomy counters and abort latch are owner-local. Non-persisted sessions use temporary state and reject persistent workers.
-- Host ownership uses exclusive creation, PID process-start identity, heartbeat, and generation-specific append-only stale-reclaim fencing. A real two-process regression proves only one stale takeover succeeds.
-- Main digest and await delivery use atomic claim-first mailbox parking plus host-JSONL reconciliation.
-- `subagent_spawn`/`subagent_send` expose anchors; reports persist `final`; task reports are runtime-correlated to the assignment that triggered the current turn.
-- New `subagent_await` joins final or collect results, returns early for questions/escalations/errors, and consumes nothing on timeout/cancellation.
-- Oneshot/manual retirement intent is durable and startup-recoverable. Owner mail is quietly audited, peer bounces are idempotent, and obsolete escalation mail is removed.
-- `/agents adopt-legacy` performs verified, backup-retaining explicit adoption; startup recovers interrupted copies. `/agents rollback-legacy` works only while the scoped fingerprint is unchanged.
-- Pi's whole project-session directory, including inactive adoption backups, is a non-overridable sandbox denial.
-- Shared delegated-review procedure and bounded valid reviewer/scout definitions were added.
+- Mutable registries, mailboxes, archives, open-task anchors, and agent sessions are scoped beneath the stable owning main Pi session ID.
+- Reload/resume restores the same scope; `/new`, fork, and another main session start separate scopes.
+- No-address `subagent_status` exposes a stable opaque `ownerScopeId` fingerprint so workflows can verify scope continuity without publishing the raw session ID.
+- Persistent typed agents are get-or-create within one owner scope. One-shot agents auto-retire after their final report.
+- The main agent is the only coordinator; ordinary subagents cannot spawn or message peers.
+- `subagent_spawn` and `subagent_send` expose assignment anchors.
+- `subagent_await` accepts exact `{to, anchorId}` targets, `all`/`any` mode, and an optional timeout.
+- Await returns top-level `completed`, `timeout`, or `empty`; per-target outcomes are `completed`, `error`, or `retired`.
+- Questions use a completed final waiting/blocked report. The main agent answers with a new `subagent_send` and awaits its new envelope ID.
+- Host ownership uses a scoped lease and process identity to prevent two active processes from owning one persisted main-session scope.
+- The project session tree is a non-overridable sandbox denial.
 
 ## Verification
 
-`configs/pi-agent/packages/pi-agents/test/e2e/run.sh` passes:
+`configs/pi-agent/packages/pi-subagents/test/e2e/run.sh` runs:
 
-- strict TypeScript typecheck;
-- phase 1–7 harnesses;
-- lifecycle/runtime regression harnesses;
-- new session-scope/await/migration/concurrency harness;
-- Pi extension loader with eight tools.
+- strict TypeScript checking;
+- data-layer, definition, spawn, await, wake, control, resume, sandbox, TUI, and loader harnesses;
+- resume-stable and cross-session-distinct owner-scope fingerprint checks.
 
-The new harness covers scope isolation, duplicate host ownership, PID reuse, real two-process stale takeover, resume persistence, overlapping task correlation, await attention/timeout/cancel/durability, quiet retirement, idempotent crash recovery, oneshot intent recovery, and ephemeral lifetime restrictions.
+The await harness covers final reports, timeouts, errors, retirement, multiple targets, and open-task cleanup. Session tests cover host ownership and persistent memory across resume.
 
-## Independent review
+## Operating rules
 
-A read-only reviewer initially found host-reclaim races, overlapping-result miscorrelation, retirement crash gaps, interrupted migration gaps, backup sandbox exposure, and invalid shared type frontmatter. Each finding was fixed and regression-tested. Targeted follow-up reviews continued until the final structured verdict was `pass` with no remaining findings.
-
-## Activation and migration
-
-Run `/reload` or restart Pi to activate the new extension code. Existing cwd-wide state is intentionally not opened automatically. In the persisted session that should own it, close other Pi processes in the project and run `/agents adopt-legacy`.
+- Capture and await the exact assignment anchor when a delegated result is required.
+- Treat timeout as pending and `error`/`retired` as non-completion.
+- Never assume a deterministic agent address in another main session identifies the same memory; compare `ownerScopeId` first.
+- Do not silently recreate a missing persistent agent when workflow continuity depends on its prior context.
+- Run `/reload` or restart Pi after changing extension code, type definitions, or skills.

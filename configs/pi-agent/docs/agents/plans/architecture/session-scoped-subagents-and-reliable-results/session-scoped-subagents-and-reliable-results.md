@@ -1,5 +1,7 @@
 # Session-scoped subagents and reliable delegated-result delivery
 
+> **Historical implementation plan — superseded.** API shapes and migration proposals below are archival and must not guide current tool calls. Use `configs/subagent-docs/03-tool-surface.md` and the linked implementation note for the active contract.
+
 Status: implemented and independently reviewed (2026-07-13)
 Scope selected by user: combined program
 Implementation note: `configs/pi-agent/docs/agents/notes/architecture/session-scoped-subagents-implementation/session-scoped-subagents-implementation.md`

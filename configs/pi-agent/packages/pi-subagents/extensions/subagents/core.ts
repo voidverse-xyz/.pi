@@ -5,6 +5,7 @@
  */
 
 import type { CreateAgentSessionServicesOptions, ModelRegistry, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createHash } from "node:crypto";
 import { composeWakeDigest, type DigestItem } from "./mail/digest.ts";
 import { parseAddress, terminalTaskAnchors } from "./mail/envelope.ts";
 import { markDone, pendingCount, readPending } from "./mail/mailbox.ts";
@@ -47,6 +48,8 @@ export interface AvailableType {
 export type ArchivedAgentInfo = ArchivedInfo;
 
 export interface SubagentsCore {
+	/** Stable opaque fingerprint for the owning main Pi session scope. */
+	readonly ownerScopeId: string;
 	spawn(options: SpawnOptions): Promise<SpawnResult>;
 	send(options: SendOptions): Promise<SendResult>;
 	sendAsUser(options: SendOptions): Promise<SendResult>;
@@ -112,9 +115,11 @@ export function createCore(options: CoreOptions): SubagentsCore {
 		...(options.confirm ? { confirm: options.confirm } : {}),
 	});
 	const projectTrusted = (): boolean => (options.projectTrusted ? options.projectTrusted() : true);
+	const ownerScopeId = createHash("sha256").update(options.layout.ownerSessionId).digest("hex").slice(0, 24);
 
 	return {
 		runtime,
+		ownerScopeId,
 		spawn: (spawnOptions) => runtime.spawn(spawnOptions),
 		send: (sendOptions) => runtime.send(sendOptions),
 		sendAsUser: (sendOptions) => runtime.sendAsUser(sendOptions),

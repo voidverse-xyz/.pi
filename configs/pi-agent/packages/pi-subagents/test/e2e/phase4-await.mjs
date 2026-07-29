@@ -10,9 +10,9 @@ import { join } from "node:path";
 import { EXT, jiti } from "./env.mjs";
 import { makeWorld, test, summary, until } from "./harness.mjs";
 
-const { readPending, writeEnvelope } = await jiti.import(join(EXT, "mail/mailbox.ts"));
+const { markDone, readPending, writeEnvelope } = await jiti.import(join(EXT, "mail/mailbox.ts"));
 const { makeEnvelope } = await jiti.import(join(EXT, "mail/envelope.ts"));
-const { readOpenTasks, recordOpenTask } = await jiti.import(join(EXT, "store/open-tasks.ts"));
+const { closeOpenTask, readOpenTasks, recordOpenTask } = await jiti.import(join(EXT, "store/open-tasks.ts"));
 
 const world = await makeWorld("phase4");
 world.writeDef("worker", "You are WORKER.");
@@ -122,6 +122,47 @@ await test("a fatal error envelope resolves the target as error and closes its t
 	assert.ok(!readOpenTasks(layout.openTasksFile)[send.envelopeId], "task closed on error");
 	assert.equal(readPending(layout.mainMailboxDir).length, 0, "superseded progress consumed with the fatal outcome");
 	await core.whenIdle();
+});
+await test("an explicit empty error snapshot resolves nothing; a legacy unscoped error retains sender-wide fallback", async () => {
+	await core.spawn({ type: "worker", id: "error-scope" });
+	const modernTask = makeEnvelope({ from: "main", to: "worker/error-scope", type: "message", text: "Modern task." });
+	recordOpenTask(layout.openTasksFile, modernTask.id, { to: "worker/error-scope", snippet: modernTask.payload.text, openedAt: new Date().toISOString() });
+	const modernError = makeEnvelope({
+		from: "worker/error-scope",
+		to: "main",
+		type: "error",
+		text: "Modern empty snapshot",
+		terminalAnchors: [],
+		hops: 1,
+	});
+	writeEnvelope(layout.mainMailboxDir, modernError);
+	const modernResult = await core.awaitResults({
+		targets: [{ to: "worker/error-scope", anchorId: modernTask.id }],
+		mode: "all",
+		timeoutSeconds: 0.05,
+	});
+	assert.equal(modernResult.status, "timeout");
+	assert.equal(modernResult.outcomes.length, 0, "explicit empty snapshot does not resolve an unstamped target");
+	assert.equal(modernResult.pending[0].anchorId, modernTask.id);
+	markDone(layout.mainMailboxDir, modernError.id);
+	closeOpenTask(layout.openTasksFile, modernTask.id);
+
+	const legacyTask = makeEnvelope({ from: "main", to: "worker/error-scope", type: "message", text: "Legacy task." });
+	recordOpenTask(layout.openTasksFile, legacyTask.id, { to: "worker/error-scope", snippet: legacyTask.payload.text, openedAt: new Date().toISOString() });
+	writeEnvelope(layout.mainMailboxDir, makeEnvelope({
+		from: "worker/error-scope",
+		to: "main",
+		type: "error",
+		text: "Legacy unscoped failure",
+		hops: 1,
+	}));
+	const legacyResult = await core.awaitResults({
+		targets: [{ to: "worker/error-scope", anchorId: legacyTask.id }],
+		mode: "all",
+		timeoutSeconds: 5,
+	});
+	assert.equal(legacyResult.outcomes[0].status, "error");
+	assert.ok(!readOpenTasks(layout.openTasksFile)[legacyTask.id], "legacy unscoped error closes sender task");
 });
 await test("a retired target resolves as retired (unmatched anchor)", async () => {
 	world.scripts.push({ match: (c) => c.address === "worker/gone", reply: () => ({ tools: [{ name: "report", args: { text: "irrelevant", final: true } }] }) });

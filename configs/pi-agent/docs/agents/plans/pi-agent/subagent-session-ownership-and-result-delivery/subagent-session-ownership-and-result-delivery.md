@@ -1,76 +1,66 @@
-# Pi subagent session ownership and reliable result delivery
+# Pi Subagent session ownership and reliable result delivery
 
-Reusable architecture pattern for a disk-backed Pi subagent extension.
+Reusable architecture pattern for a disk-backed Pi Subagents extension.
 
 ## Goal
 
-Isolate worker identities and mail by owning main Pi session while retaining project-scoped type definitions/settings, and provide a durable await/join path so delegated results reach the orchestrator before it answers the user.
+Isolate worker identities and mail by owning main Pi session while retaining project-scoped type definitions and provide a durable await path so required delegated results reach the orchestrator before it answers.
 
-## Recommended model
+## Scope model
 
-- Project scope: canonical cwd, type definitions, settings, trust, project context.
-- Main-session scope: registry, workers, teams, mailboxes, escalations, autonomy state, archives.
-- Key session scope by `ctx.sessionManager.getSessionId()`.
-- Reload/resume reuse a scope; new/fork create an empty scope.
-- Reject persistent workers in non-persisted host sessions; use a temporary oneshot-only scope.
+- Project scope: canonical cwd, type definitions, settings, trust, and project context.
+- Main-session scope: registry, agents, mailboxes, open-task anchors, archives, and autonomy state.
+- Key the scope by the stable owning main session ID.
+- Expose only a stable opaque fingerprint such as `ownerScopeId` to the LLM-facing status tool.
+- Reload/resume reuses a scope; `/new` and fork create empty independent scopes.
 - Use a host-scope lease so two processes cannot actively own the same main session.
+- When workflow correctness depends on persistent memory, bind the fingerprint and refuse silent adoption from another scope.
 
 ## Durable mailbox rule
 
 Claim envelopes before rendering them:
 
 1. Lock the mailbox.
-2. Move eligible envelopes into a delivery directory with target session and delivery-marker metadata.
-3. Render the digest/tool result from the claim.
-4. Finalize only after the host JSONL contains both envelope ID and marker.
-5. Requeue on crash-before-append.
+2. Move eligible envelopes into a delivery area with durable metadata.
+3. Render the digest or tool result from the claim.
+4. Finalize only after the host session records accepted delivery.
+5. Requeue after a crash before the durable append.
 
-Use the same protocol for normal digests and awaited tool results.
+Use the same durability rule for normal digests and explicit await results.
 
-## Await tool pattern
+## Await pattern
 
-Expose task/send/collect envelope IDs as anchors. Persist `final:true` on report envelopes.
+Expose task/send envelope IDs as anchors.
 
 ```text
-subagent_await(to, waitFor: "final"|"collect", anchorId, timeoutSeconds?)
+subagent_await(targets?: [{to, anchorId}], mode?: "all"|"any", timeoutSeconds?)
 ```
 
-- Final mode matches a final report automatically correlated to the task/send anchor.
-- Collect mode matches a report correlated to the collect request.
-- Return early for question/escalation/error so waiting cannot deadlock.
-- Timeout/cancellation consumes nothing.
+- Omitted targets snapshot all currently open assignments.
+- Top-level status is `completed`, `timeout`, or `empty`.
+- Per-target entries in `outcomes` are `completed`, `error`, or `retired`.
+- A timeout leaves unresolved targets in `pending` and consumes no pending result.
+- A final waiting/blocked question consumes its old anchor. Answer with a new send and await the new envelope ID.
 - Park a completed result until its tool-result append is durable.
-- Bound report text/data and the LLM-facing result.
+- Bound report text and LLM-facing result size.
 
 ## Retirement pattern
 
-- Cancel/audit pending messages from the owning main without bouncing them back to that same main.
-- Bounce peer questions/messages so peers are not stranded.
-- Resolve pending escalation records and suppress obsolete approval mail.
-- Never silently discard peer mail.
-
-## Legacy migration
-
-Do not auto-assign cwd-wide state. Provide a human-only adoption command:
-
-- destination must be empty;
-- no live owner/run marker may exist;
-- write an intent ledger;
-- preserve an inactive backup;
-- copy into staging and verify;
-- atomically activate one owner scope;
-- rollback only before the new scope diverges.
+- Cancel or audit pending messages from the owning main without presenting them as successful work.
+- Resolve open-task anchors with a terminal retired outcome.
+- One-shot agents auto-retire only after final-report delivery.
+- Never silently replace a missing persistent agent when memory continuity matters.
 
 ## Delegated review procedure
 
-1. Use a narrowly scoped, bounded oneshot.
-2. Capture the task anchor.
-3. Await its final report.
-4. Handle attention and await again.
-5. Do not declare completion on timeout/cancellation.
-6. Let final-report auto-retirement run normally.
-7. Present verdict/findings first; operational caveats last.
+1. Use one narrowly scoped reviewer unless independent purviews justify more.
+2. Capture the assignment anchor.
+3. Await the exact `{to, anchorId}` target.
+4. Accept findings only from a `completed` outcome containing the final report.
+5. Treat timeout as pending and `error`/`retired` as incomplete.
+6. Answer a waiting/blocked question with a new send and await its new anchor.
+7. Present verdict and findings before orchestration details.
 
 ## Required verification
 
-Cover two sessions in one cwd, duplicate opening of one session, resume/new/fork, crash-before-append, await before/after report, stale anchor exclusion, attention return, timeout/cancel, collect validation, quiet main cancellation, peer bounce, obsolete escalation cleanup, ephemeral cleanup, migration interruption, and end-to-end dogfooding.
+Cover two sessions in one cwd, duplicate opening of one scope, resume/new/fork, stable and distinct scope fingerprints, crash-before-append, await before/after report, stale-anchor exclusion, timeout/cancel, error, retirement, multiple targets, quiet one-shot cleanup, and end-to-end delegated review.

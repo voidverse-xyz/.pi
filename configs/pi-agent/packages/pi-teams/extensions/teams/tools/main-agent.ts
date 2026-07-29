@@ -22,7 +22,7 @@ function agentTargetError(address: string): ReturnType<typeof errorResult> | nul
 }
 
 const SpawnParams = Type.Object({
-	type: Type.String({ description: "Type name (a <type>.md in ~/.pi/agent/teams or <project>/.pi/teams)." }),
+	type: Type.String({ description: "Type name (a <type>.md in ~/.pi/agent/subagents or <project>/.pi/subagents)." }),
 	id: Type.Optional(
 		Type.String({ description: "Instance id / purview slug (e.g. 'auth'). Defaults to 'main'. Persistent only — omit for oneshots." }),
 	),
@@ -75,7 +75,7 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 				const hint =
 					types.length > 0
 						? `\nAvailable types:\n${types.map((t) => `- ${t.name} (${t.source}): ${t.invalid ?? t.description}`).join("\n")}`
-						: "\nNo subagent types found — author one as <project>/.pi/teams/<type>.md or ~/.pi/agent/teams/<type>.md.";
+						: "\nNo subagent types found — author one as <project>/.pi/subagents/<type>.md or ~/.pi/agent/subagents/<type>.md.";
 				return errorResult(new Error(`${message}${hint}`));
 			}
 		},

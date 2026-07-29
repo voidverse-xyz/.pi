@@ -12,6 +12,7 @@ import { EXT, jiti } from "./env.mjs";
 import { makeWorld, test, summary } from "./harness.mjs";
 
 const { claimHostScope, HostScopeLockedError } = await jiti.import(join(EXT, "store/host-lease.ts"));
+const { createStatusTool } = await jiti.import(join(EXT, "tools/main-agent.ts"));
 
 const world = await makeWorld("phase7");
 world.writeDef("keeper", "You are KEEPER. Remember everything.");
@@ -73,6 +74,25 @@ await test("vitals survive the restart (tokens/turns from life 1 visible in life
 	assert.ok(keeper.vitals.turns >= 2, "accumulated turns persisted");
 	assert.ok(keeper.vitals.tokens > 0);
 	await core.dispose();
+});
+
+await test("owner scope fingerprint survives resume and differs across main sessions", async () => {
+	const first = world.makeCore(layout, { maxConcurrent: 1 });
+	const firstScopeId = first.ownerScopeId;
+	assert.match(firstScopeId, /^[a-f0-9]{24}$/);
+	const statusResult = await createStatusTool(() => first).execute("scope-status", {});
+	const statusPayload = JSON.parse(statusResult.content[0].text);
+	assert.equal(statusPayload.ownerScopeId, firstScopeId, "no-address subagent_status exposes the scope fingerprint");
+	await first.dispose();
+
+	const resumed = world.makeCore(layout, { maxConcurrent: 1 });
+	assert.equal(resumed.ownerScopeId, firstScopeId, "resume keeps the same opaque scope fingerprint");
+	await resumed.dispose();
+
+	const otherLayout = world.makeLayout("sess-7-other");
+	const other = world.makeCore(otherLayout, { maxConcurrent: 1 });
+	assert.notEqual(other.ownerScopeId, firstScopeId, "another owning main session has a different fingerprint");
+	await other.dispose();
 });
 
 summary("Phase 7");

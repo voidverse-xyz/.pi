@@ -120,8 +120,8 @@ worktrees, replacing pi-teams.
   `prompt()`, mark-done only after durable completion, interrupt/pendingInterrupt,
   retire-with-archive, oneshot auto-retire via `retireAfterTurn`, typedef live-resolve +
   hash fence, build locks, activity tracking (`TEAMS/runtime/in-process.ts` whole file).
-- **Await**: poll main mailbox every 40 ms for a report from `to` with
-  `correlationId === anchorId`, attention/retired/timeout exits
+- **Await**: poll the main mailbox for exact `{to, anchorId}` targets; return per-target
+  `completed`/`error`/`retired` outcomes and preserve unresolved targets on timeout
   (`TEAMS/runtime/in-process.ts:475-515`).
 - **Mail**: `Envelope{id: msg_<ulid>, from, to, type, correlationId, hops, payload{text,
   data?, final?}, sentAt}` (`TEAMS/mail/envelope.ts:164-181`); file-per-envelope mailbox
@@ -279,29 +279,31 @@ Adapted from `TEAMS/runtime/in-process.ts` with deletions:
 **Anchor bookkeeping (new, small):** every task-bearing envelope from main
 (`spawn.task` or `subagent_send`) is recorded in `.main/open-tasks.json`
 (`{anchorId: {to, snippet, openedAt}}`, atomic writes). The runtime keeps teams'
-`handle.assignment` correlation: a final report with no explicit correlation is
-correlated to the first uncorrelated task message of the triggering turn
-(`TEAMS/runtime/in-process.ts:302-309,697-700`). When a final report from agent X is
-consumed (by await or by digest commit), **all** open tasks addressed to X are closed —
-a final report means X finished everything drained into that turn (covers the
-two-messages-one-turn case). Retire/turn-error also close X's open tasks (with status
-recorded in the await result / digest line). The file is tiny and self-healing: entries
-for unknown agents are pruned on read.
+`handle.assignment` correlation: a final report is stamped with the exact task-anchor
+snapshot drained into its triggering turn (`runtime/in-process.ts:302-307`). When that
+terminal report is consumed by await or digest commit, only the stamped anchors are
+closed; assignments held for a later turn remain open. Retire and turn-error resolve
+the affected target with their terminal outcome. The file is tiny and self-healing:
+entries for unknown agents are pruned on read.
 
 **`subagent_await` (R9):** params `targets?: Array<{to, anchorId}>` (omit = all open
 tasks), `mode: "any"|"all"` (default `all`), `timeoutSeconds?` (default 300, max 900).
 Implementation generalizes teams' poll loop (`TEAMS/runtime/in-process.ts:475-515`):
 
-- Poll the main mailbox (40 ms) for reports matching each target
-  (`from === to && correlationId === anchorId && final === true`); consume matches as
-  they land (markDone + close open task) and accumulate `{to, anchorId, report}`.
-- `error` envelopes from a target agent are returned as that target's terminal outcome
-  (consumed); a retired/vanished target resolves as `{status: "retired"}` using
-  per-address liveness, not fleet-wide counts (`TEAMS/runtime/in-process.ts:509-511`).
+- Poll the main mailbox for final reports or errors from the target address. Modern
+  terminal envelopes persist `payload.terminalAnchors`; a target matches only when its
+  anchor is in that drained-turn snapshot. Pre-migration final reports without the list
+  fall back to their non-null correlation ID, while a legacy unscoped error retains its
+  sender-wide fallback.
+- Consume one matched terminal envelope and resolve all and only its stamped targets as
+  `completed` or `error`. A retired/vanished target resolves as `retired` using
+  per-address liveness, not fleet-wide counts.
 - `mode:"any"` returns on the first terminal outcome; `mode:"all"` returns when every
-  target is terminal. Timeout returns `{status:"timeout", completed: [...], pending:
-  [...]}` — partial results included, nothing else consumed. Abort signal respected.
-- Empty target set (no open tasks) returns immediately with `{completed: [], note}`.
+  target is terminal. Timeout returns `{status:"timeout", outcomes: [...], pending:
+  [...]}` — partial terminal outcomes are included and unresolved results stay pending.
+  Abort signal respected.
+- Empty target set (no open tasks) returns immediately with
+  `{status:"empty", outcomes: [], pending: [], note}`.
 
 **Auto-wake (R2):** wake pump copied verbatim (`TEAMS/mail/wake-pump.ts`), bound exactly
 as `TEAMS/index.ts:54,78-86,299-307`: `turn-finished`/`agent-retired` runtime events →

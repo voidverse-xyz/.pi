@@ -34,8 +34,8 @@ global configuration. Its root is designed to be cloned directly to
 `~/.pi/agent`. Keep `AGENTS.md` at this root with its exact uppercase filename;
 Pi loads `~/.pi/agent/AGENTS.md` as global instructions.
 
-- `settings.json`, `keybindings.json`, `skills/`, `subagents/`, and `teams/` are
-  active global Pi configuration.
+- `settings.json`, `keybindings.json`, `skills/`, and `subagents/` are active
+  global Pi configuration.
 - `configs/pi-agent/packages/` contains the local Pi packages enabled by relative
   paths from root `settings.json`.
 - Machine-local and sensitive state is ignored; never commit it.
@@ -49,13 +49,12 @@ Pi loads `~/.pi/agent/AGENTS.md` as global instructions.
   - `skills/` for global Pi skills and reusable skill packages
   - `mcp/` for MCP definitions and notes
   - `procedures/` for reusable Markdown procedures
-  - `subagents/` for reusable Pi subagent definitions
-  - `teams/` for independent Pi Teams copies of production definitions
+  - `subagents/` for reusable definitions shared by Pi Subagents and Pi Teams
 
 When the user asks about a skill, procedure, MCP definition, or subagent, check
 these repository directories before checking other global or installed locations.
-When editing shared production definitions, keep matching files in `subagents/`
-and `teams/` synchronized as ordinary files; do not use symlinks or hard links.
+`subagents/` is the single source of truth for production definitions used by
+both runtimes; do not create a separate root `teams/` definition library.
 
 Keep reusable or project-agnostic material in the shared directories. Keep
 host-specific tool configuration under `configs/` or `codex/configs/`, and do
@@ -85,8 +84,8 @@ Route reusable materials by type:
 - Skills go in `skills/`.
 - Markdown procedures go in `procedures/`; executable saved Pi procedures
   use root `procedures/*.js` only when that library is intentionally created.
-- Subagent definitions go in `subagents/`; production definitions used by Teams
-  also receive synchronized ordinary copies in `teams/`.
+- Definitions used by Pi Subagents or Pi Teams go in the shared `subagents/`
+  library.
 - MCP definitions and notes go in `mcp/`.
 - Codex plugin source or patterns go in `codex/plugins/`.
 - Non-Codex setup/config patterns go in `configs/`.
@@ -127,7 +126,7 @@ reusable value beyond the project, save a sanitized generic version in this
 shared repository using the `Reusable Artifact Capture` rules above.
 
 For this shared repository, keep the top-level `skills/`, `plans/`, `procedures/`,
-`subagents/`, `teams/`, `mcp/`, and `configs/` directories reusable and project-agnostic.
+`subagents/`, `mcp/`, and `configs/` directories reusable and project-agnostic.
 Do not place project-specific artifacts in a root `docs/agents/` tree here;
 instead, put them under the relevant contained project's own documentation tree,
 such as `configs/pi-agent/docs/agents/` for PiAgent-specific work.
@@ -138,8 +137,7 @@ such as `configs/pi-agent/docs/agents/` for PiAgent-specific work.
 - `settings.json`: portable Pi settings with relative local-package paths.
 - `keybindings.json`: portable global Pi keybindings.
 - `skills/`: auto-discovered global Pi skills and reusable skill packages.
-- `subagents/`: global definitions for `pi-subagents`.
-- `teams/`: global definitions for `pi-teams`.
+- `subagents/`: shared global definitions for `pi-subagents` and `pi-teams`.
 - `codex/`: Codex configs, local plugin sources, and marketplace metadata.
 - `configs/`: non-Codex tool configs, active Pi packages, and setup materials.
 - `mcp/`: reusable MCP definitions and notes.
@@ -249,8 +247,9 @@ such as `configs/pi-agent/docs/agents/` for PiAgent-specific work.
   family; root `settings.json` selects `void-agent-tokyo-night`.
 - Root `keybindings.json` remaps thinking-level cycling to `Alt+T` and forward
   model cycling to `Alt+M`, leaving `Shift+Tab` for `pi-plan`.
-- Root `subagents/` and `teams/` contain synchronized production definitions.
-  Mutable extension settings and all session/runtime state remain ignored.
+- Root `subagents/` contains the production definitions shared by Pi Subagents
+  and Pi Teams. Mutable extension settings and all session/runtime state remain
+  ignored.
 - No global configuration symlink is required. Run `/reload` or restart Pi after
   changing a package, skill, definition, keybinding, or theme.
 

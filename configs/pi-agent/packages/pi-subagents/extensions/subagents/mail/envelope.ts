@@ -248,8 +248,8 @@ export function makeEnvelope(options: MakeEnvelopeOptions): Envelope {
  *                                       ALL tasks for the sender.
  *
  * Callers choose how to honor "legacy-unscoped-error": the await loop treats it
- * as matching any target (same as an explicitly empty anchor list), while the
- * main-mail commit closes every open task for the sender.
+ * as matching any target, unlike an explicit empty anchor list (which matches no
+ * targets), while the main-mail commit closes every open task for the sender.
  */
 export type TerminalAnchors =
 	| { kind: "anchors"; anchors: string[] }

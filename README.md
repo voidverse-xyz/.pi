@@ -8,7 +8,7 @@ This repository is designed to be cloned as the portable Pi configuration tree:
 
 Pi's effective global agent directory is still `~/.pi/agent`; the tracked
 `agent/` shims expose the repository's settings, keybindings, context, skills,
-package sources, subagent/team definitions, and procedure library from that
+package sources, shared subagent definitions, and procedure library from that
 location. Runtime state and credentials under `agent/` remain ignored.
 
 The repository can also be cloned directly to `~/.pi/agent`; in that layout the
@@ -26,8 +26,7 @@ source of the local Pi packages enabled by `settings.json`.
 ├── settings.json             # Portable settings; relative package paths
 ├── keybindings.json          # Global keybindings
 ├── skills/                   # Auto-discovered global Pi skills
-├── subagents/                # pi-subagents type definitions
-├── teams/                    # pi-teams type definitions
+├── subagents/                # Definitions shared by Pi Subagents and Pi Teams
 ├── configs/pi-agent/packages/ # Active local Pi packages
 ├── configs/pi-agent/docs/     # Package-specific plans and notes
 ├── plans/                    # Reusable plans and procedures
@@ -107,8 +106,9 @@ git status --short
 ```
 
 The validator checks portable package paths, package manifests, JSON files,
-resource directories, production definition parity, linked-file safety, and the
-tracked-versus-local boundary.
+resource directories, the canonical shared definition inventory, absence of the
+legacy definition directory, linked-file safety, and the tracked-versus-local
+boundary.
 
 ## Development
 

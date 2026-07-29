@@ -1,5 +1,7 @@
 # Type Definition Schema — subagent type .md files
 
+> **Historical — superseded.** This schema snapshot includes retired fields. Use the current parser in the Pi Subagents package and `03-tool-surface.md` for active behavior.
+
 Decided 2026-07-09 (D6, D18, D19, D20). A type is a markdown file with YAML
 frontmatter; the body is the agent's role prose (context layer 3, D18).
 
