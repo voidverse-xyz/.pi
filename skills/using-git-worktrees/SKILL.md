@@ -1,6 +1,6 @@
 ---
 name: using-git-worktrees
-description: Safely create and use isolated Git worktrees for feature work, implementation plans, risky refactors, or parallel changes. Detect existing isolation first, prefer platform-native worktree support, confirm branch and location before creating anything, respect containerized project setup, verify a clean baseline, and clean up without losing work. Use whenever the user asks for a worktree, an isolated branch/workspace, or wants substantial work kept separate from the current checkout.
+description: Safely create and use isolated Git worktrees, then review and land their changes without disturbing the parent checkout. Detect existing isolation, confirm branch and location, preserve dirty work, respect project setup, keep changes unstaged for review, obtain commit approval, rebase and fast-forward when required, and clean up only with approval. Use whenever the user asks for a worktree or isolated workspace, wants substantial work kept separate, or repository instructions require tracked edits in a worktree.
 ---
 
 # Using Git worktrees
@@ -10,10 +10,11 @@ Use a linked Git worktree when work should be isolated from the current checkout
 The safety model is:
 
 1. Detect existing isolation before creating anything.
-2. Prefer worktree support provided by the current agent harness or IDE.
-3. Confirm the branch, base and destination when the user has not already specified them.
-4. Keep setup and tests consistent with the project—containerized when applicable.
-5. Never discard, move, commit, push or delete user work implicitly.
+2. Follow repository instructions for worktree placement, review and landing.
+3. Prefer worktree support provided by the current agent harness or IDE.
+4. Confirm the branch, base and destination when the user has not already specified them.
+5. Keep setup and tests consistent with the project—containerized when applicable.
+6. Require explicit approval before transferring dirty changes, staging or committing work, cleaning up a worktree or deleting its branch.
 
 ## 1. Read project instructions and inspect Git state
 
@@ -28,6 +29,15 @@ git status --short --branch
 git worktree list --porcelain
 ```
 
+Before creating a worktree that will later land on the current branch, record the surviving parent checkout and branch:
+
+```bash
+parent_path=$(git rev-parse --show-toplevel)
+parent_branch=$(git branch --show-current)
+```
+
+If the current checkout is not the intended landing checkout, explicitly identify and confirm the parent path and branch instead. A tag, commit or arbitrary start point is not automatically a landing branch.
+
 To distinguish a linked worktree from the repository's primary checkout:
 
 ```bash
@@ -36,11 +46,13 @@ common_dir=$(cd "$(git rev-parse --git-common-dir)" && pwd -P)
 superproject=$(git rev-parse --show-superproject-working-tree 2>/dev/null || true)
 ```
 
-- If `git_dir` and `common_dir` differ and this is not merely a submodule relationship, treat the current checkout as already isolated. Do not create a nested worktree unless the user explicitly wants another one.
+- If `git_dir` and `common_dir` differ and this is not merely a submodule relationship, treat the current checkout as already isolated. Check its branch, status and task purpose before using it. Ask before mixing in the new task when it is dirty or serves unrelated work, and do not create a nested worktree unless the user explicitly wants another one.
 - If the current checkout is detached, report that fact. Do not silently create or attach a branch.
 - If this is not a Git repository, stop and explain that Git worktrees are unavailable.
 
-A new worktree starts from committed Git state. It does **not** automatically include uncommitted changes from the current checkout. If the requested work depends on those changes, explain the limitation and ask how to proceed. Do not stash, commit, reset, patch-transfer or otherwise move dirty work without explicit approval.
+A new worktree starts from committed Git state. It does **not** automatically include uncommitted changes from the current checkout. If the requested work depends on those changes, explain the limitation and ask how to proceed. Do not stash, commit, reset, patch-transfer or otherwise transfer dirty work without explicit approval.
+
+When the user approves reproducing dirty state for verification, copy only the named, non-sensitive files needed for test parity. Record them as temporary test scaffolding and remove those copies before review or commit. Never copy credentials, ignored environment files or unrelated untracked data. If the task must edit a file already changed in the parent checkout, stop and ask how to separate the work.
 
 ## 2. Decide whether to create one
 
@@ -121,11 +133,20 @@ After creation:
 ```bash
 cd "$path"
 git status --short --branch
-git rev-parse --show-toplevel
+worktree_path=$(git rev-parse --show-toplevel)
+worktree_branch=$(git branch --show-current)
 git worktree list --porcelain
 ```
 
-Confirm that the working directory, branch and registered worktree path are the intended ones before editing files.
+Confirm that the working directory, branch and registered worktree path are the intended ones before editing files. Preserve `parent_path`, `parent_branch`, `worktree_path` and `worktree_branch` for landing and cleanup rather than reconstructing them later.
+
+When a separate editor window will help the user follow the work, open the worktree after creation. For VS Code with its CLI available:
+
+```bash
+code --new-window "$path"
+```
+
+Use the user's requested editor when specified. Opening an editor does not replace changing the agent's own working directory to the worktree.
 
 ## 6. Set up the project safely
 
@@ -167,48 +188,83 @@ Setup: <container/service or local method>
 Baseline: <passing, failing, or not run—with reason>
 ```
 
-## 8. Work and report normally
+## 8. Work, review and land safely
 
-Once inside the worktree:
+Keep all task edits scoped to the worktree and continue honoring repository instructions for tests, commits and outbound actions. Keep changes unstaged while they are being reviewed. Show them with:
 
-- Keep all task edits scoped to it.
-- Continue honoring repository instructions for tests, commits and outbound actions.
-- Do not commit or push merely because the worktree exists; those still require the user's request.
-- Include the worktree path and branch in status/final reporting when it helps the user find the work.
+```bash
+git status --short
+git diff
+```
+
+Read untracked files directly or use `git diff --no-index`; do not stage or use intent-to-add merely to expose a diff. Before review, remove any copied test scaffolding and confirm that only task changes remain.
+
+Summarize the changes and verification, then obtain explicit commit approval. Approval to create a worktree or edit files is not approval to stage, commit or push. After commit approval:
+
+```bash
+git log --oneline -10
+git add <approved-paths>
+git commit -m "<message>"
+```
+
+Stage only approved task files. Follow the repository's commit style and issue-trailer rules, and never add agent attribution or generated-by metadata. Never push unless the user separately requests it.
+
+When repository instructions call for landing the worktree branch on its recorded parent, first bring in parent changes from inside the worktree:
+
+```bash
+git -C "$worktree_path" rebase "$parent_branch"
+```
+
+Stop and report conflicts instead of guessing at another change's intent. After a successful rebase, rerun the relevant checks. Then fast-forward the recorded parent from its surviving checkout:
+
+```bash
+git -C "$parent_path" merge --ff-only "$worktree_branch"
+```
+
+If the parent moved, return to the worktree, rebase again and re-verify. Do not merge into a different branch, create a merge commit or force the operation. Follow repository approval boundaries; when permission to merge is ambiguous, ask first.
+
+Include the worktree path and branch in status and final reporting when it helps the user find the work.
 
 ## 9. Clean up without losing work
 
 Do not remove a worktree automatically when the task ends. The user may want to inspect or continue using it.
 
-Before any requested cleanup:
+Run cleanup from the recorded parent checkout or another confirmed surviving checkout, never from inside the worktree being removed. Before any requested cleanup:
 
 ```bash
-git -C "$path" status --short --branch
-git worktree list --porcelain
+git -C "$worktree_path" status --short --branch
+git -C "$parent_path" worktree list --porcelain
 ```
 
-If the worktree has uncommitted or untracked work, stop and show what would be lost. Do not use `git worktree remove --force` unless the user explicitly authorizes discarding or has approved a verified backup.
+If the worktree has uncommitted or untracked work, stop and show what would be lost. A verified backup does not itself authorize deletion. Use `git worktree remove --force` only when the user separately and explicitly authorizes discarding the identified work.
 
 For a clean worktree, after confirmation:
 
 ```bash
-git worktree remove "$path"
-git worktree list --porcelain
+git -C "$parent_path" worktree remove "$worktree_path"
+git -C "$parent_path" worktree list --porcelain
 ```
 
-Branch deletion is a separate destructive decision. Do not delete the branch merely because the worktree was removed. Use `git worktree prune` only for genuinely stale administrative entries after reviewing `git worktree list --porcelain`.
+Branch deletion is a separate destructive decision. Do not delete the branch merely because the worktree was removed. After explicit approval, use non-forcing deletion so Git protects unmerged work:
+
+```bash
+git -C "$parent_path" branch -d "$worktree_branch"
+```
+
+Use `git worktree prune` only for genuinely stale administrative entries after reviewing `git -C "$parent_path" worktree list --porcelain`.
 
 ## Failure handling
 
 | Situation | Response |
 |---|---|
-| Already in a linked worktree | Use it; do not create another by default. |
+| Already in a linked worktree | Validate its branch, status and purpose; use it only when appropriate, and do not create another by default. |
 | Current checkout is dirty | Explain that dirty changes will not appear in the new worktree; ask before transferring anything. |
 | Destination exists | Refuse to overwrite it; choose another path with the user. |
 | Branch is checked out elsewhere | Report its registered path; do not force. |
 | Native tool denies or fails | Report the error; do not bypass policy with manual Git unless appropriate and authorized. |
 | Setup requires unavailable tooling | Use documented fallback or ask; do not pollute the host. |
 | Baseline tests fail | Record the failure and ask how to proceed. |
+| Rebase or merge conflicts | Stop in the isolated worktree and report the conflicting files; do not guess at intent. |
 | Cleanup finds work | Preserve it and stop cleanup. |
 
 ## Non-negotiable safeguards
@@ -218,4 +274,8 @@ Branch deletion is a separate destructive decision. Do not delete the branch mer
 - Never move dirty work without approval.
 - Never modify or commit `.gitignore` implicitly.
 - Never install host dependencies when the containerized procedure applies.
-- Never commit, push, force-remove a worktree, or delete its branch without authorization.
+- Never stage or commit before approval.
+- Never push without a separate explicit request.
+- Never merge into a branch other than the recorded parent.
+- Never force-remove a worktree or delete its branch without authorization.
+- Surface conflicts in the isolated worktree, not the parent checkout.
