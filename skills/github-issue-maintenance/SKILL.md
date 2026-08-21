@@ -1,9 +1,24 @@
 ---
 name: github-issue-maintenance
-description: "Operate a label-directed GitHub issue queue from the main agent and coordinate an issue-scoped persistent worker/reviewer pair for each claimed fix issue until verified closure. Use whenever the user asks to process, automate, maintain, discuss, improve, or fix GitHub issues, especially recurring or multi-repository action-label queues."
+description: "Run the heavyweight label-directed GitHub issue-maintenance workflow with durable claims, persistent worker/reviewer pairs, and verified closure. Explicit opt-in only: use this skill only when the user names `github-issue-maintenance` or explicitly asks to run the GitHub issue-maintenance skill or workflow. Do not invoke it for ordinary issue fixes, commits, merges, pull requests, or issue closure."
 ---
 
 # Main-agent GitHub issue maintenance
+
+## Explicit invocation gate
+
+This skill is opt-in, not an automatic response to GitHub issue work. Apply it only when the current
+conversation contains an explicit user request to use `github-issue-maintenance` by name or to run
+the GitHub issue-maintenance skill or workflow.
+
+Do not infer activation from issue labels, queue-shaped work, an existing claim or ledger, an
+existing specialist pair, or a request to fix, commit, merge, publish, or close an issue. When the
+gate is not met, do not apply the rest of this skill, create claim markers or ledgers, spawn or wake
+its specialists, or run its verified-closure retirement. Handle the requested issue work normally
+under repository instructions and the user's explicit authorization.
+
+An explicit invocation applies only to the issue-maintenance run or scope the user names. A later
+unrelated issue or queue requires a new explicit request.
 
 The main agent is the maintainer and coordinator. Do not create an `issue-maintainer` subagent. Use ordinary persistent Pi Subagents in a hub-and-spoke topology: the main agent owns GitHub state and sends bounded implementation and review assignments to existing specialist types.
 
