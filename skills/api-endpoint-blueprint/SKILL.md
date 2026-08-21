@@ -1,135 +1,74 @@
 ---
 name: api-endpoint-blueprint
-description: How to add or modify a backend API endpoint in this Express app, following its route → controller → role → base layering, auth/sanitize/validate flow, the getResult envelope, and i18n. Use whenever creating, editing, or debugging anything under backend/routes, backend/controllers, or backend/services for an HTTP endpoint.
+description: Add, change, or debug an HTTP API endpoint by tracing the repository's route, middleware, handler, domain, persistence, and test layers. Use for endpoint work in layered backend applications; adapt to local architecture instead of imposing a fixed framework pattern.
 ---
 
-# Backend endpoint architecture
+# API endpoint blueprint
 
-The backend is a strict 4-layer pipeline. A request flows:
+Implement an endpoint as one contract flowing through the repository's existing layers. Reuse the nearest comparable endpoint before introducing new abstractions.
 
-```
-routes/paths/<entity>.js          (mounts role sub-routers)
-  -> routes/paths/<role>/<entity>.js   (express handler: limit, sanitize, call, send, log)
-    -> controllers/<entity>.js         (re-exports role namespaces)
-      -> controllers/<role>/<entity>.js  (auth check, extract user, delegate to base)
-        -> controllers/base/<entity>.js    (DB logic, validation, returns getResult)
-```
+## Discover the existing path
 
-Roles are `admin` and `doctor` (entity controllers re-export by role). Keep every layer's
-responsibility separate — don't put DB logic in a route, or auth in base.
+Before editing:
 
-> **Follow this layering when possible — it's the default, not an absolute law.** If you think a
-> different structure is genuinely better for a case, don't silently diverge and don't blindly
-> conform: explain to the user *why* the alternative is clearly better, with concrete reasons,
-> and confirm before doing it. When there's no clear win, follow the convention.
+1. Read the applicable repository instructions.
+2. Find a sibling endpoint with similar authentication, input shape, and persistence behavior.
+3. Trace it from route registration through middleware, handler/controller, domain or service logic, persistence, serialization, and tests.
+4. Identify the project's response envelope, error model, validation library, logging conventions, and localization boundary.
 
-Mount points are wired in `backend/routes/routes.js` and aggregated by `backend/routes/paths/index.js`,
-`backend/controllers/index.js`, `backend/services/index.js`, `backend/database/schemas/index.js`.
+Do not assume every project uses separate controllers, services, repositories, or role-specific modules. Preserve the layers that actually exist.
 
-## Layer 1 — Route handler (`routes/paths/<role>/<entity>.js`)
+## Define the contract
 
-Every endpoint follows this exact shape. POST is the default; bodies are JSON.
+Confirm from code or requirements:
 
-```js
-router.post("/create-exercise", async (req, res) => {
-    await limit(req, res);                          // rate limit, always first
+- HTTP method and mounted path.
+- Authentication and authorization rules.
+- Path, query, header, and body inputs.
+- Validation, normalization, and defaulting behavior.
+- Success status and response shape.
+- Error statuses and public error representation.
+- Idempotency, pagination, concurrency, or rate-limit behavior where relevant.
+- Side effects such as notifications, jobs, audit events, or cache invalidation.
 
-    let json = req.body ?? {};
-    let auth = sanitizeService.text(json.auth);     // sanitize EVERY field
-    let name = sanitizeService.text(json.name);
-    let properties = sanitizeService.array(json.properties);
+Keep transport validation separate from business invariants when the project already makes that distinction.
 
-    let result = await exerciseController.doctor.createExercise(auth, name, properties);
+## Implement through the existing layers
 
-    res.send(result);                               // send the getResult envelope
-    logResult(req, result);                         // log last
-});
-```
+### Route and middleware
 
-- Sanitize each field with `sanitizeService` (`text`, `number`, `array`, `object`, `email`).
-  Sanitize is coercion/cleanup only — real validation happens in base.
-- Sub-router is exported as `export { router as doctorRouter };` and mounted in the entity's
-  `routes/paths/<entity>.js` via `router.use("/doctor", doctorRouter)`.
-- Imports: `exerciseController` from `controllers/index.js`, `sanitizeService` from
-  `services/index.js`, plus `logResult` from `services/logger.js` and `limit` from `services/limit.js`.
+Register the route in the established router. Preserve meaningful middleware order—for example request context, authentication, authorization, rate limiting, parsing, and validation. Avoid duplicating checks already enforced by shared middleware.
 
-## Layer 2 — Entity controller (`controllers/<entity>.js`)
+### Handler or controller
 
-Just re-exports role namespaces:
+Keep transport concerns at the boundary:
 
-```js
-export * as admin from "./admin/exercise.js";
-export * as doctor from "./doctor/exercise.js";
-```
+- Read validated inputs.
+- Call one clear application/domain operation.
+- Translate the result into the project's HTTP response contract.
+- Pass failures through the established error mechanism.
 
-## Layer 3 — Role controller (`controllers/<role>/<entity>.js`)
+Do not place persistence queries in a thin handler when sibling endpoints delegate them.
 
-Authenticate, bail early on failure, extract the user, delegate to base:
+### Domain, service, and persistence
 
-```js
-export async function createExercise(auth, name, properties) {
-    let verified = authService.isDoctor(auth);      // isAdmin / isDoctor / isUser / isCaregiver
-    if (!verified.success) {
-        return verified;                            // propagate the failure envelope
-    }
+Enforce business rules at the layer used by comparable operations. Scope reads and writes by the authenticated actor or tenant in the query itself when required. Preserve transaction, model, repository, and connection conventions.
 
-    let doctor = verified.data;
+Emit follow-up work only after the mutation is known to have succeeded. If a side effect must be atomic with persistence, use the project's transaction or outbox pattern rather than an uncoordinated call.
 
-    return await base.createExercise(doctor._id, doctor.langId, name, properties);
-}
-```
+### Errors, localization, and observability
 
-- `auth*Service` checks return a `getResult` whose `.data` is the user. Pass `langId` down so
-  base can localize messages. Admin endpoints typically pass `null` ids for global/default rows.
+Return only intentional public errors; do not expose internal exceptions or sensitive data. Use the existing localization system for user-facing messages. Match logging and audit conventions without logging credentials, tokens, or unnecessary request bodies.
 
-## Layer 4 — Base controller (`controllers/base/<entity>.js`)
+## Verify end to end
 
-All DB access and validation lives here. Validate, hit Mongo, return `getResult` with a
-translated message.
+Add or update the smallest authoritative tests that cover:
 
-```js
-export async function createExercise(doctorId, langId, name, properties) {
-    let validation = {};
-    if (!validationService.text(name, validation, langId, "invalid_exercise_name")) {
-        return getResult(false, validation.output);
-    }
+1. Successful request and exact response contract.
+2. Missing or invalid input.
+3. Unauthenticated and unauthorized access.
+4. Not-found, conflict, or invariant failures relevant to the operation.
+5. Persistence scoping and side effects.
+6. Route mounting, so the tested path is the path the application serves.
 
-    let exerciseModel = getModelMain(exerciseSchema);
-    let exerciseDoc = new exerciseModel();
-    exerciseDoc.name = name;
-    exerciseDoc.doctorId = doctorId;
-    await exerciseDoc.save();
-
-    return getResult(true, t(langId, "doctor_create_exercise_success"), exerciseDoc._id.toString());
-}
-```
-
-- Validate with `validationService` (`text`, `email`, `password`, `url`, `clinic`, ...). Pass a
-  `validation` object + `langId` + a translation key; on failure return `getResult(false, validation.output)`.
-- DB access:
-  - Main DB: `getModelMain(<schema>)`.
-  - Per-clinic DB (multi-tenant): `getModel(clinicId, <schema>)`; iterate `getClinicIds()` when
-    you must touch all clinics. Schemas split into `schemas/main/*` and `schemas/clinic/*`.
-  - Use `.lean().exec()` for reads, `findOne(...).exec()` + `.save()` for mutations.
-- Side effects: live notifications via `notifyLiveEvent` / `notifyAlertEvent` (from
-  `backend/notify/notify.js`) — see the `live-notifications` skill; file storage via
-  `storageService` with `envService.getBucketMain()`.
-
-## Translations
-
-Never hardcode user-facing strings. Use `t(langId, "key", ...args)` in base, `tu(user, "key")`
-when you have a user object. Key convention: `<role>_<action>_<entity>_success`
-(e.g. `doctor_create_exercise_success`), `invalid_<thing>`, `error_<thing>`. Add the key to
-**every** file in `backend/languages/` (`en.json`, `fr.json`, `es.json`, `jp.json`, `ar.json`).
-See the `i18n` skill for details.
-
-## Checklist to add an endpoint
-
-1. Base function in `controllers/base/<entity>.js` (validate → DB → `getResult` + `t(...)`).
-2. Role function in `controllers/<role>/<entity>.js` (auth check → delegate to base).
-3. Route handler in `routes/paths/<role>/<entity>.js` (limit → sanitize → call → send → log).
-4. New translation keys in all `backend/languages/*.json`.
-5. If a new entity: create `controllers/<entity>.js`, the role sub-router export, mount in
-   `routes/paths/<entity>.js`, register in `routes/routes.js`, and add to the relevant `index.js`
-   aggregators (alphabetically).
-6. Mirror the call on the frontend — see the `frontend-backend-call` skill.
+Run the repository's formatter, focused tests, and relevant type or lint checks. Report any unverified integration boundary explicitly.

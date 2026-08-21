@@ -1,6 +1,6 @@
 ---
 name: fullstack-blueprint
-description: Opinionated architecture & style template for building (or refactoring toward) a full-stack Express+Mongoose API and Next.js/React App Router frontend — response-envelope contract, named-export barrels, role/resource mirroring across stacks, context/hook 1:1 pairing. Use when scaffolding a new full-stack app in this style, adding a resource end-to-end, or aligning an existing app to these conventions.
+description: Scaffold an Express, Mongoose, Next.js, and React application with this opinionated layered architecture. Use only when the user explicitly chooses this blueprint; do not apply it automatically to existing applications, routine endpoint work, or frontend-backend integration.
 ---
 
 # Fullstack Blueprint: Express+Mongoose API + Next.js/React frontend
@@ -17,14 +17,11 @@ copying, it's flagged **⚠**.
 
 ## How to use this
 
-**This is a strong default, not a straitjacket.** Follow these patterns whenever they
-fit. But if you see a solution that is genuinely, unambiguously better for the case at
-hand, **don't silently follow the blueprint and don't silently override it either** —
-pause and tell the user: what the blueprint says, what you'd do instead, and the concrete
-reasons it's better (not a stylistic preference — a real correctness, security,
-maintainability, or performance win you're confident is ~100% the right call). Let them
-decide. When it's a close call or just taste, follow the blueprint; only raise the
-deviation when you're confident the alternative clearly wins.
+Use this blueprint only after the user deliberately selects it for a new application or migration.
+For an existing application, its architecture and project-local instructions remain authoritative.
+If a selected blueprint pattern conflicts with a concrete correctness, security, maintainability,
+or performance requirement, explain the conflict and adapt the pattern rather than enforcing it
+mechanically.
 
 1. Decide your roles/tenancy model first (§5) — it determines whether you need the
    role-split pattern in §2.3 and §3.3 at all.
@@ -56,9 +53,9 @@ changes under ~2 files, skip the ceremony and just make the change.
 
 **Verify, don't assert.** This template has no automated test suite by default (a real
 gap, see §4.5) — there's no safety net catching a wrong assumption after the fact. After
-writing a controller, trace the request by hand: auth check first, validation chain in
-the right order, query scoped by the actor's own id, response through the one envelope
-shape. After wiring a backend route, grep the frontend for the literal path string you
+writing a controller, trace the request by hand: authenticated actor context first,
+authorization and validation in the right order, query scoped by the actor's own id, and
+response through the one envelope shape. After wiring a backend route, grep the frontend for the literal path string you
 used — there's no compile-time link between the two stacks, so a typo is silent until
 checked.
 
@@ -127,11 +124,11 @@ async function main() {
 main();
 ```
 
-`routes/routes.js` wires Express: `cors()` → `helmet()` → `compression()` → body parsers
-→ a request-logging middleware → one `app.use("/<resource>", router)` line per resource →
-a single global error handler last. The error handler checks `error.rateLimit` (or any
-similar flag a handler sets before throwing to short-circuit) so it doesn't double-send a
-response.
+`routes/routes.js` wires Express: an explicit CORS policy when the frontend is cross-origin →
+`helmet()` → `compression()` → body parsers → request logging → resource routers → one global
+error handler. Cookie-authenticated cross-origin requests require a specific allowed origin and
+`credentials: true`; never combine credentials with a wildcard origin. The error handler checks
+`error.rateLimit` (or a similar short-circuit flag) so it does not double-send a response.
 
 ### 2.3 Controllers — the core contract
 
@@ -145,46 +142,43 @@ export * as <roleB> from "./<roleB>/<resource>.js";
 ```
 
 `controllers/<roleA>/<resource>.js` and `controllers/<roleB>/<resource>.js` typically
-contain entirely different functions (what `<roleA>` can do to `<resource>` differs from
-`<roleB>`). Genuinely shared logic goes in `controllers/base/<resource>.js`, with no
-`auth` param — it's called only after the caller already authorized. **Only introduce
-this split once a resource actually has more than one type of caller** — a single-role
-resource is just `controllers/<resource>.js` with functions directly in it.
+contain different functions because each role has different capabilities. Genuinely shared
+logic goes in `controllers/base/<resource>.js`; it receives an authenticated actor context,
+not a raw credential. **Only introduce this split once a resource actually has more than one
+type of caller** — a single-role resource can keep direct functions in
+`controllers/<resource>.js`.
 
-**The function contract** — every controller function follows this shape:
+**The function contract** — authorize the actor, validate input, scope the query, and return the
+standard result:
 
 ```js
-export async function get<Resource>(auth, <scope>Id, <resource>Id) {
-    // 1. Auth first, always. Bail by returning the failed envelope directly.
-    let valid = authService.is<Role>(auth);
-    if (!valid.success) return valid;
-    let actor = valid.data;
+export async function get<Resource>(actor, <scope>Id, <resource>Id) {
+    if (!authorizationService.canRead<Resource>(actor, <scope>Id)) {
+        return getResult(false, tu(actor, "error_forbidden"));
+    }
 
-    // 2. Validate. Chain with ||, first failing check's message wins.
     let validation = {};
     if (!validationService.text(<resource>Id, validation, actor.langId, "invalid_<resource>")) {
         return getResult(false, validation.output);
     }
 
-    // 3. Query. Direct Mongoose. Scope by the actor's own id in the FILTER, not after fetching.
     let model = getModel(<scope>Id, <resource>Schema);
-    let doc = await model.findOne({ _id: <resource>Id, ownerId: actor._id }).lean().exec();
+    let doc = await model.findOne({
+        _id: <resource>Id,
+        <scope>Id,
+        ownerId: actor._id,
+    }).lean().exec();
     if (!doc) return getResult(false, tu(actor, "invalid_<resource>"));
 
-    // 4. Respond. Always through getResult(); message translated via tu().
     return getResult(true, tu(actor, "<role>_get_<resource>_success"), doc);
 }
 ```
 
-Why each part matters: **(1)** there's no Express auth middleware — `auth` is an explicit
-first argument to every controller, and the function is plain `(auth, ...args)`, never
-`(req, res)`, so it's callable from a route, a socket handler, or a script without change.
-**(2)** validators mutate a shared `{}` and only set `.output` if unset, so check order =
-error-priority order. **(3)** scoping ownership inside the query filter (rather than
-fetch-then-check) makes "not yours" and "doesn't exist" indistinguishable to the caller —
-a deliberate information-hiding property. **(4)** no try/catch and no thrown custom errors
-in controllers — failure is a returned value (`getResult(false, ...)`), not an exception;
-unexpected exceptions are caught once, centrally, by the Express error handler.
+Authentication middleware verifies the session or token once and creates the actor context. Passing
+that context keeps controllers reusable from routes, socket handlers, jobs, and tests without
+passing credentials through business logic. Scoping ownership inside the query filter avoids
+revealing whether an inaccessible record exists. Unexpected exceptions remain centralized in the
+Express error handler.
 
 `getResult` is one function, defined once, used everywhere on both stacks:
 ```js
@@ -223,7 +217,7 @@ simpler, one connection pool, one set of indexes.
 
 | file | responsibility |
 |---|---|
-| `auth.js` | issue/verify JWTs; `isRole(auth)` checks, each returning the standard envelope |
+| `auth.js` | verify sessions/tokens and build actor context; authorization stays explicit at the boundary |
 | `validate.js` | business-rule predicates → boolean + translated `validation.output` message |
 | `sanitize.js` | raw input → safe primitive; never throws, never sets an error message |
 | `utils.js` | `getResult()`, shared enums/constants (roles, epoch durations, notify-event names) |
@@ -254,20 +248,23 @@ either way.
 ### 2.6 Routes — thin wiring only
 
 ```js
-router.post("/get-<resource>", async (req, res) => {
-    await limit(req, res);                                  // rate-limit check first
+router.post("/get-<resource>", requireAuth, requireCsrf, async (req, res) => {
+    await limit(req, res);
+
     let json = req.body ?? {};
-    let auth = sanitizeService.text(json.auth);
-    let id = sanitizeService.text(json.<resource>Id);
-    let result = await <resource>Controller.<role>.get<Resource>(auth, id);
+    let scopeId = sanitizeService.text(json.<scope>Id);
+    let resourceId = sanitizeService.text(json.<resource>Id);
+    let result = await <resource>Controller.<role>.get<Resource>(req.actor, scopeId, resourceId);
+
     res.send(result);
-    logResult(req, result);                                  // after the response is sent
+    logResult(req, result);
 });
 ```
 
-Every leaf handler is this same five-line shape: rate-limit → sanitize each field
-individually (never pass `req.body` straight through) → call exactly one controller
-function → send the envelope → log. Route paths are inline kebab-case literals — no
+Every leaf handler follows the same boundary: authenticate → enforce CSRF protection for
+cookie-authenticated state-changing requests → rate-limit → sanitize each field (never pass
+`req.body` straight through) → call one controller function with the actor and scope context → send
+the envelope → log. Route paths are inline kebab-case literals — no
 shared constants module on the backend (the frontend has its own internal path-builder
 service, kept separate — §3.4). File uploads route through a `multer`-based
 `handleUpload(req, res, configureMulter, action)` helper that only calls `action()` once
@@ -289,9 +286,9 @@ async function notify(users, data) {
 ```
 
 Each transport's `setupXStream()` returns `(target, data) => Promise<boolean>`. Adding a
-channel is: write the module, append it to the ordered `streams` array. Auth for the
-socket transport travels in the handshake query string, same "auth is data" convention as
-REST.
+channel is: write the module, append it to the ordered `streams` array. Authenticate socket
+connections with a secure session cookie or the transport's authentication payload using a
+short-lived token. Never place long-lived credentials in a handshake query string.
 
 ---
 
@@ -380,26 +377,33 @@ portal hook, or auth-gating leak into a data hook. This mirrors the backend role
 export async function post(api, data) {
     try {
         const response = await fetch(`${process.env.URL_API}/${api}`, {
-            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data),
+            method: "POST",
+            credentials: "include",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRF-Token": csrfService.getToken(),
+            },
+            body: JSON.stringify(data),
         });
         if (!response.ok) return getResult(false, response.statusText);
         return await response.json();
     } catch (error) {
-        return getResult(false, error.message);    // network failure normalized to the SAME envelope
+        return getResult(false, error.message);
     }
 }
 ```
 
 Every backend-call function returns the same `{ success, output, data }` shape regardless
-of whether the failure was a bad HTTP status or a thrown exception — callers check
-`.success` once, never branch on "was it a network error or an API error." `auth` rides
-inside the JSON body, not an `Authorization` header, matching the backend's `auth`-as-
-first-argument convention.
+of whether the failure was a bad HTTP status or a thrown exception. The shared client owns
+a secure HttpOnly session cookie or, when the application uses bearer tokens, injects the
+`Authorization` header centrally. Cookie sessions use an appropriate `SameSite` policy and the
+established CSRF token or origin-check mechanism for state-changing requests. Credentials never
+belong in request bodies or URLs.
 
 ```js
 // services/backend/<role>/<resource>.js
-export async function get<Resource>s(auth, scopeId) {
-    return await client.post("<role>/<resource>/get-<resource>s", { auth, scopeId });
+export async function get<Resource>s(scopeId) {
+    return await client.post("<role>/<resource>/get-<resource>s", { scopeId });
 }
 ```
 

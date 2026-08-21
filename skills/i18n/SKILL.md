@@ -1,66 +1,66 @@
 ---
 name: i18n
-description: Translation/localization conventions for this repo — every user-facing string goes through a translation key, defined in all language files, on both backend and frontend. Use whenever adding or changing any message a user sees (success/error/validation text), adding a translation key, or adding a language.
+description: Preserve an existing application's internationalization system when adding or changing user-visible text, validation messages, formatting, locales, or directionality. Use for frontend or backend localization work; follow the project's catalogs, fallback rules, and translation API.
 ---
 
-# Internationalization (i18n)
+# Internationalization changes
 
-This app is fully localized. **No user-facing string is hardcoded** — every message returned in
-a `getResult` output, every validation/error message, and every UI label resolves through a
-translation key. Supported languages: `en`, `fr`, `es`, `jp`, `ar` (note `ar` is RTL — `dir: "rtl"`).
+Use the localization system already present in the project. This skill does not prescribe a framework or require localization where the product has intentionally chosen otherwise.
 
-> **Follow these conventions when possible — they are the default, not an absolute law.** If you
-> think a different approach is genuinely better for a case, don't silently diverge and don't
-> blindly conform: explain to the user *why* the alternative is clearly better, with concrete
-> reasons, and confirm before doing it. When there's no clear win, follow the convention.
+## Discover the localization contract
 
-## Backend
+Before editing:
 
-Language files live in `backend/languages/<lang>.json`. Each file is an object with
-`id`, `name`, `dir`, `pdfLangId`, `locales` (a list of matched BCP-47 locales) and a
-`translations` map of key → string.
+1. Find the translation API used at the relevant frontend or backend boundary.
+2. Locate the source catalogs and determine which are authoritative, generated, or fallback-only.
+3. Inspect key naming, interpolation, plural, date, number, list, and directionality conventions.
+4. Find validation or tests that check catalog completeness and placeholder consistency.
+5. Determine whether server and client share catalogs or maintain separate message domains.
 
-Resolve strings with `backend/services/language.js`:
+## Add or change user-visible text
 
-- `t(langId, "key", ...args)` — primary helper; use in base controllers (you have `langId`).
-- `tu(user, "key", ...args)` — when you hold a user object (`user.langId`).
-- `tuid(userId, "key", ...args)` — async; looks up the user's `langId` by id.
+- Reuse an existing key when the meaning and placeholders match exactly.
+- Otherwise add a stable, semantic key using the project's naming convention.
+- Update every catalog required by the project's completeness policy. Do not fabricate translations when accurate translation is unavailable; use the established fallback or clearly identify the untranslated locale.
+- Keep placeholder names, types, and plural variables consistent across locales.
+- Pass dynamic values as interpolation arguments rather than concatenating translated fragments.
+- Keep developer-only logs, protocol identifiers, and internal diagnostics out of catalogs unless users see them.
 
-Example: `return getResult(true, t(langId, "doctor_create_exercise_success"), id);`
+Do not replace a project's named placeholders with positional placeholders, or vice versa, without updating all callers and validation.
 
-### Argument substitution & plurals
+## Formatting and grammar
 
-- Positional args: `{{1}}`, `{{2}}` ... map to the extra args passed to `t`.
-- Arg objects `{ date }` / `{ epoch }` are auto-formatted to the locale.
-- Plurals use `[[index,default,value:plural,...]]` syntax (see `parsePlurals`).
-- The service logs an error if a rendered string still contains `{{`/`[[` markers — keep
-  placeholders consistent across every language file.
+Use locale-aware formatters for dates, times, numbers, currencies, percentages, lists, and relative time. Use the project's plural/select mechanism rather than branching on English grammar in application code.
 
-## Frontend
+Avoid composing sentences from independently translated fragments when word order can differ by language. Give translators enough context through the project's supported comments or metadata.
 
-Mirror files in `frontend/src/lib/languages/<lang>.js`, loaded via
-`frontend/src/lib/languages/loader.js`, with `services/language.js` + the `hooks/language.js` /
-`context/language.js` pair for runtime access. Use the language context/hook to translate UI
-strings rather than inlining text.
+## Frontend and backend boundaries
 
-## Key naming convention
+- Resolve UI labels through the frontend translation mechanism.
+- Resolve user-facing backend errors or messages at the established boundary, using the request or account locale.
+- Keep machine-readable error codes stable when clients depend on them; localize presentation separately when that is the project contract.
+- Preserve server-rendering and hydration behavior when locale affects initial markup.
 
-- Success: `<role>_<action>_<entity>_success` — e.g. `doctor_create_exercise_success`,
-  `doctor_remove_content_success`.
-- Validation: `invalid_<thing>` — e.g. `invalid_exercise_name`, `invalid_email`, `invalid_auth`.
-- Errors: `error_<thing>` — e.g. `error_exercise_inuse`, `error_upload_failed`.
+## Locale and directionality support
 
-## Rules when adding/changing a string
+When adding a locale, verify:
 
-1. Pick or create a key following the convention above.
-2. Add the key to **every** language file — both `backend/languages/*.json` and
-   `frontend/src/lib/languages/*.js`. Missing keys are logged as errors at runtime.
-3. Keep `{{n}}` / `[[...]]` placeholders identical across all languages.
-4. Reference the key via `t` / `tu` / `tuid` (backend) or the language hook (frontend) —
-   never return or render a raw literal.
+- Locale identifiers and negotiation aliases.
+- Fallback behavior.
+- `lang` and text direction (`ltr` or `rtl`).
+- Font and layout support where relevant.
+- Formatting behavior for representative values.
+- The complete required key set.
 
-## Adding a language
+Do not assume language codes, supported locales, or right-to-left behavior from another project.
 
-Add a new `<lang>.json` (backend) and `<lang>.js` (frontend) replicating an existing file's
-full key set, with correct `id`, `name`, `dir`, `pdfLangId`, and `locales`. RTL languages set
-`dir: "rtl"`.
+## Verify
+
+Run available catalog validation and focused tests. At minimum check:
+
+1. Missing and extra keys according to project policy.
+2. Placeholder and plural-variable parity.
+3. Fallback behavior for an absent translation.
+4. Representative interpolation and plural cases.
+5. Frontend rendering or backend response behavior.
+6. Directionality when an RTL locale is supported.
