@@ -4,12 +4,16 @@ import { strict as assert } from "node:assert";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXTENSION = join(HERE, "..", "extensions", "void-agent", "index.ts");
 const THEME = join(HERE, "..", "themes", "void-agent.json");
 const WIDTH = 48;
+
+function importPath(...segments) {
+	return import(pathToFileURL(join(...segments)).href);
+}
 
 function findPiPackage() {
 	const home = process.env.HOME ?? "";
@@ -42,16 +46,16 @@ let ToolExecutionComponent;
 
 try {
 	process.env.PI_CODING_AGENT_DIR = scratch;
-	const root = await import(join(PI_PACKAGE, "dist", "index.js"));
+	const root = await importPath(PI_PACKAGE, "dist", "index.js");
 	ToolExecutionComponent = root.ToolExecutionComponent;
 	originalRender = ToolExecutionComponent.prototype.render;
 
-	const { loadThemeFromPath, setThemeInstance } = await import(
-		join(PI_PACKAGE, "dist", "modes", "interactive", "theme", "theme.js")
+	const { loadThemeFromPath, setThemeInstance } = await importPath(
+		PI_PACKAGE, "dist", "modes", "interactive", "theme", "theme.js"
 	);
 	setThemeInstance(loadThemeFromPath(THEME, "truecolor"));
 
-	const { loadExtensions } = await import(join(PI_PACKAGE, "dist", "core", "extensions", "loader.js"));
+	const { loadExtensions } = await importPath(PI_PACKAGE, "dist", "core", "extensions", "loader.js");
 	const loaded = await loadExtensions([EXTENSION], scratch);
 	assert.deepEqual(loaded.errors, [], `extension load errors: ${JSON.stringify(loaded.errors)}`);
 	assert.equal(loaded.extensions.length, 1, "exactly one extension loads");

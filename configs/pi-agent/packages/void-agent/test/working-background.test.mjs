@@ -4,11 +4,15 @@ import { strict as assert } from "node:assert";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXTENSION = join(HERE, "..", "extensions", "void-agent", "index.ts");
 const THEME = join(HERE, "..", "themes", "void-agent.json");
+
+function importPath(...segments) {
+	return import(pathToFileURL(join(...segments)).href);
+}
 
 function findPiPackage() {
 	const home = process.env.HOME ?? "";
@@ -39,18 +43,18 @@ let originalShowStatusIndicator;
 
 try {
 	process.env.PI_CODING_AGENT_DIR = scratch;
-	const { loadExtensions } = await import(join(PI_PACKAGE, "dist", "core", "extensions", "loader.js"));
-	const { loadThemeFromPath, setThemeInstance } = await import(
-		join(PI_PACKAGE, "dist", "modes", "interactive", "theme", "theme.js")
+	const { loadExtensions } = await importPath(PI_PACKAGE, "dist", "core", "extensions", "loader.js");
+	const { loadThemeFromPath, setThemeInstance } = await importPath(
+		PI_PACKAGE, "dist", "modes", "interactive", "theme", "theme.js"
 	);
-	const { InteractiveMode } = await import(join(PI_PACKAGE, "dist", "index.js"));
-	const { WorkingStatusIndicator } = await import(
-		join(PI_PACKAGE, "dist", "modes", "interactive", "components", "status-indicator.js")
+	const { InteractiveMode } = await importPath(PI_PACKAGE, "dist", "index.js");
+	const { WorkingStatusIndicator } = await importPath(
+		PI_PACKAGE, "dist", "modes", "interactive", "components", "status-indicator.js"
 	);
 	interactiveModePrototype = InteractiveMode.prototype;
 	originalShowStatusIndicator = interactiveModePrototype.showStatusIndicator;
-	const { visibleWidth } = await import(
-		join(PI_PACKAGE, "node_modules", "@earendil-works", "pi-tui", "dist", "index.js")
+	const { visibleWidth } = await importPath(
+		PI_PACKAGE, "node_modules", "@earendil-works", "pi-tui", "dist", "index.js"
 	);
 
 	const theme = loadThemeFromPath(THEME, "truecolor");

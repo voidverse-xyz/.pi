@@ -4,10 +4,14 @@ import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXTENSION = join(HERE, "..", "extensions", "config-alias-guard", "index.ts");
+
+function importPath(...segments) {
+	return import(pathToFileURL(join(...segments)).href);
+}
 
 function findPiPackage() {
 	const home = process.env.HOME ?? "";
@@ -43,7 +47,9 @@ try {
 	symlinkSync("..", join(aliasedCwd, ".pi"), "dir");
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 
-	const { InteractiveMode } = await import(join(PI_PACKAGE, "dist", "modes", "interactive", "interactive-mode.js"));
+	const { InteractiveMode } = await importPath(
+		PI_PACKAGE, "dist", "modes", "interactive", "interactive-mode.js"
+	);
 	interactiveModePrototype = InteractiveMode.prototype;
 	originalWarningRenderer = interactiveModePrototype.renderProjectTrustWarningIfNeeded;
 	let forwardedWarnings = 0;
@@ -52,7 +58,7 @@ try {
 	};
 	interactiveModePrototype.renderProjectTrustWarningIfNeeded = forwardingWarningRenderer;
 
-	const { loadExtensions } = await import(join(PI_PACKAGE, "dist", "core", "extensions", "loader.js"));
+	const { loadExtensions } = await importPath(PI_PACKAGE, "dist", "core", "extensions", "loader.js");
 	const loaded = await loadExtensions([EXTENSION], scratch);
 	assert.deepEqual(loaded.errors, [], `extension load errors: ${JSON.stringify(loaded.errors)}`);
 	assert.equal(loaded.extensions.length, 1, "exactly one extension loads");
