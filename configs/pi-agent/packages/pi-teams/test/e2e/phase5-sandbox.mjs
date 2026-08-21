@@ -7,7 +7,7 @@
  */
 import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { createTestModelRuntime, EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
 
 const piSdk = await jiti.import(join(PI_PKG, "dist/index.js"));
@@ -29,14 +29,16 @@ async function test(name, fn) {
 console.log("system-deny (pure):");
 await test("denies the state tree + type-def dirs, ancestors; allows project files", () => {
 	const id = (p) => p; // identity realpath (no fs)
-	const stateTree = "/home/u/.pi/agent/sessions/--proj--/teams";
-	const typeDefs = "/proj/.pi/subagents";
+	const stateAncestor = join(sep, "home", "u", ".pi", "agent", "sessions", "--proj--");
+	const stateTree = join(stateAncestor, "teams");
+	const project = join(sep, "proj");
+	const typeDefs = join(project, ".pi", "subagents");
 	const deny = makeSystemDenyCheck([stateTree, typeDefs], id);
-	assert.equal(deny(join(stateTree, "sess-A/registry.json")).denied, true, "below state tree");
+	assert.equal(deny(join(stateTree, "sess-A", "registry.json")).denied, true, "below state tree");
 	assert.equal(deny(stateTree).denied, true, "the state tree itself");
-	assert.equal(deny("/home/u/.pi/agent/sessions/--proj--").denied, true, "ancestor of the state tree");
+	assert.equal(deny(stateAncestor).denied, true, "ancestor of the state tree");
 	assert.equal(deny(join(typeDefs, "researcher.md")).denied, true, "a type-def file");
-	assert.equal(deny("/proj/src/app.ts").denied, false, "an ordinary project file");
+	assert.equal(deny(join(project, "src", "app.ts")).denied, false, "an ordinary project file");
 });
 await test("realpathDeep resolves the deepest existing ancestor", () => {
 	const world = join(WORLDS, "phase5-rp");

@@ -285,8 +285,8 @@ await test("index.ts subscribes the auto-wake lifecycle events", async () => {
 
 await test("agent_settled (and ONLY agent_settled) drives a real drain through index.ts", async () => {
 	// The full wiring, end to end: boot index.ts's real session_start against a temp
-	// HOME (createLayout resolves home via os.homedir(), which reads $HOME live), then
-	// drive the REAL lifecycle handlers and observe pi.sendMessage.
+	// Pi agent directory, then drive the REAL lifecycle handlers and observe
+	// pi.sendMessage.
 	// This is what catches agent_settled being wired to the wrong pump callback.
 	const handlers = new Map();
 	const sent = [];
@@ -302,11 +302,12 @@ await test("agent_settled (and ONLY agent_settled) drives a real drain through i
 	(ext.default ?? ext)(stubPi);
 
 	const wireHome = join(scratch, "wire-home");
+	const wireAgentDir = join(wireHome, ".pi", "agent");
 	const wireProject = join(scratch, "wire-project");
-	mkdirSync(wireHome, { recursive: true });
+	mkdirSync(wireAgentDir, { recursive: true });
 	mkdirSync(wireProject, { recursive: true });
-	const realHome = process.env.HOME;
-	process.env.HOME = wireHome;
+	const priorAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = wireAgentDir;
 	try {
 		const ctx = {
 			cwd: wireProject,
@@ -320,7 +321,7 @@ await test("agent_settled (and ONLY agent_settled) drives a real drain through i
 		await handlers.get("session_start")({ type: "session_start" }, ctx);
 
 		// Mail for main, with the host NOT yet idle.
-		const layoutW = createLayout(wireProject, { home: wireHome, sessionId: "wire-sess" });
+		const layoutW = createLayout(wireProject, { agentDir: wireAgentDir, sessionId: "wire-sess" });
 		writeEnvelope(layoutW.mainMailboxDir, makeEnvelope({ from: "worker/main", to: "main", type: "report", text: "WIRED_REPORT" }));
 
 		// input marks the host busy → must NOT drain.
@@ -339,8 +340,8 @@ await test("agent_settled (and ONLY agent_settled) drives a real drain through i
 		await handlers.get("agent_settled")({ type: "agent_settled" }, ctx);
 		assert.equal(sent.length, 1, "no injection after session_shutdown");
 	} finally {
-		if (realHome === undefined) delete process.env.HOME;
-		else process.env.HOME = realHome;
+		if (priorAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = priorAgentDir;
 	}
 });
 

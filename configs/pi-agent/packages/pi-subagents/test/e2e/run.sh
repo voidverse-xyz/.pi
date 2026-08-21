@@ -19,11 +19,19 @@ NODE="${NODE:-node}"
 # ---------------------------------------------------------------------------
 if [ "${SKIP_TYPECHECK:-0}" != "1" ]; then
 	PI_PKG="$("$NODE" print-pi-pkg.mjs)"
-	PKG_ROOT="$(cd ../.. && pwd)"
+	PKG_ROOT="$("$NODE" -e 'console.log(require("node:path").resolve("../.."))')"
 	GEN_DIR="$(mktemp -d)"
 	trap 'rm -rf "$GEN_DIR"' EXIT
-	sed -e "s|__PI_PKG__|$PI_PKG|g" -e "s|__PKG_ROOT__|$PKG_ROOT|g" \
-		tsconfig.template.json > "$GEN_DIR/tsconfig.json"
+	"$NODE" --input-type=module - "$PI_PKG" "$PKG_ROOT" "$GEN_DIR/tsconfig.json" <<'NODE'
+import { readFileSync, writeFileSync } from "node:fs";
+
+const [piPackage, packageRoot, outputPath] = process.argv.slice(2);
+const jsonPath = (value) => JSON.stringify(value.replaceAll("\\", "/")).slice(1, -1);
+const config = readFileSync("tsconfig.template.json", "utf8")
+	.replaceAll("__PI_PKG__", jsonPath(piPackage))
+	.replaceAll("__PKG_ROOT__", jsonPath(packageRoot));
+writeFileSync(outputPath, config);
+NODE
 
 	if [ -z "${TSC:-}" ]; then
 		if command -v tsc >/dev/null 2>&1; then

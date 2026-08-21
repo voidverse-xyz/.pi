@@ -88,12 +88,16 @@ export function makeSystemDenyCheck(protectedDirs: string[], realpath: RealpathF
  */
 export function makeCommandDenyCheck(protectedDirs: string[], realpath: RealpathFn, home?: string): (command: string) => SystemDenyResult {
 	const needles = new Set<string>();
+	const addNeedle = (needle: string): void => {
+		needles.add(needle);
+		if (sep === "\\") needles.add(needle.replaceAll("\\", "/"));
+	};
 	for (const dir of protectedDirs) {
-		needles.add(dir);
-		needles.add(realpathDeep(dir, realpath));
+		addNeedle(dir);
+		addNeedle(realpathDeep(dir, realpath));
 		if (home && dir.startsWith(home + sep)) {
-			needles.add(`~${dir.slice(home.length)}`);
-			needles.add(`$HOME${dir.slice(home.length)}`);
+			addNeedle(`~${dir.slice(home.length)}`);
+			addNeedle(`$HOME${dir.slice(home.length)}`);
 		}
 	}
 	const pairs = [...needles].map((needle) => ({ needle, canon: canonical(needle) }));

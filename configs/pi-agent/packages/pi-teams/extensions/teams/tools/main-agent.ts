@@ -22,25 +22,21 @@ function agentTargetError(address: string): ReturnType<typeof errorResult> | nul
 }
 
 const SpawnParams = Type.Object({
-	type: Type.String({ description: "Type name (a <type>.md in ~/.pi/agent/subagents or <project>/.pi/subagents)." }),
+	type: Type.String({ description: "Type definition name from global or project subagents." }),
 	id: Type.Optional(
-		Type.String({ description: "Instance id / purview slug (e.g. 'auth'). Defaults to 'main'. Persistent only — omit for oneshots." }),
+		Type.String({ description: "Persistent instance id; defaults to main. Omit for oneshots." }),
 	),
 	lifetime: Type.Optional(
 		Type.Union([Type.Literal("persistent"), Type.Literal("oneshot")], {
 			description:
-				"persistent (default): named, durable memory — lives until YOU team_retire it, so every persistent spawn is a cleanup obligation. " +
-				"oneshot: disposable, auto-named (tmp-<hex>, never pass an id — give it a `label` instead), retires itself after it sends a final report. " +
-				"Rule of thumb: one-off task, probe, or experiment → oneshot; an agent you'll message again across tasks → persistent.",
+				"persistent (default) keeps memory until team_retire; oneshot auto-retires. Use oneshot without id for single tasks.",
 		}),
 	),
-	task: Type.Optional(Type.String({ description: "Optional first task — spawn and assign in one call. Runs asynchronously." })),
+	task: Type.Optional(Type.String({ description: "Optional initial asynchronous task." })),
 	label: Type.Optional(
 		Type.String({
 			maxLength: 80,
-			description:
-				"Short display label ('what is this one doing'), shown in the roster and TUI next to the address. " +
-				"Strongly recommended for oneshots (their tmp-<hex> ids say nothing), e.g. 'lint sweep' or 'flaky-test probe'.",
+			description: "Short roster/TUI label; recommended for oneshots.",
 		}),
 	),
 });
@@ -50,11 +46,8 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 		name: "team_spawn",
 		label: "Spawn subagent",
 		description:
-			"Spawn or wake a subagent. Get-or-create on <type>/<id>: if the address already exists it wakes " +
-			"with memory intact (created:false). An optional task runs asynchronously; observe progress with team_status. " +
-			"IMPORTANT — pick the lifetime deliberately: use lifetime:'oneshot' (and no id) for single-task work like " +
-			"probes, checks, and experiments — it cleans up after itself. Persistent agents (the default) stay on the " +
-			"roster forever until you team_retire them, so don't leave one behind for a task you won't revisit.",
+			"Spawn or wake a typed agent. Persistent addresses are get-or-create and require later team_retire; oneshots " +
+			"auto-retire. Use oneshot without id for single tasks.",
 		parameters: SpawnParams,
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const core = getCore();
@@ -83,9 +76,9 @@ export function createSpawnTool(getCore: GetCore): ToolDefinition<typeof SpawnPa
 }
 
 const SendParams = Type.Object({
-	to: Type.String({ description: "Recipient subagent address <type>/<id>." }),
+	to: Type.String({ description: "Recipient <type>/<id>." }),
 	text: Type.String(),
-	correlationId: Type.Optional(Type.String({ description: "Set to answer a subagent's question (the question envelope's id)." })),
+	correlationId: Type.Optional(Type.String({ description: "Question envelope id when replying." })),
 });
 
 export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendParams> {
@@ -93,8 +86,7 @@ export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendPara
 		name: "team_send",
 		label: "Message a subagent",
 		description:
-			"Send mail to a subagent (or answer its question with correlationId). Never interrupts a running turn — " +
-			"delivered at the recipient's turn boundary, or it wakes a dormant agent.",
+			"Queue mail or answer a question. It wakes dormant agents but never interrupts a running turn.",
 		parameters: SendParams,
 		async execute(_toolCallId, params) {
 			const badTarget = agentTargetError(params.to);
@@ -120,15 +112,15 @@ export function createSendTool(getCore: GetCore): ToolDefinition<typeof SendPara
 }
 
 const SteerParams = Type.Object({
-	to: Type.String({ description: "The running subagent to steer." }),
-	text: Type.String({ description: "Guidance injected mid-turn to redirect current work." }),
+	to: Type.String({ description: "Running subagent address." }),
+	text: Type.String({ description: "Mid-turn guidance." }),
 });
 
 export function createSteerTool(getCore: GetCore): ToolDefinition<typeof SteerParams> {
 	return {
 		name: "team_steer",
 		label: "Steer subagent",
-		description: "Inject guidance into a subagent's CURRENT turn (main-agent-only). No-op if it isn't running; use team_send otherwise.",
+		description: "Guide a running turn immediately; no-op if idle. Use team_send otherwise.",
 		parameters: SteerParams,
 		async execute(_toolCallId, params) {
 			const badTarget = agentTargetError(params.to);
@@ -143,8 +135,8 @@ export function createSteerTool(getCore: GetCore): ToolDefinition<typeof SteerPa
 }
 
 const CollectParams = Type.Object({
-	to: Type.String({ description: "The subagent to collect a structured result from." }),
-	schema: Type.Any({ description: "JSON-schema subset (type/properties/required/items/enum/const/additionalProperties:false) the result must conform to." }),
+	to: Type.String({ description: "Subagent to query." }),
+	schema: Type.Any({ description: "Required schema subset: type/properties/required/items/enum/const/additionalProperties:false." }),
 });
 
 export function createCollectTool(getCore: GetCore): ToolDefinition<typeof CollectParams> {
@@ -152,8 +144,7 @@ export function createCollectTool(getCore: GetCore): ToolDefinition<typeof Colle
 		name: "team_collect",
 		label: "Collect result",
 		description:
-			"Ask a subagent for a schema-conforming structured result. Non-blocking: the agent delivers it later as a report " +
-			"whose data is validated against the schema. Only a restricted JSON-schema subset is honored.",
+			"Request a schema-validated result without blocking. Await the later report with team_await.",
 		parameters: CollectParams,
 		async execute(_toolCallId, params) {
 			const badTarget = agentTargetError(params.to);
@@ -168,10 +159,10 @@ export function createCollectTool(getCore: GetCore): ToolDefinition<typeof Colle
 }
 
 const AwaitParams = Type.Object({
-	to: Type.String({ description: "The subagent whose result to wait for." }),
-	waitFor: Type.Union([Type.Literal("final"), Type.Literal("collect")], { description: "final = its final report for the task; collect = a specific team_collect result." }),
-	anchorId: Type.String({ description: "The anchor id: taskEnvelopeId from team_spawn/team_send (final), or requestId from team_collect (collect)." }),
-	timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 900, description: "Max seconds to wait (default 300)." })),
+	to: Type.String({ description: "Subagent to wait for." }),
+	waitFor: Type.Union([Type.Literal("final"), Type.Literal("collect")], { description: "Result kind: final report or team_collect result." }),
+	anchorId: Type.String({ description: "taskEnvelopeId/envelopeId for final, or requestId for collect." }),
+	timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 900, description: "Wait limit in seconds (default 300)." })),
 });
 
 export function createAwaitTool(getCore: GetCore): ToolDefinition<typeof AwaitParams> {
@@ -179,9 +170,7 @@ export function createAwaitTool(getCore: GetCore): ToolDefinition<typeof AwaitPa
 		name: "team_await",
 		label: "Await subagent result",
 		description:
-			"Block until a subagent delivers its final report (or a collect result) for a given anchor, then return it. " +
-			"Returns early with 'attention' if the agent needs an answer/escalation/errors (so it can't deadlock), 'retired' " +
-			"if the agent is gone, or 'timeout'. Subagents are background by default — use this to join their work in-turn.",
+			"Wait for a final or collected result by anchor. Returns attention, retired, or timeout when not completed.",
 		parameters: AwaitParams,
 		async execute(_toolCallId, params, signal) {
 			const badTarget = agentTargetError(params.to);
@@ -202,13 +191,13 @@ export function createAwaitTool(getCore: GetCore): ToolDefinition<typeof AwaitPa
 	};
 }
 
-const InterruptParams = Type.Object({ to: Type.String({ description: "The running subagent to interrupt." }) });
+const InterruptParams = Type.Object({ to: Type.String({ description: "Running subagent address." }) });
 
 export function createInterruptTool(getCore: GetCore): ToolDefinition<typeof InterruptParams> {
 	return {
 		name: "team_interrupt",
 		label: "Interrupt subagent",
-		description: "Abort a subagent's current turn. It stays alive with memory intact and goes dormant; its triggering mail stays pending.",
+		description: "Stop the current turn without retiring the agent; its mail remains pending.",
 		parameters: InterruptParams,
 		async execute(_toolCallId, params) {
 			const badTarget = agentTargetError(params.to);
@@ -222,15 +211,15 @@ export function createInterruptTool(getCore: GetCore): ToolDefinition<typeof Int
 	};
 }
 
-const RetireParams = Type.Object({ to: Type.String({ description: "The subagent to retire (<type>/<id>)." }) });
+const RetireParams = Type.Object({ to: Type.String({ description: "Subagent <type>/<id>." }) });
 
 export function createRetireTool(getCore: GetCore): ToolDefinition<typeof RetireParams> {
 	return {
 		name: "team_retire",
 		label: "Retire subagent",
 		description:
-			"Permanently retire a subagent: deregister it and archive its memory. The ONLY destructive action — the address " +
-			"bounces afterward. Use for finished persistent agents; oneshots retire themselves.",
+			"Permanently remove an address and archive its memory. Use only for finished persistent agents; oneshots " +
+			"retire automatically.",
 		parameters: RetireParams,
 		async execute(_toolCallId, params) {
 			const badTarget = agentTargetError(params.to);
@@ -246,7 +235,7 @@ export function createRetireTool(getCore: GetCore): ToolDefinition<typeof Retire
 
 const PeersParams = Type.Object({
 	mode: Type.Union([Type.Literal("on"), Type.Literal("off"), Type.Literal("auto")], {
-		description: "on = subagents may message each other directly; off = all cross-agent work routes through you; auto = each type's own default.",
+		description: "on enables peer mail; off routes through you; auto uses each type's default.",
 	}),
 });
 
@@ -255,10 +244,8 @@ export function createPeersTool(getCore: GetCore): ToolDefinition<typeof PeersPa
 		name: "team_peers",
 		label: "Set peer messaging",
 		description:
-			"Turn subagent-to-subagent messaging on or off for the fleet (D12). off makes YOU the sole coordinator — " +
-			"agents can only report to you, and you relay between them. Applies from each agent's next wake (off is also " +
-			"enforced immediately at delivery; an agent mid-turn keeps its current tool set until it rebuilds). " +
-			"Note: if the user pinned peer messaging on/off, your setting is recorded but the user's choice wins.",
+			"Set fleet peer messaging. off routes coordination through you; changes apply on each agent's next wake. " +
+			"User-pinned settings override this request.",
 		parameters: PeersParams,
 		async execute(_toolCallId, params) {
 			try {
@@ -279,17 +266,15 @@ export function createPeersTool(getCore: GetCore): ToolDefinition<typeof PeersPa
 }
 
 const StatusParams = Type.Object({
-	address: Type.Optional(Type.String({ description: "A <type>/<id> to inspect in detail. Omit for the full roster." })),
-	tail: Type.Optional(Type.Integer({ minimum: 0, maximum: 200, description: "With address: number of trailing transcript entries (default 20)." })),
+	address: Type.Optional(Type.String({ description: "Agent to inspect; omit for the roster." })),
+	tail: Type.Optional(Type.Integer({ minimum: 0, maximum: 200, description: "Transcript entries to include (default 20)." })),
 });
 
 export function createStatusTool(getCore: GetCore): ToolDefinition<typeof StatusParams> {
 	return {
 		name: "team_status",
 		label: "Subagent status",
-		description:
-			"Inspect subagents. With no address: the full roster (address, state, vitals). With an address: " +
-			"detail plus the last transcript entries (read-only; never perturbs the agent).",
+		description: "Inspect the full roster or one agent with a read-only transcript tail.",
 		parameters: StatusParams,
 		async execute(_toolCallId, params) {
 			const core = getCore();

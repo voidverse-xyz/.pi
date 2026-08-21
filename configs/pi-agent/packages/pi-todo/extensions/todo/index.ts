@@ -60,12 +60,12 @@ const MAX_TODOS = 50;
 
 const TodoSchema = Type.Object(
 	{
-		content: Type.String({ description: "Imperative description of the task, e.g. 'Fix the auth bug'" }),
+		content: Type.String({ description: "Stable imperative task text." }),
 		status: StringEnum(["pending", "in_progress", "completed"] as const, {
-			description: "Task state. Exactly one task should be in_progress at a time.",
+			description: "Task state; at most one item may be in_progress.",
 		}),
 		activeForm: Type.Optional(
-			Type.String({ description: "Present-continuous form shown while in progress, e.g. 'Fixing the auth bug'" }),
+			Type.String({ description: "Present-continuous label for the active item." }),
 		),
 	},
 	{ additionalProperties: false },
@@ -75,17 +75,16 @@ const TodoWriteParams = Type.Object(
 	{
 		todos: Type.Array(TodoSchema, {
 			maxItems: MAX_TODOS,
-			description: "The complete todo list. A normal update must retain every existing item, including completed items.",
+			description: "Complete list; updates retain every existing item.",
 		}),
 		operation: Type.Optional(
 			StringEnum(["update", "replace", "clear"] as const, {
-				description:
-					"update (default) preserves every existing item; replace is only for a direct user-requested replan; clear empties the list.",
+				description: "update preserves; replace replans; clear empties.",
 			}),
 		),
 		reason: Type.Optional(
 			Type.String({
-				description: "Required for replace, and for clearing unfinished work. State the direct user request or abandoned plan.",
+				description: "Required for replace or clearing unfinished work.",
 			}),
 		),
 	},
@@ -138,15 +137,9 @@ export default function todoList(pi: ExtensionAPI) {
 		name: TOOL_NAME,
 		label: "Todo List",
 		description:
-			"Create and manage a structured task list for the current session. Call it with the COMPLETE list every time. " +
-			"Use it ONLY for genuinely complex work that naturally requires at least 3 substantive steps; never create a list for " +
-			"one- or two-step tasks, quick fixes, simple lookups, or a single change plus verification. During normal progress use " +
-			"operation update (the default), NEVER remove an existing todo, and keep completed todos visible. Mark a task " +
-			"in_progress BEFORE starting it and completed IMMEDIATELY after it is verified, then advance the next task in the same " +
-			"complete list. Use replace only for a direct user-requested replan or clear user-directed task/topic pivot. Clear only " +
-			"after all items are completed, when the user directly asks to clear/abandon the checklist, or when they clearly move " +
-			"to different work; " +
-			"destructive operations require their reason when work is unfinished.",
+			"Maintain the session checklist. Send the complete list on every call and use it only for work with 3+ substantive " +
+			"steps. Normal updates retain all items, including completed ones. Mark one item in_progress before work and completed " +
+			"after verification. Replacing or clearing unfinished work requires a user-directed pivot and reason.",
 		promptSnippet: "todo_write — track genuinely complex work with 3+ substantive steps; normal updates preserve the full list",
 		promptGuidelines: [
 			"Use todo_write only when a task is genuinely complex and naturally decomposes into at least 3 substantive steps. Never use it for 1- or 2-step tasks, quick fixes, simple lookups, or a single change plus verification; do not invent filler steps to reach three. Stale-list cleanup on a clear task/topic pivot is the exception and is allowed even when the new work is simple.",

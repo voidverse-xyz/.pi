@@ -92,9 +92,15 @@ await test("bash referencing a protected root hard-denies; safe command asks the
 		},
 	});
 	const bash = tools.find((t) => t.name === "bash");
-	await assert.rejects(() => bash.execute("tc4", { command: `rm -rf ${layout.subagentsRoot}` }, undefined, undefined, {}), /Blocked by the subagents sandbox/);
+	const bashContext = {
+		sessionManager: {
+			getSessionId: () => "sandbox-test",
+			getSessionFile: () => undefined,
+		},
+	};
+	await assert.rejects(() => bash.execute("tc4", { command: `rm -rf ${layout.subagentsRoot}` }, undefined, undefined, bashContext), /Blocked by the subagents sandbox/);
 	assert.equal(decisions.length, 0);
-	const result = await bash.execute("tc5", { command: "echo sandbox-ok" }, undefined, undefined, {});
+	const result = await bash.execute("tc5", { command: "echo sandbox-ok" }, undefined, undefined, bashContext);
 	assert.equal(decisions.length, 1, "safe command was confirmed");
 	assert.ok(JSON.stringify(result.content).includes("sandbox-ok"));
 });

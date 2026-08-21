@@ -9,7 +9,7 @@
  */
 import { strict as assert } from "node:assert";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { EXT, WORLDS, jiti } from "./env.mjs";
 
 const systemDeny = await jiti.import(join(EXT, "sandbox/system-deny.ts"));
@@ -43,10 +43,10 @@ async function okA(name, fn) {
 // ------------------------------------------------------- H1: bash command deny
 console.log("system-deny bash text scan (H1):");
 ok("denies a bash command referencing a protected root", () => {
-	const home = "/home/u";
-	const protectedDir = `${home}/.pi/agent/subagents`;
+	const home = join(sep, "home", "u");
+	const protectedDir = join(home, ".pi", "agent", "subagents");
 	const check = systemDeny.makeCommandDenyCheck([protectedDir], (p) => p, home);
-	assert.equal(check(`echo pwned > ${protectedDir}/self.md`).denied, true);
+	assert.equal(check(`echo pwned > ${protectedDir}${sep}self.md`).denied, true);
 	assert.equal(check("echo pwned > ~/.pi/agent/subagents/self.md").denied, true, "tilde spelling caught");
 	assert.equal(check("$HOME/.pi/agent/subagents/x").denied, true, "$HOME spelling caught");
 	assert.equal(check("ls src/").denied, false, "an unrelated command is allowed");
@@ -56,8 +56,9 @@ ok("denies a bash command referencing a protected root", () => {
 console.log("system-deny containment (M10):");
 ok("an NFD spelling of the same protected path is still denied", () => {
 	// "café" as NFC vs NFD (e + combining accent). Same file, different bytes.
-	const nfc = "/proj/café/subagents";
-	const nfd = "/proj/café/subagents/self.md";
+	const project = join(sep, "proj");
+	const nfc = join(project, "café", "subagents");
+	const nfd = join(project, "café", "subagents", "self.md");
 	const check = systemDeny.makeSystemDenyCheck([nfc], (p) => p);
 	assert.equal(check(nfd).denied, true);
 });

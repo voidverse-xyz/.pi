@@ -177,10 +177,16 @@ ok("claim writes marker + scope manifest, release removes marker", () => {
 	assert.ok(!existsSync(leaseLayout.hostOwnerFile), "release removes the owner marker");
 });
 ok("a live foreign owner blocks the claim", () => {
-	// forge a live marker owned by "someone else" (this very pid is alive)
-	const start = readFileSync("/proc/self/stat", "utf8");
-	const rparen = start.lastIndexOf(")");
-	const startTime = Number.parseInt(start.slice(rparen + 2).split(" ")[19], 10);
+	// Use Linux's PID-reuse fence when available; other platforms intentionally
+	// exercise the production fallback for a live pid without a start-time fence.
+	let startTime = null;
+	try {
+		const stat = readFileSync("/proc/self/stat", "utf8");
+		const rparen = stat.lastIndexOf(")");
+		startTime = Number.parseInt(stat.slice(rparen + 2).split(" ")[19], 10);
+	} catch {
+		// /proc is Linux-specific.
+	}
 	mkdirSync(leaseLayout.subagentsRoot, { recursive: true });
 	writeFileSync(leaseLayout.hostOwnerFile, JSON.stringify({ runtimeId: "foreign", pid: process.pid, startTime, updatedAt: Date.now() }));
 	assert.throws(() => hostLease.claimHostScope(leaseLayout), (e) => e.name === "HostScopeLockedError");

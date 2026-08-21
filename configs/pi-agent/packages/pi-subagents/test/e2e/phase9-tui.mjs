@@ -8,13 +8,15 @@
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { EXT, PI_PKG, jiti } from "./env.mjs";
 import { test, summary, until } from "./harness.mjs";
 
 const tree = await jiti.import(join(EXT, "tui/tree-widget.ts"));
 const text = await jiti.import(join(EXT, "text.ts"));
 const widget = await jiti.import(join(EXT, "tui/widget.ts"));
-const { visibleWidth } = await import(join(PI_PKG, "node_modules/@earendil-works/pi-tui/dist/index.js"));
+const piTuiModuleUrl = pathToFileURL(join(PI_PKG, "node_modules/@earendil-works/pi-tui/dist/index.js")).href;
+const { visibleWidth } = await import(piTuiModuleUrl);
 const plainTheme = { fg: (_color, text) => text };
 
 console.log("unified widget lines:");

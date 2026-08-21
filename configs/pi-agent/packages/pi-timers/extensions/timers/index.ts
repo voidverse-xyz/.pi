@@ -27,36 +27,36 @@ export const WAKE_DELIVERY = { deliverAs: "followUp", triggerTurn: true } as con
 const ManageTimersParams = Type.Object(
 	{
 		action: StringEnum(["create", "list", "cancel", "cancel_all"] as const, {
-			description: "Create, inspect, or cancel main-agent timers.",
+			description: "Timer action.",
 		}),
 		instruction: Type.Optional(
 			Type.String({
 				maxLength: MAX_INSTRUCTION_CHARS,
-				description: "For create: the instruction sent back to the main agent each time the timer fires.",
+				description: "Create: instruction sent on each wake.",
 			}),
 		),
 		intervalSeconds: Type.Optional(
 			Type.Integer({
 				minimum: MIN_INTERVAL_MS / 1000,
 				maximum: MAX_INTERVAL_MS / 1000,
-				description: "For create: seconds between wake-ups. The first wake occurs after one full interval.",
+				description: "Create: seconds between wakes; first wake follows one full interval.",
 			}),
 		),
 		maxRuns: Type.Optional(
 			Type.Integer({
 				minimum: 1,
-				description: "For create: optional number of accepted wake-ups before automatic removal. Omit to repeat until cancelled or the session ends.",
+				description: "Create: accepted-wake limit; omit for unlimited recurrence.",
 			}),
 		),
 		label: Type.Optional(
 			Type.String({
 				maxLength: MAX_LABEL_CHARS,
-				description: "For create: short human-readable timer label.",
+				description: "Create: short timer label.",
 			}),
 		),
 		timerId: Type.Optional(
 			Type.String({
-				description: "For cancel: timer id returned by create or list, such as timer-1.",
+				description: "Cancel: id returned by create or list.",
 			}),
 		),
 	},
@@ -138,11 +138,9 @@ export default function timersExtension(pi: ExtensionAPI): void {
 		name: TOOL_NAME,
 		label: "Main-agent timers",
 		description:
-			`Create and manage up to ${MAX_TIMERS} recurring, in-process timers owned by the main Pi agent. ` +
-			"Each timer waits one full interval, then sends its stored instruction back to the main agent and triggers a turn. " +
-			"Busy turns are never interrupted; one accepted wake may wait as a follow-up, and further ticks for that timer are " +
-			"coalesced until the agent settles. Timers disappear on cancellation, after an optional maxRuns limit, or when the Pi " +
-			"session reloads, switches, or exits. Subagents cannot use this tool.",
+			`Manage up to ${MAX_TIMERS} recurring timers owned by the main Pi agent. ` +
+			"The first wake follows one full interval; busy turns queue one wake and coalesce extra ticks. Timers end on " +
+			"cancellation, an optional maxRuns limit, reload/session change, or exit. Subagents cannot use this tool.",
 		promptSnippet: "manage_timers — schedule recurring in-process wake-ups for the main agent",
 		promptGuidelines: [
 			"Use manage_timers only when the user explicitly asks the main agent to perform something later or repeatedly.",

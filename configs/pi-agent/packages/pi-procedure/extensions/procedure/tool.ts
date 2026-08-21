@@ -43,17 +43,15 @@ const ProcedureParams = Type.Object(
 	{
 		script: Type.Optional(
 			Type.String({
-				description:
-					"Inline orchestration script (plain JavaScript, not TypeScript). Should begin with `export const meta = {name, description, phases}` (a pure literal).",
+				description: "Inline JavaScript starting with a literal `export const meta = {name, description, phases}`.",
 			}),
 		),
-		name: Type.Optional(Type.String({ description: "Run a saved procedure by name (see /procedures for the list)." })),
-		scriptPath: Type.Optional(Type.String({ description: "Path to a procedure .js file (absolute or cwd-relative)." })),
-		args: Type.Optional(Type.Any({ description: "JSON value exposed to the script as the global `args`." })),
+		name: Type.Optional(Type.String({ description: "Saved procedure name." })),
+		scriptPath: Type.Optional(Type.String({ description: "Absolute or cwd-relative procedure .js path." })),
+		args: Type.Optional(Type.Any({ description: "JSON exposed as global `args`." })),
 		resumeFromRunId: Type.Optional(
 			Type.String({
-				description:
-					"A prior run's id. Completed agent() calls with unchanged (prompt, opts) return their cached results instantly; the first changed call and everything after runs live.",
+				description: "Prior runId; reuses unchanged agent() results until the first changed call.",
 			}),
 		),
 	},
@@ -75,10 +73,9 @@ export function createProcedureTool(host: ProcedureToolHost): ToolDefinition {
 		name: PROCEDURE_TOOL,
 		label: "Procedure",
 		description:
-			"Run a deterministic multi-agent orchestration script. The script fans out one-shot subagents via agent()/parallel()/pipeline() " +
-			"and returns a result to you. Use for work that benefits from structured fan-out: parallel reviews, migrations over a file list, " +
-			"judge panels, multi-angle research. Pass exactly one of `script`, `name` (saved procedure), or `scriptPath`. " +
-			"One procedure runs at a time. Each run prints its runId; pass it as resumeFromRunId to re-run with cached results for unchanged agent() calls.",
+			"Run one deterministic fan-out procedure from inline JavaScript, a saved name, or a .js path (exactly one). " +
+			"Use for parallel reviews, migrations, judge panels, or multi-angle research. Only one run may be active; " +
+			"resume by runId to reuse unchanged agent() results.",
 		promptSnippet:
 			"procedure — orchestrate subagents with a deterministic JS script (agent/parallel/pipeline/phase/log); resumable via runId",
 		promptGuidelines: [

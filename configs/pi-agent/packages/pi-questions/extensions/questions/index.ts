@@ -49,69 +49,61 @@ const ICON_SUCCESS = ""; // nf-fa-check_circle
 // ---------------------------------------------------------------------------
 
 const OptionSchema = Type.Object({
-	title: Type.String({ description: "Short label for this option" }),
-	description: Type.Optional(Type.String({ description: "Optional detail shown beneath the option" })),
+	title: Type.String({ description: "Option label." }),
+	description: Type.Optional(Type.String({ description: "Optional detail under the option." })),
 	value: Type.Optional(
-		Type.String({ description: "Optional stable value returned when this option is selected, instead of its display title." }),
+		Type.String({ description: "Stable returned value; defaults to the title." }),
 	),
 	recommended: Type.Optional(
-		Type.Boolean({ description: "If true, visually marks this option as recommended without selecting it." }),
+		Type.Boolean({ description: "Marks a suggestion without selecting it." }),
 	),
 }, { additionalProperties: false });
 
 const InputSchema = Type.Object({
 	type: StringEnum(["text", "radio", "multi", "file"] as const, {
-		description:
-			"'text' for a free-text answer, 'radio' to pick exactly one option, 'multi' to pick any number of options, " +
-			"and 'file' to pick or type a path",
+		description: "Input kind: text, radio (one), multi, or file path.",
 	}),
-	title: Type.String({ description: "The question or field title shown to the user" }),
+	title: Type.String({ description: "Displayed question title." }),
 	id: Type.Optional(
 		Type.String({
-			description:
-				"Optional stable identifier echoed back in this input's answer. Set it (and unique per call) to correlate answers programmatically instead of matching on title.",
+			description: "Stable answer key; unique within the call.",
 		}),
 	),
-	description: Type.Optional(Type.String({ description: "Optional context shown beneath the title" })),
+	description: Type.Optional(Type.String({ description: "Optional context under the title." })),
 	options: Type.Optional(
 		Type.Array(OptionSchema, {
 			maxItems: 50,
-			description:
-				"Choices for 'radio'/'multi' inputs. Ignored for other input types. Radio/multi inputs always include a 'Something else…' choice.",
+			description: "Choices for radio/multi; ignored otherwise.",
 		}),
 	),
 	optional: Type.Optional(
 		Type.Boolean({
-			description:
-				"If true, an unanswered input is reported as skipped. Blank inputs never disable submission.",
+			description: "Allows an unanswered/skipped result; blank values remain valid.",
 		}),
 	),
 	default: Type.Optional(
 		Type.String({
-			description:
-				"Default value. For text/file: the value/path; radio: an option's title or value. Do not use for multi inputs.",
+			description: "Preselected text/file/radio value; not for multi.",
 		}),
 	),
 	defaults: Type.Optional(
-		Type.Array(Type.String({ description: "An option's title or value, selected by default" }), {
-			description: "Default selected options for multi inputs (match each by option title or value).",
+		Type.Array(Type.String({ description: "Option title or value." }), {
+			description: "Preselected multi-choice titles or values.",
 		}),
 	),
 	pattern: Type.Optional(
 		Type.String({
-			description:
-				"Text inputs only: JavaScript regular expression the answer is expected to match. Mismatches warn but do not block submission.",
+			description: "Text-only advisory JavaScript regex.",
 		}),
 	),
 	patternHint: Type.Optional(
 		Type.String({
-			description: "Text inputs only: human-readable warning shown when the answer does not match pattern.",
+			description: "Warning shown for a pattern mismatch.",
 		}),
 	),
 	fileKind: Type.Optional(
 		StringEnum(["file", "directory", "any"] as const, {
-			description:
-				"File inputs only: restrict existing paths to files, directories, or either. Nonexistent paths are allowed. Defaults to 'any'.",
+			description: "Existing-path kind filter; nonexistent paths are allowed.",
 		}),
 	),
 }, { additionalProperties: false });
@@ -121,7 +113,7 @@ const UserInputsParams = Type.Object(
 		inputs: Type.Array(InputSchema, {
 			minItems: 1,
 			maxItems: 10,
-			description: "One to ten inputs to ask the user, shown as tabs",
+			description: "One to ten questions shown as tabs.",
 		}),
 	},
 	{ additionalProperties: false },
@@ -136,9 +128,8 @@ export default function askUser(pi: ExtensionAPI) {
 		name: "ask_user",
 		label: "Ask User",
 		description:
-			"Ask the user one or more questions and wait for their answers. Use this whenever you have a question, " +
-			"need to clarify requirements, want a preference, or must confirm a decision before proceeding. Inputs can be " +
-			"text, radio, multi, or file. Inputs may be optional, have defaults or recommended choices, and include advisory validation.",
+			"Ask one to ten structured questions and wait for answers. Supports text, single/multi choice, and file paths; " +
+			"validation is advisory.",
 		promptSnippet: "ask_user — ask the user text / single-choice / multi-choice / typed questions and get their answers",
 		promptGuidelines: [
 			"When you need information only the user can provide, call ask_user instead of guessing or asking in prose.",

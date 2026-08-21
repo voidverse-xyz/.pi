@@ -13,7 +13,7 @@
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -40,7 +40,8 @@ export const PI_PKG = findPiPkg();
 
 export const WORLDS = join(tmpdir(), "pi-subagents-e2e");
 
-const { createJiti } = await import(join(PI_PKG, "node_modules", "jiti", "lib", "jiti.mjs"));
+const jitiModuleUrl = pathToFileURL(join(PI_PKG, "node_modules", "jiti", "lib", "jiti.mjs")).href;
+const { createJiti } = await import(jitiModuleUrl);
 
 export const jiti = createJiti(import.meta.url, {
 	interopDefault: true,
