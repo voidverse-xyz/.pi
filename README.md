@@ -21,8 +21,8 @@ source of the local Pi packages enabled by `settings.json`.
 ## Layout
 
 ```text
-~/.pi/agent/
-├── AGENTS.md                 # Global agent instructions
+<repository-root>/
+├── AGENTS.md                 # Global agent instructions and documentation router
 ├── settings.json             # Portable settings; relative package paths
 ├── keybindings.json          # Global keybindings
 ├── skills/                   # Auto-discovered global Pi skills
@@ -41,6 +41,99 @@ Pi ignores the extra reusable-material trees unless a package or setting refers
 to them. Root `procedures/*.js` is reserved for executable saved `pi-procedure`
 scripts; reusable Markdown procedures live in nested `procedures/<domain>/`
 directories, which the procedure loader ignores.
+
+## Repository guidance
+
+This README is the source of truth for repository-specific layout and package
+behavior. The automatically loaded root `AGENTS.md` tells agents to read it when
+a task concerns this repository, so users do not need to request documentation
+loading explicitly. Package-specific work must also follow the relevant package
+README, project documentation, and nearest nested `AGENTS.md`.
+
+The repository combines three roles:
+
+- `settings.json`, `keybindings.json`, `skills/`, and `subagents/` provide the
+  active portable Pi configuration.
+- `configs/pi-agent/packages/` contains the local Pi packages enabled by relative
+  paths from root `settings.json`.
+- `codex/`, `configs/`, `mcp/`, `plans/`, `procedures/`, `skills/`, and
+  `subagents/` hold reusable, project-agnostic materials.
+
+Keep repository-owned directory names in lowercase hyphen-case. Preserve the
+published casing of vendored assets and external specifications. Keep
+host-specific tool configuration under `configs/` or `codex/configs/`; never
+commit authentication data, session logs, caches, local history, runtime
+databases, or other machine-local state.
+
+`subagents/` is the single source of truth for production definitions shared by
+Pi Subagents and Pi Teams. Do not create a separate root `teams/` definition
+library. Local Codex plugin sources belong under
+`codex/plugins/plugins/<plugin-name>/`, and marketplace-backed plugins use
+`codex/plugins/marketplace.json`.
+
+### Codex layout
+
+- `codex/configs/` contains portable Codex configuration sources.
+- `codex/plugins/marketplace.json` contains workspace marketplace metadata.
+- `codex/plugins/plugins/<plugin-name>/` contains local plugin sources.
+
+### PiAgent behavior
+
+`configs/pi-agent/packages/` is the source of truth for active package-backed Pi
+extensions. Root `settings.json` enables them with portable relative paths, and
+root `skills/` is the canonical global skill library.
+
+- **Modes:** `pi-plan` provides unrestricted Off plus restricted Discuss, Plan,
+  and Quick modes through `/discuss`, `/plan`, `/quick`, and the `Shift+Tab`
+  cycle. Quick keeps concise read-only chat; Discuss adds normal-length read-only
+  discussion; Plan uses tagged planning skills and an authorized `save_plan`
+  path. Plan-mode workers are fresh read-only one-shot Pi Subagents. The shared
+  base instructions live in `skills/plan/`.
+- **MCP:** `pi-mcp-client` loads machine-local `mcp.json` stdio server
+  definitions with a minimal environment. Calls confirm by default, large
+  catalogs use `mcp_search_tools`, and session shutdown owns process cleanup.
+  Remote HTTP and unsupported MCP capabilities are intentionally out of scope.
+- **Codex helpers:** `pi-codex-web-search` and `pi-codex-image-generation` use
+  short-lived Codex clients and the existing ChatGPT login. Image generation
+  uses an ephemeral image-only thread, accepts explicit source images, and
+  confines output writes to the current working directory.
+- **Timers:** `pi-timers` provides main-agent-only in-process recurring timers.
+  Ticks coalesce while the agent is busy, and timers disappear on cancellation,
+  reload, session replacement, or process exit. `/timers` and `Alt+R` expose
+  list/cancel controls.
+- **Sessions:** `pi-clear`, `pi-sessions`, and `pi-prune` provide `/clear`,
+  `/sessions`, and lifecycle-safe session replacement/removal helpers.
+- **Safety:** `pi-safety` gates agent-originated `bash` calls by category through
+  `/safety off|on|max`, with local privacy-preserving audit state. It does not
+  gate user-entered `!` commands.
+- **Status UI:** `pi-git-status`, `pi-model-thinking`, `pi-tool-monitor`, and
+  `pi-status-line` publish Git state, model/thinking, active tools, context,
+  usage, and cost into the shared above-editor/footer UI. `/tools` opens the
+  tool monitor and can abort the whole turn through `ctx.abort()`.
+- **Subagents and procedures:** `pi-subagents` owns the main-agent worker tools
+  and live tree. `pi-procedure` runs deterministic one-shot-agent orchestration
+  scripts and exposes `/procedures`; its tree can be expanded with `Alt+E` and
+  stopped with `Alt+W`.
+- **Teams and merging:** `pi-teams` adds persistent team agents and optional peer
+  messaging. `pi-merge` synthesizes selected session branches into a new session
+  while leaving source branches intact.
+- **User notices and turn statistics:** `pi-notify-user` renders structured
+  end-of-turn notices with optional urgent toasts. `pi-turn-stats` emits a
+  compact TUI-only notice after the agent truly settles; it does not alter the
+  prompt or add model work.
+- **Change tracking:** `pi-changes` records the main agent's successful
+  `edit`/`write` touches with first-touch baselines. `/changes` provides
+  git-independent diffs, file browsing, isolated read-only questions, and
+  precise per-file undo where a safe baseline exists. Bash-made changes are out
+  of scope.
+- **Theme and keys:** `configs/pi-agent/packages/void-agent/themes/` contains the
+  tracked theme family. Root `settings.json` selects the active theme, and root
+  `keybindings.json` assigns thinking/model cycling while reserving `Shift+Tab`
+  for `pi-plan`.
+
+Mutable extension settings and all session/runtime state remain ignored. Run
+`/reload` or restart Pi after changing a package, skill, subagent definition,
+keybinding, or theme.
 
 ## Fresh installation
 
