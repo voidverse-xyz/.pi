@@ -38,7 +38,7 @@ Pi packages live under `packages/<name>/` and are enabled through portable relat
 
 ## Theme and keybindings
 
-The active theme is `void-agent-tokyo-night`, bundled at `packages/void-agent/themes/void-agent-tokyo-night.json` and selected by root `settings.json` plus `agent/settings.json`.
+The active theme is `void-agent-one-dark`, bundled at `packages/void-agent/themes/void-agent-one-dark.json` and selected by root `settings.json` plus `agent/settings.json`.
 
 Keybindings are stored at root `keybindings.json` and mirrored in `agent/keybindings.json`. `Shift+Tab` is reserved for Plan mode, thinking-level cycling uses `Alt+T`, and forward model cycling uses `Alt+M`.
 

@@ -254,7 +254,7 @@ such as `configs/pi-agent/docs/agents/` for PiAgent-specific work.
   Works in non-git directories; nothing here shells out to git. Bash-made
   changes are out of scope by design.
 - `configs/pi-agent/packages/void-agent/themes/` supplies the tracked theme
-  family; root `settings.json` selects `void-agent-tokyo-night`.
+  family; root `settings.json` selects `void-agent-one-dark`.
 - Root `keybindings.json` remaps thinking-level cycling to `Alt+T` and forward
   model cycling to `Alt+M`, leaving `Shift+Tab` for `pi-plan`.
 - Root `subagents/` contains the production definitions shared by Pi Subagents
