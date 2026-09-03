@@ -14,6 +14,21 @@ present, then every applicable nested `AGENTS.md` from the root through the targ
 Consult the global `readable-code` skill for non-trivial implementation or refactoring unless more
 specific project guidance takes precedence.
 
+## Progressive Discovery
+
+For investigation and lookup tasks, minimize search scope and cost.
+
+- Start from the conversation context and strongest available clues. Inspect the most likely target
+  directly before discovering alternatives.
+- Search progressively: exact file or symbol, then the nearest directory, then the relevant package,
+  and the entire repository only when narrower searches fail.
+- Prefer bounded searches and exclude dependencies, generated output, caches, version-control
+  metadata, and unrelated worktrees unless they are relevant.
+- Do not launch multiple speculative broad scans in parallel. Stop once there is enough evidence for
+  the next action.
+- If the scope cannot be narrowed efficiently, ask a focused question. Repository-wide discovery is
+  appropriate first only for explicit inventories, audits, or cross-cutting investigations.
+
 ## Public And Outbound Content
 
 Treat anything written outside the local working context as potentially public and long-lived.
