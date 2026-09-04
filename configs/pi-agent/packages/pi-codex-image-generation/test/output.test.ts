@@ -3,7 +3,7 @@ import { existsSync, renameSync, symlinkSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 function findPiPackage(): string {
@@ -21,13 +21,19 @@ function findPiPackage(): string {
 }
 
 const piPackage = findPiPackage();
-const { createJiti } = await import(join(piPackage, "node_modules", "jiti", "lib", "jiti.mjs"));
+const jitiModuleUrl = pathToFileURL(join(piPackage, "node_modules", "jiti", "lib", "jiti.mjs"));
+const { createJiti } = await import(jitiModuleUrl.href);
 const jiti = createJiti(import.meta.url, {
 	interopDefault: true,
 	moduleCache: true,
 	alias: {
-		"@earendil-works/pi-coding-agent": join(piPackage, "dist", "index.js"),
-		"@earendil-works/pi-ai": join(piPackage, "node_modules", "@earendil-works", "pi-ai", "dist", "index.js"),
+		"@earendil-works/pi-coding-agent": join(
+			piPackage,
+			"dist",
+			"core",
+			"tools",
+			"file-mutation-queue.js",
+		),
 	},
 });
 const outputPath = fileURLToPath(new URL("../extensions/codex-image-generation/output.ts", import.meta.url));
@@ -47,7 +53,7 @@ test("atomically writes generated images and requires explicit overwrite", async
 		await mkdir(join(root, "nested"));
 		await validateOutputRequest(root, "nested/result.png", false);
 		const saved = await saveGeneratedImage(root, "nested/result.png", image, false);
-		assert.equal(saved.displayPath, "nested/result.png");
+		assert.equal(saved.displayPath, join("nested", "result.png"));
 		assert.deepEqual(await readFile(saved.absolutePath), png);
 
 		await assert.rejects(

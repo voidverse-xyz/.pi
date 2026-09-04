@@ -844,7 +844,7 @@ export async function prepareIsolatedCodexHome(
 ): Promise<string> {
 	const sourceHome = configuredCodexHome(source);
 	if (!sourceHome) {
-		throw new Error("Cannot locate the Codex login. Set HOME, CODEX_HOME, or PI_CODEX_IMAGE_HOME.");
+		throw new Error("Cannot locate the Codex login. Set HOME, USERPROFILE, CODEX_HOME, or PI_CODEX_IMAGE_HOME.");
 	}
 	const sourceAuthPath = join(sourceHome, "auth.json");
 	const resolvedAuthPath = await realpath(sourceAuthPath).catch(() => undefined);
@@ -872,9 +872,10 @@ export async function prepareIsolatedCodexHome(
 }
 
 function configuredCodexHome(source: NodeJS.ProcessEnv): string | undefined {
+	const homeDirectory = source.HOME?.trim() || source.USERPROFILE?.trim();
 	return source.PI_CODEX_IMAGE_HOME?.trim()
 		|| source.CODEX_HOME?.trim()
-		|| (source.HOME ? join(source.HOME, ".codex") : undefined);
+		|| (homeDirectory ? join(homeDirectory, ".codex") : undefined);
 }
 
 async function requireChatGptLogin(client: CodexAppServerClient): Promise<void> {

@@ -573,7 +573,6 @@ const CODEX_ENVIRONMENT_KEYS = [
 	"XDG_STATE_HOME",
 	"XDG_RUNTIME_DIR",
 	"DBUS_SESSION_BUS_ADDRESS",
-	"CODEX_HOME",
 	"SSL_CERT_FILE",
 	"SSL_CERT_DIR",
 	"NODE_EXTRA_CA_CERTS",
@@ -599,9 +598,9 @@ export function buildCodexEnvironment(source: NodeJS.ProcessEnv): Record<string,
 	for (const key of CODEX_ENVIRONMENT_KEYS) {
 		if (source[key] !== undefined) environment[key] = source[key];
 	}
+	const homeDirectory = source.HOME?.trim() || source.USERPROFILE?.trim();
 	const isolatedHome = source.PI_CODEX_WEB_SEARCH_HOME?.trim()
-		|| source.CODEX_HOME?.trim()
-		|| (source.HOME ? join(source.HOME, ".codex", "web-search") : undefined);
+		|| (homeDirectory ? join(homeDirectory, ".codex", "web-search") : undefined);
 	if (isolatedHome) environment.CODEX_HOME = isolatedHome;
 	return environment;
 }

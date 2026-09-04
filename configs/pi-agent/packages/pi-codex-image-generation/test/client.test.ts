@@ -260,10 +260,14 @@ test("builds a minimal Codex environment without Pi offline state or unrelated s
 		PI_OFFLINE: "1",
 		SECRET_TOKEN: "secret",
 	});
-	assert.equal(environment.CODEX_HOME, "/test-home/.codex");
+	assert.equal(environment.CODEX_HOME, join("/test-home", ".codex"));
 	assert.equal(environment.PATH, "/bin");
 	assert.equal(environment.PI_OFFLINE, undefined);
 	assert.equal(environment.SECRET_TOKEN, undefined);
+	assert.equal(
+		buildCodexEnvironment({ USERPROFILE: "/test-profile" }).CODEX_HOME,
+		join("/test-profile", ".codex"),
+	);
 
 	assert.equal(
 		buildCodexEnvironment({ HOME: "/home", CODEX_HOME: "/profiles/default", PI_CODEX_IMAGE_HOME: "/profiles/image" }).CODEX_HOME,
@@ -278,8 +282,8 @@ test("builds a minimal Codex environment without Pi offline state or unrelated s
 	}, "/isolated-codex-home");
 	assert.equal(isolated.HOME, "/isolated-codex-home");
 	assert.equal(isolated.CODEX_HOME, "/isolated-codex-home");
-	assert.equal(isolated.XDG_CONFIG_HOME, "/isolated-codex-home/xdg-config");
-	assert.equal(isolated.APPDATA, "/isolated-codex-home/app-data");
+	assert.equal(isolated.XDG_CONFIG_HOME, join("/isolated-codex-home", "xdg-config"));
+	assert.equal(isolated.APPDATA, join("/isolated-codex-home", "app-data"));
 	assert.equal(isolated.PATH, "/bin");
 });
 

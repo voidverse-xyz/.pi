@@ -7,6 +7,11 @@ import {
 	mimeTypeForOutputExtension,
 	type GeneratedImage,
 } from "./client.ts";
+import {
+	saveWindowsOutput,
+	validateWindowsOutput,
+	validateWindowsOutputPath,
+} from "./windows-output.ts";
 
 export interface SavedImage {
 	absolutePath: string;
@@ -29,8 +34,14 @@ export async function validateOutputRequest(
 	overwrite: boolean,
 ): Promise<void> {
 	const absolutePath = await resolveConfinedOutputPath(cwd, requestedPath);
+	if (process.platform === "win32") validateWindowsOutputPath(requestedPath);
 	requireOutputMimeType(absolutePath);
 	await withFileMutationQueue(absolutePath, async () => {
+		if (process.platform === "win32") {
+			const rootPath = await realpath(resolve(cwd));
+			await validateWindowsOutput(rootPath, absolutePath, requestedPath, overwrite);
+			return;
+		}
 		const anchored = await openAnchoredOutputParent(absolutePath);
 		try {
 			await requireWritableTargetState(anchored.targetPath, requestedPath, overwrite);
@@ -49,6 +60,7 @@ export async function saveGeneratedImage(
 ): Promise<SavedImage> {
 	throwIfAborted(signal);
 	const absolutePath = await resolveConfinedOutputPath(cwd, requestedPath);
+	if (process.platform === "win32") validateWindowsOutputPath(requestedPath);
 	const expectedMimeType = requireOutputMimeType(absolutePath);
 	if (expectedMimeType !== image.mimeType) {
 		throw new Error(
@@ -58,6 +70,18 @@ export async function saveGeneratedImage(
 
 	await withFileMutationQueue(absolutePath, async () => {
 		throwIfAborted(signal);
+		if (process.platform === "win32") {
+			const rootPath = await realpath(resolve(cwd));
+			await saveWindowsOutput(
+				rootPath,
+				absolutePath,
+				requestedPath,
+				Buffer.from(image.data, "base64"),
+				overwrite,
+				signal,
+			);
+			return;
+		}
 		const anchored = await openAnchoredOutputParent(absolutePath);
 		try {
 			await requireWritableTargetState(anchored.targetPath, requestedPath, overwrite);

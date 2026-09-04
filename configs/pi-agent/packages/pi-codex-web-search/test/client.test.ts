@@ -21,14 +21,18 @@ function fakeOptions(mode = "success"): RunCodexWebSearchOptions {
 	};
 }
 
-test("selects an isolated Codex home by default and honors explicit overrides", () => {
+test("selects a dedicated Codex home and honors only the web-search override", () => {
 	assert.equal(
 		buildCodexEnvironment({ HOME: "/test-home" }).CODEX_HOME,
-		"/test-home/.codex/web-search",
+		join("/test-home", ".codex", "web-search"),
+	);
+	assert.equal(
+		buildCodexEnvironment({ USERPROFILE: "/test-profile" }).CODEX_HOME,
+		join("/test-profile", ".codex", "web-search"),
 	);
 	assert.equal(
 		buildCodexEnvironment({ HOME: "/test-home", CODEX_HOME: "/profiles/codex" }).CODEX_HOME,
-		"/profiles/codex",
+		join("/test-home", ".codex", "web-search"),
 	);
 	assert.equal(
 		buildCodexEnvironment({

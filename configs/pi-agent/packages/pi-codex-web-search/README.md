@@ -18,8 +18,9 @@ authentication and token refresh.
 
 By default the process uses an isolated profile at `$HOME/.codex/web-search` so
 normal Codex MCP, hook, plugin, app, skill, and instruction configuration cannot
-leak into searches. An explicit `CODEX_HOME` is honored as-is, and
-`PI_CODEX_WEB_SEARCH_HOME` takes precedence over both defaults. Authenticate the
+leak into searches. The extension intentionally ignores a general `CODEX_HOME`
+because that profile may contain unsafe inherited configuration;
+`PI_CODEX_WEB_SEARCH_HOME` is the only supported override. Authenticate the
 selected profile once with:
 
 ```bash

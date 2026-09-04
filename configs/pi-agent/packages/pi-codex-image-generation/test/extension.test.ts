@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 function findPiPackage(): string {
@@ -21,12 +21,14 @@ function findPiPackage(): string {
 }
 
 const piPackage = findPiPackage();
-const { createJiti } = await import(join(piPackage, "node_modules", "jiti", "lib", "jiti.mjs"));
+const jitiModuleUrl = pathToFileURL(join(piPackage, "node_modules", "jiti", "lib", "jiti.mjs"));
+const { createJiti } = await import(jitiModuleUrl.href);
+const codingAgentStub = fileURLToPath(new URL("./fixtures/pi-coding-agent.mjs", import.meta.url));
 const jiti = createJiti(import.meta.url, {
 	interopDefault: true,
 	moduleCache: true,
 	alias: {
-		"@earendil-works/pi-coding-agent": join(piPackage, "dist", "index.js"),
+		"@earendil-works/pi-coding-agent": codingAgentStub,
 		"@earendil-works/pi-ai": join(piPackage, "node_modules", "@earendil-works", "pi-ai", "dist", "index.js"),
 		typebox: join(piPackage, "node_modules", "typebox", "build", "index.mjs"),
 	},
@@ -46,6 +48,7 @@ test("registers a create-and-edit tool and returns a saved inline image", async 
 	assert.ok(tool.parameters.properties.outputPath);
 	assert.ok(tool.parameters.properties.inputImages);
 	assert.ok(tool.parameters.properties.overwrite);
+	if (process.platform === "win32") return;
 
 	const root = await mkdtemp(join(tmpdir(), "pi-image-extension-test-"));
 	const shim = join(root, "codex-shim");
@@ -55,7 +58,7 @@ test("registers a create-and-edit tool and returns a saved inline image", async 
 	try {
 		await mkdir(codexHome);
 		await writeFile(join(codexHome, "auth.json"), "test authentication material", { mode: 0o600 });
-		await writeFile(shim, `#!/bin/sh\nexec "${process.execPath}" "${fixturePath}"\n`);
+		await writeFile(shim, `#!/bin/sh\nexec "${process.execPath}" "${fixturePath}" "$@"\n`);
 		await chmod(shim, 0o700);
 		process.env.CODEX_BIN = shim;
 		process.env.PI_CODEX_IMAGE_HOME = codexHome;

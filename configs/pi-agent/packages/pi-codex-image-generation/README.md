@@ -7,7 +7,7 @@ Adds one LLM-callable Pi tool, `image_generation`, backed by the locally install
 - Codex CLI 0.146.0 or newer on `PATH`
 - A ChatGPT-backed Codex login (`codex login`)
 - An active Codex model provider that reports image-generation support
-- Linux with `/proc` descriptor paths for race-resistant output confinement
+- Linux with `/proc` descriptor paths, or Windows with WSL and Python 3, for race-resistant output confinement
 
 No separate OpenAI API key is required.
 
@@ -23,11 +23,11 @@ No separate OpenAI API key is required.
 ```
 
 - `prompt` is required and limited to 10,000 characters.
-- `outputPath` is required, its parent directory must already exist inside Pi's current working directory, and it must use `.png`, `.jpg`/`.jpeg`, `.webp`, or `.gif` matching the format returned by Codex.
+- `outputPath` is required, its parent directory must already exist inside Pi's current working directory, and it must use `.png`, `.jpg`/`.jpeg`, `.webp`, or `.gif` matching the format returned by Codex. Windows output paths must be relative and cannot contain reserved or ambiguous Windows path components.
 - `inputImages` is optional and accepts up to four PNG, JPEG, WebP, or GIF files.
 - `overwrite` defaults to `false`; symbolic-link outputs are never replaced.
 
-The request is validated before network use. The result is saved atomically through a descriptor-anchored parent directory and returned to Pi as an inline image preview.
+The request is validated before network use. The result is saved atomically through a descriptor-anchored parent directory and returned to Pi as an inline image preview. On Windows, a bundled Python helper runs locally under WSL and performs the same handle-relative validation and commit without receiving the prompt or any source image.
 
 ## Privacy and isolation
 

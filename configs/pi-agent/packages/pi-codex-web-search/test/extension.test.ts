@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 
 function findPiPackage(): string {
@@ -18,12 +19,14 @@ function findPiPackage(): string {
 }
 
 const piPackage = findPiPackage();
-const { createJiti } = await import(join(piPackage, "node_modules", "jiti", "lib", "jiti.mjs"));
+const jitiModuleUrl = pathToFileURL(join(piPackage, "node_modules", "jiti", "lib", "jiti.mjs"));
+const { createJiti } = await import(jitiModuleUrl.href);
+const codingAgentStub = fileURLToPath(new URL("./fixtures/pi-coding-agent.mjs", import.meta.url));
 const jiti = createJiti(import.meta.url, {
 	interopDefault: true,
 	moduleCache: true,
 	alias: {
-		"@earendil-works/pi-coding-agent": join(piPackage, "dist", "index.js"),
+		"@earendil-works/pi-coding-agent": codingAgentStub,
 		"@earendil-works/pi-ai": join(piPackage, "node_modules", "@earendil-works", "pi-ai", "dist", "index.js"),
 		"@earendil-works/pi-tui": join(piPackage, "node_modules", "@earendil-works", "pi-tui", "dist", "index.js"),
 		typebox: join(piPackage, "node_modules", "typebox", "build", "index.mjs"),

@@ -38,14 +38,14 @@ For every tool call:
 6. Verify effective configuration has no enabled MCP, hook, plugin, app, connector, skill, or instruction surface.
 7. Start one ephemeral thread with empty environments/capability roots/dynamic tools, read-only sandboxing, explicit image-only instructions, and all non-image features disabled.
 8. Reject inherited instruction sources, server requests, unknown items, mismatched thread/turn ids, multiple generated images, malformed base64, unsupported formats, and oversized results.
-9. Preflight the destination before network use, then atomically write the result through Pi's file-mutation queue and a Linux descriptor-anchored parent directory. Abort is checked through the final commit.
+9. Preflight the destination before network use, then atomically write the result through Pi's file-mutation queue and a descriptor-anchored parent directory. Linux uses `/proc/self/fd`; Windows uses a bundled Python helper under WSL for handle-relative traversal, staging, and commit. Abort is checked through the final commit.
 10. Close the subprocess and remove temporary files, including the bridged login, on every exit path.
 
 Only the explicit prompt, static image-worker instructions, and embedded bytes of listed input images are placed in model input. Pi messages, system instructions, repository contents, credential values, original paths, and the requested output path are not placed in model input or logs; the bridged Codex login still authenticates the transport.
 
 ## File safety
 
-Output parents must already exist. Paths are lexically and realpath-confined to Pi's current working directory, then the parent inode is opened and held through Linux `/proc/self/fd` for descriptor-relative target checks and commits. Supported suffixes are `.png`, `.jpg`/`.jpeg`, `.webp`, and `.gif`; the suffix must match the generated file signature. Existing files require `overwrite: true`, symbolic links are always refused, and writes use an exclusive same-directory temporary file followed by rename or a no-clobber hard link.
+Output parents must already exist. Paths are lexically and realpath-confined to Pi's current working directory, then the parent inode is opened and held for descriptor-relative target checks and commits. Linux uses `/proc/self/fd`; Windows requires WSL with Python 3 and rejects absolute paths, alternate data streams, reserved device names, trailing dots/spaces, and ambiguous path components before invoking its helper. Supported suffixes are `.png`, `.jpg`/`.jpeg`, `.webp`, and `.gif`; the suffix must match the generated file signature. Existing files require `overwrite: true`, symbolic links are always refused, and writes use an exclusive same-directory temporary file followed by rename or a no-clobber hard link.
 
 ## Verification scope
 
