@@ -127,10 +127,11 @@ root `skills/` is the canonical global skill library.
   git-independent diffs, file browsing, isolated read-only questions, and
   precise per-file undo where a safe baseline exists. Bash-made changes are out
   of scope.
-- **Theme and keys:** `configs/pi-agent/packages/void-agent/themes/` contains the
-  tracked theme family. Root `settings.json` selects the active theme, and root
-  `keybindings.json` assigns thinking/model cycling while reserving `Shift+Tab`
-  for `pi-plan`.
+- **Theme, TUI, and keys:** `configs/pi-agent/packages/void-agent/themes/` contains the
+  tracked theme family. Root `settings.json` selects the active theme and fullscreen
+  TUI mode so short terminals use a height-bounded transcript instead of repeatedly
+  redrawing terminal scrollback. Root `keybindings.json` assigns thinking/model
+  cycling while reserving `Shift+Tab` for `pi-plan`.
 
 Mutable extension settings and all session/runtime state remain ignored. Run
 `/reload` or restart Pi after changing a package, skill, subagent definition,

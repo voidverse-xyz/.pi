@@ -3,6 +3,7 @@
   "defaultModel": "gpt-5.6-sol",
   "defaultThinkingLevel": "high",
   "theme": "void-agent-one-dark",
+  "tuiMode": "fullscreen",
   "packages": [
     "./configs/pi-agent/packages/pi-teams",
     "./configs/pi-agent/packages/pi-subagents",

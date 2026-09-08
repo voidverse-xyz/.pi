@@ -38,9 +38,9 @@ Pi packages live under `packages/<name>/` and are enabled through portable relat
 | `pi-tool-monitor` | Plain active-tool status producer and `/tools` |
 | `pi-procedure` | **Procedure** — LLM-callable `procedure` tool running deterministic JS orchestration scripts (`agent`/`parallel`/`pipeline`/`phase`/`log`) over one-shot sandboxed subagents; journal-backed `resumeFromRunId`, saved procedures + `/procedures`, expandable live progress tree (`alt+e`) with provider-visible thinking/tool activity and preserved padding above the shared status row, `alt+w` stop brake, pi-safety gating over `procedure:confirm-request` |
 
-## Theme and keybindings
+## Theme, TUI, and keybindings
 
-The active theme is `void-agent-one-dark`, bundled at `packages/void-agent/themes/void-agent-one-dark.json` and selected by root `settings.json` plus `agent/settings.json`.
+The active theme is `void-agent-one-dark`, bundled at `packages/void-agent/themes/void-agent-one-dark.json` and selected by root `settings.json` plus `agent/settings.json`. Both settings files select fullscreen TUI mode so constrained terminal heights use a bounded transcript viewport rather than regular-mode scrollback redraws.
 
 Keybindings are stored at root `keybindings.json` and mirrored in `agent/keybindings.json`. `Shift+Tab` is reserved for Plan mode, thinking-level cycling uses `Alt+T`, and forward model cycling uses `Alt+M`.
 

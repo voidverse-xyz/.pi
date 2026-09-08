@@ -15,6 +15,7 @@ const EXPECTED_PROVIDER = "openai-codex";
 const EXPECTED_MODEL = "gpt-5.6-sol";
 const EXPECTED_THINKING_LEVEL = "high";
 const EXPECTED_THEME = "void-agent-one-dark";
+const EXPECTED_TUI_MODE = "fullscreen";
 const ROOT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
 const AGENT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
 
@@ -119,6 +120,9 @@ function validateSettingsFile({ relativePath, baseDir, allowedKeys, packagePrefi
   if (settings.theme !== EXPECTED_THEME) {
     fail(`${relativePath} theme must be ${EXPECTED_THEME}; found: ${JSON.stringify(settings.theme)}`);
   }
+  if (settings.tuiMode !== EXPECTED_TUI_MODE) {
+    fail(`${relativePath} TUI mode must be ${EXPECTED_TUI_MODE}; found: ${JSON.stringify(settings.tuiMode)}`);
+  }
   if (expectedSkills !== undefined && !sameJson(settings.skills, expectedSkills)) {
     fail(`${relativePath} skills must be ${JSON.stringify(expectedSkills)}; found: ${JSON.stringify(settings.skills)}`);
   }
@@ -129,7 +133,7 @@ function validateSettingsFile({ relativePath, baseDir, allowedKeys, packagePrefi
 const rootSettings = validateSettingsFile({
   relativePath: "settings.json",
   baseDir: root,
-  allowedKeys: ["defaultModel", "defaultProvider", "defaultThinkingLevel", "packages", "theme"],
+  allowedKeys: ["defaultModel", "defaultProvider", "defaultThinkingLevel", "packages", "theme", "tuiMode"],
   packagePrefix: ROOT_PACKAGE_PREFIX,
 });
 // The agent/ shim is active when the repository is checked out one level above
@@ -141,7 +145,7 @@ const agentShimActive = existsSync(join(root, "agent", "configs", "pi-agent", "p
 const agentSettings = validateSettingsFile({
   relativePath: "agent/settings.json",
   baseDir: join(root, "agent"),
-  allowedKeys: ["defaultModel", "defaultProvider", "defaultThinkingLevel", "packages", "skills", "theme"],
+  allowedKeys: ["defaultModel", "defaultProvider", "defaultThinkingLevel", "packages", "skills", "theme", "tuiMode"],
   packagePrefix: AGENT_PACKAGE_PREFIX,
   expectedSkills: ["./skills"],
   checkPackageFiles: agentShimActive,
