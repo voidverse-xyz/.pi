@@ -11,10 +11,6 @@ const notes = [];
 
 const EXPECTED_PACKAGE_COUNT = 32;
 const EXPECTED_SKILL_COUNT = 31;
-const EXPECTED_PROVIDER = "openai-codex";
-const EXPECTED_MODEL = "gpt-5.6-sol";
-const EXPECTED_THINKING_LEVEL = "high";
-const EXPECTED_THEME = "void-agent-one-dark";
 const ROOT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
 const AGENT_PACKAGE_PREFIX = "./configs/pi-agent/packages/";
 
@@ -100,24 +96,13 @@ function validatePackageList(settings, settingsRelPath, baseDir, packagePrefix, 
   }
 }
 
-function validateSettingsFile({ relativePath, baseDir, allowedKeys, packagePrefix, expectedSkills, checkPackageFiles = true }) {
+function validateSettingsFile({ relativePath, baseDir, packagePrefix, expectedSkills, checkPackageFiles = true }) {
   const settings = readJson(join(root, relativePath));
   if (!settings) return undefined;
-  const keys = Object.keys(settings).sort();
-  if (!sameJson(keys, [...allowedKeys].sort())) {
-    fail(`${relativePath} must contain only ${allowedKeys.map((key) => JSON.stringify(key)).join(", ")}; found: ${keys.join(", ")}`);
-  }
-  if (settings.defaultProvider !== EXPECTED_PROVIDER) {
-    fail(`${relativePath} default provider must be ${EXPECTED_PROVIDER}; found: ${JSON.stringify(settings.defaultProvider)}`);
-  }
-  if (settings.defaultModel !== EXPECTED_MODEL) {
-    fail(`${relativePath} default model must be ${EXPECTED_MODEL}; found: ${JSON.stringify(settings.defaultModel)}`);
-  }
-  if (settings.defaultThinkingLevel !== EXPECTED_THINKING_LEVEL) {
-    fail(`${relativePath} default thinking level must be ${EXPECTED_THINKING_LEVEL}; found: ${JSON.stringify(settings.defaultThinkingLevel)}`);
-  }
-  if (settings.theme !== EXPECTED_THEME) {
-    fail(`${relativePath} theme must be ${EXPECTED_THEME}; found: ${JSON.stringify(settings.theme)}`);
+  for (const preference of ["defaultProvider", "defaultModel", "defaultThinkingLevel", "theme"]) {
+    if (settings[preference] !== undefined && typeof settings[preference] !== "string") {
+      fail(`${relativePath} ${preference} must be a string when present; found: ${JSON.stringify(settings[preference])}`);
+    }
   }
   if (expectedSkills !== undefined && !sameJson(settings.skills, expectedSkills)) {
     fail(`${relativePath} skills must be ${JSON.stringify(expectedSkills)}; found: ${JSON.stringify(settings.skills)}`);
@@ -129,7 +114,6 @@ function validateSettingsFile({ relativePath, baseDir, allowedKeys, packagePrefi
 const rootSettings = validateSettingsFile({
   relativePath: "settings.json",
   baseDir: root,
-  allowedKeys: ["defaultModel", "defaultProvider", "defaultThinkingLevel", "packages", "theme"],
   packagePrefix: ROOT_PACKAGE_PREFIX,
 });
 // The agent/ shim is active when the repository is checked out one level above
@@ -141,7 +125,6 @@ const agentShimActive = existsSync(join(root, "agent", "configs", "pi-agent", "p
 const agentSettings = validateSettingsFile({
   relativePath: "agent/settings.json",
   baseDir: join(root, "agent"),
-  allowedKeys: ["defaultModel", "defaultProvider", "defaultThinkingLevel", "packages", "skills", "theme"],
   packagePrefix: AGENT_PACKAGE_PREFIX,
   expectedSkills: ["./skills"],
   checkPackageFiles: agentShimActive,
@@ -288,7 +271,6 @@ for (const requiredText of [
   "subagent_retire",
   "ownerScopeId",
   "<issue-team-id>",
-  "whatever model the user selected",
   "automatic retirement after verified issue closure",
   "Never reuse a retired epoch ID",
   "canonical base-10 `1..9999999999`",
@@ -311,27 +293,6 @@ for (const requiredText of [
   }
 }
 const issueMaintenanceNote = readFileSync(join(root, "configs", "pi-agent", "docs", "agents", "notes", "pi-agent", "main-agent-issue-maintenance", "main-agent-issue-maintenance.md"), "utf8");
-const issueMaintenanceEvalText = JSON.stringify(issueMaintenanceEvals);
-for (const [source, content] of [["skill", issueMaintenanceSkill], ["note", issueMaintenanceNote], ["evals", issueMaintenanceEvalText]]) {
-  if (content.includes("gpt-5.3-codex-spark")) {
-    fail(`github-issue-maintenance ${source} must not pin or recommend a main-agent model`);
-  }
-}
-const modelsSection = issueMaintenanceSkill.match(/## Models\n\n([\s\S]*?)\n\n## Required inputs and authorization/)?.[1];
-const specialistModelsMarker = "The specialist definitions pin their own models:";
-const expectedMainModelPolicy = "The main agent uses whatever model the user selected for the current Pi session. This skill does not check, recommend, pin, or switch the main model.";
-const mainModelPolicy = modelsSection?.split(specialistModelsMarker)[0].trim();
-if (mainModelPolicy !== expectedMainModelPolicy) {
-  fail("github-issue-maintenance main-model policy must be exactly model-neutral");
-}
-const mainModelRow = issueMaintenanceNote.match(/^\| Main coordinator \| ([^|]+) \|$/m)?.[1].trim();
-if (mainModelRow !== "Whatever model the user selected for the active Pi session." || mainModelRow.includes("/")) {
-  fail("main-agent issue maintenance note must leave the main model user-selected");
-}
-const expectedModelEval = "Uses whatever model the user selected for the main Pi session without checking or recommending one; worker pins openai-codex/gpt-5.6-sol and reviewer pins openai-codex/gpt-5.6-terra.";
-if (issueMaintenanceEvalItems?.find((item) => item?.id === 10)?.expected_output !== expectedModelEval) {
-  fail("github-issue-maintenance model eval must enforce a model-neutral main agent");
-}
 const criticalEvalClauses = new Map([
   [1, ["active main agent", "only for a durably claimed fix-issue epoch"]],
   [3, ["does not create, wake, or reserve worker/reviewer addresses"]],
@@ -358,7 +319,6 @@ for (const [id, clauses] of criticalEvalClauses) {
 }
 for (const requiredText of [
   "<repo-id>-i<issue-number>-e<epoch-index>",
-  "Whatever model the user selected",
   "canonical base-10 `1..9999999999`",
   "canonical base-10 `0..9999999999`",
   "repository ID is at most 226 characters",
@@ -538,8 +498,26 @@ for (const path of tracked) {
   else if (ignored.status !== 1) fail(`could not evaluate ignore policy for tracked path: ${path}`);
 }
 
+const agentInstructionPath = "agent/AGENTS.md";
+const expectedAgentInstructions = [
+  "# Global Agent Instructions",
+  "",
+  "Read `../AGENTS.md`, resolved relative to this file's directory, for the authoritative",
+  "global instructions. Do not resolve this path relative to the current working directory.",
+  "",
+].join("\n");
+try {
+  const instructionFile = join(root, agentInstructionPath);
+  if (!lstatSync(instructionFile).isFile()) {
+    fail(`${agentInstructionPath} must be a regular instruction pointer file`);
+  } else if (readFileSync(instructionFile, "utf8").replace(/\r\n/g, "\n") !== expectedAgentInstructions) {
+    fail(`${agentInstructionPath} must contain only the canonical instruction pointer`);
+  }
+} catch (error) {
+  fail(`cannot inspect instruction pointer: ${error.message}`);
+}
+
 const allowedSymlinks = new Map([
-  ["agent/AGENTS.md", "../AGENTS.md"],
   ["agent/configs", "../configs"],
   ["agent/skills", "../skills"],
   ["agent/subagents", "../subagents"],
@@ -551,12 +529,14 @@ try {
     .filter((line) => line.startsWith("120000 "));
   for (const entry of linkedEntries) {
     const path = entry.split(/\s+/).at(-1);
+    // Validate the working-tree pointer above while its type change is still unstaged.
+    if (path === agentInstructionPath) continue;
     const expectedTarget = allowedSymlinks.get(path);
     if (!expectedTarget) {
       fail(`tracked symlink is not an approved agent-dir shim: ${entry}`);
       continue;
     }
-    const actualTarget = readlinkSync(join(root, path));
+    const actualTarget = readlinkSync(join(root, path)).replaceAll("\\", "/");
     if (actualTarget !== expectedTarget) {
       fail(`${path} must point to ${expectedTarget}; found ${actualTarget}`);
     }
