@@ -21,6 +21,26 @@ For investigation and lookup tasks, minimize search scope and cost.
 - Before concluding that a referenced path does not exist, check it directly; search tools may omit
   hidden or Git-ignored paths.
 
+## Token And Context Efficiency
+
+Keep long investigations from repeatedly resending an unnecessarily large context.
+
+- Narrow searches and shell commands before running them. Use focused paths, patterns, line ranges,
+  and output limits instead of broad commands that may return tens of thousands of characters.
+- Read only files and sections needed for the current decision. Do not reread unchanged files or a
+  complete generated document merely to verify a few facts; inspect targeted sections or use
+  deterministic checks instead.
+- Batch related research questions when practical and stop researching once the evidence is
+  sufficient for the requested decision. Avoid many near-duplicate web searches or repository scans.
+- Treat tool results as lasting context. Summarize useful findings and avoid retaining raw bulk output
+  when a concise result, count, filename list, or saved local artifact will do.
+- During a long tool-heavy task, watch context growth and compact before continuing once the active
+  prompt is roughly 50k–70k tokens, or earlier when repeated calls are carrying large outputs. If
+  compaction is unavailable to the agent, tell the user that a compaction or fresh session would
+  materially reduce token use before doing another large research phase.
+- After writing a large file, verify it with targeted searches, parsers, tests, hashes, or selected
+  ranges. Read the whole file again only when full-document review is genuinely required.
+
 ## Public And Outbound Content
 
 Keep private, sensitive, or personally identifying information out of content that may be shared,
