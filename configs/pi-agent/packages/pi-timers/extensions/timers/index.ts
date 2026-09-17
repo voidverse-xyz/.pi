@@ -1,4 +1,5 @@
 import { StringEnum } from "@earendil-works/pi-ai";
+import { Text } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -195,6 +196,24 @@ export default function timersExtension(pi: ExtensionAPI): void {
 					});
 				}
 			}
+		},
+
+		renderCall(args, theme) {
+			let text = theme.fg("toolTitle", theme.bold("manage_timers "));
+			text += theme.fg("text", String(args.action ?? "list"));
+			if (typeof args.label === "string") text += theme.fg("dim", ` · ${args.label}`);
+			else if (typeof args.timerId === "string") text += theme.fg("dim", ` · ${args.timerId}`);
+			return new Text(text, 0, 0);
+		},
+
+		renderResult(result, _options, theme) {
+			// The widget above the editor already lists every active timer, so a list
+			// that found some needs no result body (an empty Text renders zero lines).
+			// An empty list says something the widget cannot: that there are none.
+			const details = result.details as { action?: string; timers?: unknown[] } | undefined;
+			if (details?.action === "list" && (details.timers?.length ?? 0) > 0) return new Text("", 0, 0);
+			const first = result.content[0];
+			return new Text(theme.fg("toolOutput", first?.type === "text" ? first.text : ""), 0, 0);
 		},
 	});
 

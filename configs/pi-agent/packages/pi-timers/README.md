@@ -44,7 +44,7 @@ Press **`Alt+R`** to open a bordered cancellation picker. Selecting a timer canc
 `manage_timers` supports:
 
 - `create` — requires `instruction` and `intervalSeconds`; `label` and finite `maxRuns` are optional.
-- `list` — returns active timers, accepted runs, pending state, next expected tick, and coalesced tick count.
+- `list` — returns active timers, accepted runs, pending state, next expected tick, and coalesced tick count. A `list` that finds timers renders no result body, because the widget above the editor is already showing them; an empty list still reports that there are none.
 - `cancel` — requires `timerId`.
 - `cancel_all` — removes every active timer.
 

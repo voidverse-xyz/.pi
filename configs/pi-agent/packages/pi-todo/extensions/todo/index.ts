@@ -11,15 +11,23 @@
  *     □ Fix sandbox/typedefs     <- in progress: accent, bold
  *     □ Fix mail
  *
+ * The widget is the only place the list is drawn: an accepted todo_write
+ * renders no result body, so the checklist never appears twice on screen.
+ *
  * The title is a list header, not a working indicator: no spinner, elapsed
  * time, token count, or dynamic label (pi's loader row owns those). It shows
  * whenever the list is non-empty — working or idle — so the checklist is
  * always identifiable at a glance.
  *
+ * A checklist whose items are all completed is finished work rather than a todo
+ * list: it stays up with the final report, then the runtime drops it when the
+ * user's next turn begins. Lists with unfinished work are never dropped that way.
+ *
  * alt+o cycles the widget between expanded (full list), collapsed (title +
  * one-line summary with the active item and a done-count), and hidden — the
  * keybind is the ONLY user control; there is no slash command. Clearing is the
- * agent's job (todo_write with an empty list).
+ * agent's job (todo_write with an empty list), apart from the finished-checklist
+ * drop above.
  * On session start/resume the list is restored from the most recent
  * todo_write call in the replayed session messages, so it survives /reload
  * and resume without any extra persistence.
@@ -35,9 +43,9 @@ import { Type } from "typebox";
 import {
 	buildTodoCarryoverPrompt,
 	extractLatestTodos,
+	isCompletedChecklist,
 	renderCollapsedLine,
 	renderTitleLine,
-	renderTodoItem,
 	renderTodoLineEllipsis,
 	renderTodoWidgetLines,
 	summarizeTodos,
@@ -143,12 +151,12 @@ export default function todoList(pi: ExtensionAPI) {
 		promptSnippet: "todo_write — track genuinely complex work with 3+ substantive steps; normal updates preserve the full list",
 		promptGuidelines: [
 			"Use todo_write only when a task is genuinely complex and naturally decomposes into at least 3 substantive steps. Never use it for 1- or 2-step tasks, quick fixes, simple lookups, or a single change plus verification; do not invent filler steps to reach three. Stale-list cleanup on a clear task/topic pivot is the exception and is allowed even when the new work is simple.",
-			"At the start of a new user turn, preserve the current todo list for continuations and follow-ups. When the user clearly moves to a different task or topic, remove stale work before starting: replace it with a new complete list if the new work needs 3+ substantive steps, otherwise clear it. Include a reason when replacing or clearing unfinished work.",
+			"At the start of a new user turn, preserve the current todo list for continuations and follow-ups. When the user clearly moves to a different task or topic, remove stale work before starting: replace it with a new complete list if the new work needs 3+ substantive steps, otherwise clear it. Include a reason when replacing or clearing unfinished work. A fully completed checklist never reaches you here — it is dropped automatically when the turn begins.",
 			"For normal progress, call todo_write with operation `update` (or omit operation) and resend the complete list. Never remove any existing item; keep completed items visible until the checklist is explicitly cleared or replaced.",
 			"Keep exactly one todo in_progress at a time. As soon as a task is actually done (tests pass, verified), mark that same item completed in the complete list before advancing the next task; never skip the observable completed state.",
 			"Give each todo stable, unique imperative `content` ('Fix store layer') and an `activeForm` ('Fixing store layer'). Do not reword content during a normal update because content is the item identity.",
 			"If new work surfaces within the same task, add it without removing existing items. Use operation `replace` with a reason only when the user directly changes the requested work, including a clear move to a different task or topic; never use replace to evade marking progress complete.",
-			"Use operation `clear` only after all todos have been completed, or with a reason when the user directly requests that unfinished work be cleared/abandoned or clearly moves to a different task or topic. Do not clear in the same turn that marks the final item complete; leave the completed checklist visible with the final report.",
+			"Use operation `clear` with a reason when the user directly requests that unfinished work be cleared/abandoned or clearly moves to a different task or topic. Never clear merely because every item is now completed, and never in the same turn that marks the final item complete: the finished checklist belongs on screen with your final report, and it is dropped for you when the user's next turn begins.",
 		],
 		parameters: TodoWriteParams,
 
@@ -164,12 +172,13 @@ export default function todoList(pi: ExtensionAPI) {
 			// the snapshot so result/session data cannot alias mutable tool arguments.
 			todos = next.map((item) => ({ ...item }));
 			refreshWidget(ctx);
-			const allDone = todos.length > 0 && todos.every((t) => t.status === "completed");
+			const allDone = isCompletedChecklist(todos);
 			const hint =
 				todos.length === 0
 					? "Todo list cleared."
 					: allDone
-						? "All todos are completed. Leave this checklist visible with the final report; on a later user turn, clear or replace it before starting a different task or topic."
+						? "All todos are completed. Leave this checklist visible with the final report and do not clear it " +
+							"yourself; it is dropped automatically when the user's next turn begins."
 						: "Continue tracking progress in the complete list: preserve every item, mark finished work completed, and then advance the next task.";
 			return {
 				content: [
@@ -194,13 +203,16 @@ export default function todoList(pi: ExtensionAPI) {
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, _options, theme) {
+		renderResult(result, _options, _theme, context) {
+			// The live widget already shows this list, so repeating it here puts the
+			// same checklist on screen twice and leaves a stale copy in scrollback for
+			// every call. renderCall keeps the counts and the active item, so an
+			// accepted update renders nothing (an empty Text renders zero lines).
+			// Rejected calls still need their message.
 			const details = result.details as { todos?: TodoItem[] } | undefined;
-			if (!details?.todos) {
-				const t = result.content[0];
-				return new Text(t?.type === "text" ? t.text : "", 0, 0);
-			}
-			return new Text(details.todos.map((item) => renderTodoItem(item, theme)).join("\n"), 0, 0);
+			if (details?.todos && !context.isError) return new Text("", 0, 0);
+			const t = result.content[0];
+			return new Text(t?.type === "text" ? t.text : "", 0, 0);
 		},
 	});
 
@@ -235,6 +247,18 @@ export default function todoList(pi: ExtensionAPI) {
 				},
 			],
 		};
+	});
+
+	// A checklist with every item completed is finished work, not a todo list. It
+	// stays on screen with the final report, then goes when the user speaks again:
+	// agent_start fires once per user submission (turn_start fires per model
+	// round-trip, which would cut the list off mid-task). Lists with unfinished
+	// work are untouched here — those stay a semantic decision for the model,
+	// since only it can tell a follow-up from a pivot.
+	pi.on("agent_start", (_event, ctx) => {
+		if (!isCompletedChecklist(todos)) return;
+		todos = [];
+		refreshWidget(ctx);
 	});
 
 	const restoreFromActiveBranch = (ctx: ExtensionContext): void => {

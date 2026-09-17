@@ -3,7 +3,7 @@
 import test from "node:test";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
@@ -12,12 +12,16 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const EXTENSION = join(HERE, "index.ts");
 
 function findPiPackage() {
-	const home = process.env.HOME ?? "";
+	const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+	// npm installs globals to a different root per platform, and on Windows that
+	// root is under APPDATA. Probe both so these tests are not silently POSIX-only.
 	const candidates = [
 		process.env.PI_SDK_DIR,
 		join(home, ".local/lib/node_modules/@earendil-works/pi-coding-agent"),
 		"/usr/local/lib/node_modules/@earendil-works/pi-coding-agent",
 		"/usr/lib/node_modules/@earendil-works/pi-coding-agent",
+		process.env.APPDATA ? join(process.env.APPDATA, "npm/node_modules/@earendil-works/pi-coding-agent") : undefined,
+		join(home, "AppData/Roaming/npm/node_modules/@earendil-works/pi-coding-agent"),
 	].filter(Boolean);
 	for (const candidate of candidates) {
 		if (existsSync(join(candidate, "dist", "cli.js"))) return candidate;
@@ -28,7 +32,7 @@ function findPiPackage() {
 const PI_PACKAGE = findPiPackage();
 const requireFromPi = PI_PACKAGE ? createRequire(join(PI_PACKAGE, "package.json")) : undefined;
 const loadExtensions = PI_PACKAGE
-	? (await import(join(PI_PACKAGE, "dist", "core", "extensions", "loader.js"))).loadExtensions
+	? (await import(pathToFileURL(join(PI_PACKAGE, "dist", "core", "extensions", "loader.js")).href)).loadExtensions
 	: undefined;
 const SDK_TEST_OPTIONS = loadExtensions
 	? {}
@@ -104,7 +108,7 @@ test("extension loads in the installed Pi runtime", (t) => {
 test("widget output honors the TUI component width", SDK_TEST_OPTIONS, async () => {
 	const { handlers } = await loadTodoExtension();
 	assert.ok(requireFromPi);
-	const { visibleWidth } = await import(requireFromPi.resolve("@earendil-works/pi-tui"));
+	const { visibleWidth } = await import(pathToFileURL(requireFromPi.resolve("@earendil-works/pi-tui")).href);
 	const longContent = "a very long 界 todo description ".repeat(8);
 	let widgetFactory;
 	const ctx = {
@@ -200,4 +204,63 @@ test("tool guidance requires observable completion and reserves destructive oper
 	assert.match(guidance, /direct user-requested|user directly/i);
 	assert.match(guidance, /different task or topic/i);
 	assert.match(guidance, /cleanup.*simple|exception.*simple/i);
+});
+
+test("an accepted todo_write result renders nothing, leaving the list to the widget", SDK_TEST_OPTIONS, async () => {
+	const { tool } = await loadTodoExtension();
+	const theme = {
+		fg: (_color, text) => text,
+		bold: (text) => text,
+		strikethrough: (text) => text,
+	};
+	const todos = [
+		{ content: "Fix store layer", status: "completed" },
+		{ content: "Fix mail", status: "in_progress", activeForm: "Fixing mail" },
+	];
+	const accepted = await tool.execute("1", { todos }, undefined, undefined, makeContext(() => []));
+
+	const rendered = tool.renderResult(accepted, { expanded: false, isPartial: false }, theme, { isError: false });
+	assert.deepEqual(rendered.render(80), [], "the accepted list must not be redrawn under the call line");
+
+	const callLine = tool.renderCall({ todos }, theme, { isError: false }).render(80).join("");
+	assert.match(callLine, /1\/2 done/);
+	assert.match(callLine, /Fixing mail/);
+
+	const rejected = { content: [{ type: "text", text: "A normal todo update must keep every existing item." }] };
+	const failure = tool.renderResult(rejected, { expanded: false, isPartial: false }, theme, { isError: true }).render(80);
+	assert.ok(failure.join("").includes("must keep every existing item"), "rejections still report why");
+});
+
+test("a finished checklist is dropped when the next user turn begins", SDK_TEST_OPTIONS, async () => {
+	const { tool, handlers } = await loadTodoExtension();
+	const ctx = makeContext(() => []);
+	await tool.execute("1", { todos: [{ content: "a", status: "completed" }, { content: "b", status: "completed" }] }, undefined, undefined, ctx);
+
+	// Until the user speaks again the finished list stands, so it is still on
+	// screen beside the final report — and still protected from silent omission.
+	await assert.rejects(
+		tool.execute("2", { todos: [{ content: "c", status: "pending" }] }, undefined, undefined, ctx),
+		/must keep every existing item/i,
+	);
+
+	await emit(handlers, "agent_start", ctx);
+
+	// The new turn starts from nothing, so unrelated work needs no replace/clear.
+	const accepted = await tool.execute("3", { todos: [{ content: "c", status: "pending" }] }, undefined, undefined, ctx);
+	assert.deepEqual(accepted.details?.todos, [{ content: "c", status: "pending" }]);
+});
+
+test("an unfinished checklist survives the turn boundary for the model to judge", SDK_TEST_OPTIONS, async () => {
+	const { tool, handlers } = await loadTodoExtension();
+	const ctx = makeContext(() => []);
+	const list = [{ content: "a", status: "completed" }, { content: "b", status: "in_progress" }];
+	await tool.execute("1", { todos: list }, undefined, undefined, ctx);
+
+	await emit(handlers, "agent_start", ctx);
+
+	await assert.rejects(
+		tool.execute("2", { todos: [{ content: "c", status: "pending" }] }, undefined, undefined, ctx),
+		/must keep every existing item.*a/i,
+		"unfinished work is a pivot decision for the model, not a runtime drop",
+	);
 });

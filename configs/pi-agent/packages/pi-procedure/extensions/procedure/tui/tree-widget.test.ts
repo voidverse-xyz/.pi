@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RunSnapshot } from "../run.ts";
+import type { RunOutcome, RunSnapshot } from "../run.ts";
 import { fitThinkingSummary, liveThinkingSummary } from "../text.ts";
 import {
 	BOTTOM_PADDING,
@@ -8,6 +8,7 @@ import {
 	EXPAND_KEY,
 	MAX_COLLAPSED_LINES,
 	PROCEDURE_ICON,
+	renderOutcomeSummary,
 	renderTreeLines,
 	STOP_KEY,
 	TOKEN_ICON,
@@ -197,4 +198,40 @@ test("short, inactive, and completed trees do not need expansion", () => {
 	assert.equal(treeNeedsExpansion(snapshot({ status: "completed" })), false);
 	assert.deepEqual(renderTreeLines(null, theme), []);
 	assert.deepEqual(renderTreeLines(snapshot({ status: "completed" }), theme), []);
+});
+
+const outcome = (over: Partial<RunOutcome> = {}): RunOutcome => ({
+	runId: "20260716T000000_aaaaaa",
+	status: "completed",
+	summary: {
+		agents: [
+			{ seq: 0, label: "build", phase: "Build", status: "cached", elapsedMs: 10 },
+			{ seq: 1, label: "unit-tests", phase: "Test", status: "ok", elapsedMs: 20 },
+			{ seq: 2, label: "integ-tests", phase: "Test", status: "ok", elapsedMs: 30 },
+		],
+		phases: ["Build", "Test"],
+		logTail: [],
+	},
+	runDir: "/runs/20260716T000000_aaaaaa",
+	...over,
+});
+
+test("renderOutcomeSummary: one line of counts, so the transcript keeps no second tree", () => {
+	const lines = renderOutcomeSummary(outcome(), theme);
+	assert.equal(lines.length, 1);
+	assert.match(lines[0]!, /completed/);
+	assert.match(lines[0]!, /3 agents/);
+	assert.match(lines[0]!, /2 ok/);
+	assert.match(lines[0]!, /1 cached/);
+	assert.equal(lines[0]!.includes("unit-tests"), false, "agent labels belong to the live tree, not the summary");
+});
+
+test("renderOutcomeSummary: a run that did not complete reports the error and how to resume", () => {
+	const lines = renderOutcomeSummary(outcome({ status: "failed", error: "phase Test threw" }), theme);
+	assert.equal(lines.length, 3);
+	assert.match(lines[1]!, /phase Test threw/);
+	assert.match(lines[2]!, /resume with runId 20260716T000000_aaaaaa/);
+
+	const stopped = renderOutcomeSummary(outcome({ status: "stopped" }), theme);
+	assert.equal(stopped.length, 2, "a stopped run still says how to resume");
 });

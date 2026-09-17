@@ -4,6 +4,7 @@ import {
 	buildTodoCarryoverPrompt,
 	coerceTodos,
 	extractLatestTodos,
+	isCompletedChecklist,
 	MARK_DONE,
 	MARK_OPEN,
 	renderCollapsedLine,
@@ -141,7 +142,7 @@ test("buildTodoCarryoverPrompt: distinguishes continuations from task/topic pivo
 
 	const completed = buildTodoCarryoverPrompt([{ content: "Finished task", status: "completed" }]);
 	assert.ok(completed?.includes("fully completed"));
-	assert.ok(completed?.includes("does not need a reason"));
+	assert.ok(completed?.includes("dropped automatically"), "a finished list is the runtime's to clear, not the model's");
 });
 
 test("buildTodoCarryoverPrompt: preserves every exact identity and prioritizes unfinished work", () => {
@@ -284,4 +285,20 @@ test("extractLatestTodos: divergent branch inputs restore their own successful s
 	assert.deepEqual(extractLatestTodos([root, left], "todo_write"), [{ content: "left", status: "in_progress" }]);
 	assert.deepEqual(extractLatestTodos([root, right], "todo_write"), [{ content: "right", status: "completed" }]);
 	assert.deepEqual(extractLatestTodos([root], "todo_write"), [{ content: "root", status: "pending" }]);
+});
+
+test("isCompletedChecklist: only a non-empty list with nothing left to do", () => {
+	assert.equal(isCompletedChecklist([]), false, "an empty list is not a finished one");
+	assert.equal(isCompletedChecklist([{ content: "a", status: "completed" }]), true);
+	assert.equal(
+		isCompletedChecklist([
+			{ content: "a", status: "completed" },
+			{ content: "b", status: "pending" },
+		]),
+		false,
+	);
+	assert.equal(
+		isCompletedChecklist([{ content: "a", status: "in_progress" }]),
+		false,
+	);
 });

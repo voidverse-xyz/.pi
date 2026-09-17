@@ -153,7 +153,7 @@ export function buildTodoCarryoverPrompt(todos: TodoItem[]): string | null {
 	const hasUnfinished = todos.some((item) => item.status !== "completed");
 	const clearReason = hasUnfinished
 		? '- Because this checklist has unfinished work, a "clear" operation must include reason "User moved to a different task or topic".'
-		: '- This checklist is fully completed, so a "clear" operation does not need a reason.';
+		: '- This checklist is fully completed. Leave it alone: it is dropped automatically at the start of the next user turn, so it never needs a manual clear.';
 
 	return [
 		"[TODO CARRYOVER SNAPSHOT — refreshed before this model call]",
@@ -169,6 +169,15 @@ export function buildTodoCarryoverPrompt(todos: TodoItem[]): string | null {
 		"Stale-list cleanup is an allowed todo_write use even when the new request is too small for a new checklist.",
 		"Do not clear or replace the list merely because the user sent another prompt; the prompt must clearly continue or change the work.",
 	].join("\n");
+}
+
+/**
+ * A checklist with nothing left to do. Such a list stays visible with the final
+ * report, then stops being a todo list: the runtime drops it when the user's next
+ * turn begins, so a finished checklist cannot sit around into unrelated work.
+ */
+export function isCompletedChecklist(todos: TodoItem[]): boolean {
+	return todos.length > 0 && todos.every((item) => item.status === "completed");
 }
 
 /** Returns an error string for an invalid list, or null when valid. */

@@ -48,6 +48,18 @@ completed, accent in-progress, normal text pending).
 
   System-prompt guidance also keeps the completed final list visible with the final
   report instead of immediately clearing it.
+
+  The widget is the only surface that draws the list. An accepted call renders no
+  result body under the tool row — the call line already carries the done-count and
+  the active item — so the checklist is never on screen twice and scrollback does
+  not fill with stale copies. Rejected calls still render their message.
+- **Finished checklists** — when every item is completed the list is no longer
+  tracking anything. It stays visible with the final report, then the runtime
+  drops it at `agent_start`, which fires once per user submission (`turn_start`
+  fires per model round-trip and would cut a list off mid-task). This is the one
+  deterministic removal: nothing is lost, because nothing was outstanding. Lists
+  with unfinished work never go this way — telling a follow-up from a pivot needs
+  the model, and that stays the semantic decision below.
 - **Task/topic pivots** — before each model call, an ephemeral lower-trust context
   message exposes every current checklist identity so the model can distinguish a
   continuation from a clear move to different work, including after compaction. The

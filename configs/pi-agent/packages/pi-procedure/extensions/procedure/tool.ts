@@ -2,15 +2,19 @@
  * tool.ts — the LLM-callable `procedure` tool.
  *
  * Exactly one of script | name | scriptPath selects the source. One run at a
- * time per host session. Progress streams to the transcript via onUpdate
- * (throttled); the tree widget (TUI) renders the same snapshot live. The tool
- * result is the run outcome: {runId, status, result, summary, runDir}.
+ * time per host session. Progress streams through onUpdate (throttled) for
+ * non-interactive consumers; in the TUI the tree widget renders that same
+ * snapshot live. The tool result is the run outcome:
+ * {runId, status, result, summary, runDir}.
+ * Only the finished outcome renders a result body: while a run is live the tree
+ * widget is already showing it, so a second copy under the call line is noise.
  */
 
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { jsonResult } from "./results.ts";
+import { renderOutcomeSummary } from "./tui/tree-render.ts";
 import type { RunOutcome, ProcedureRun } from "./run.ts";
 
 export const PROCEDURE_TOOL = "procedure";
@@ -149,7 +153,7 @@ export function createProcedureTool(host: ProcedureToolHost): ToolDefinition {
 				host.lastRunId.value = run.runId;
 				host.onRunChanged(ctx);
 			}
-			return jsonResult(outcome);
+			return { ...jsonResult(outcome), details: outcome };
 		},
 
 		renderCall(args: Record<string, unknown>, theme: { fg(color: string, text: string): string; bold(text: string): string }) {
@@ -159,6 +163,24 @@ export function createProcedureTool(host: ProcedureToolHost): ToolDefinition {
 			else text += theme.fg("muted", "(inline script)");
 			if (typeof args.resumeFromRunId === "string") text += theme.fg("dim", ` · resume ${args.resumeFromRunId}`);
 			return new Text(text, 0, 0);
+		},
+
+		renderResult(
+			result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+			options: { isPartial?: boolean },
+			theme: { fg(color: string, text: string): string },
+		) {
+			// A live run draws its own tree in the widget above the editor, so the streamed
+			// progress needs no result body (an empty Text renders zero lines). The widget
+			// unmounts when the run stops, and what the transcript keeps from then on is a
+			// summary of the outcome rather than the JSON the model reads.
+			if (options.isPartial) return new Text("", 0, 0);
+			const outcome = result.details as RunOutcome | undefined;
+			if (!outcome?.summary) {
+				const first = result.content[0];
+				return new Text(first?.text ?? "", 0, 0);
+			}
+			return new Text(renderOutcomeSummary(outcome, theme).join("\n"), 0, 0);
 		},
 	};
 	return tool as unknown as ToolDefinition;

@@ -1,6 +1,6 @@
 /** Pure procedure-tree rendering and compact/expanded line budgeting. */
 
-import type { AgentRow, RunSnapshot } from "../run.ts";
+import type { AgentRow, RunOutcome, RunSnapshot } from "../run.ts";
 
 /** Human controls shown by the procedure widget. */
 export const STOP_KEY = "alt+w";
@@ -201,5 +201,30 @@ export function renderTreeLines(snapshot: RunSnapshot | null, theme: TreeTheme, 
 	const hiddenLines = hiddenAgentLines + (logLines.length - shownLogs);
 	lines.push(theme.fg("dim", `   … +${hiddenLines} line${hiddenLines === 1 ? "" : "s"} · ${EXPAND_KEY} expand`));
 	lines.push(BOTTOM_PADDING);
+	return lines;
+}
+
+const OUTCOME_MARKS: Record<string, { mark: string; color: string }> = {
+	completed: STATE_MARKS.done!,
+	failed: STATE_MARKS.error!,
+	stopped: STATE_MARKS.waiting!,
+};
+
+/**
+ * The finished run, in one line. The live tree above the editor covers a run
+ * while it is running and unmounts once it stops, so this is what the transcript
+ * keeps: the shape of what happened, not a second copy of the tree.
+ */
+export function renderOutcomeSummary(outcome: RunOutcome, theme: TreeTheme): string[] {
+	const state = OUTCOME_MARKS[outcome.status] ?? STATE_MARKS.queued!;
+	const agents = outcome.summary.agents;
+	const counts = ([["ok", "ok"], ["cached", "cached"], ["error", "failed"]] as const)
+		.map(([status, label]) => [agents.filter((agent) => agent.status === status).length, label] as const)
+		.filter(([count]) => count > 0)
+		.map(([count, label]) => `${count} ${label}`);
+	const parts = [`${agents.length} agent${agents.length === 1 ? "" : "s"}`, ...counts];
+	const lines = [`${theme.fg(state.color, state.mark)} ${theme.fg(state.color, outcome.status)}${theme.fg("dim", ` · ${parts.join(" · ")}`)}`];
+	if (outcome.error) lines.push(`  ${theme.fg("error", truncatePlain(outcome.error, 200))}`);
+	if (outcome.status !== "completed") lines.push(`  ${theme.fg("dim", `resume with runId ${outcome.runId}`)}`);
 	return lines;
 }

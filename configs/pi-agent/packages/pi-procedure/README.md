@@ -59,6 +59,11 @@ return { verified }
   `<thought> · thinking…` between tool calls. It requests an immediate status-row
   re-pin when mounted, keeping the procedure above the project/Git row. It does
   not publish a footer status, so the shared footer remains stable.
+  The widget is the only place a running procedure is drawn: the tool streams no
+  result body while a run is live, and once the run stops and the widget unmounts
+  the transcript keeps a one-line outcome (status, agent counts, and — when a run
+  failed or was stopped — the error and the runId to resume from) instead of the
+  JSON the model reads.
 - **Safety** — subagent edit/write/bash go through the ported pi-subagents
   sandbox: hard deny on the run store and procedure library dirs, then human
   confirmation via pi-safety over the `procedure:confirm-request` bus channel
