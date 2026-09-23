@@ -21,17 +21,17 @@ test("discovers only explicitly tagged supplemental Plan templates", async () =>
 		const disabledPath = join(root, "disabled.md");
 		await writeFile(taggedPath, "---\nname: software\nplan-template: true\ndescription: Software\n---\n# Software plan\n", "utf8");
 		await writeFile(untaggedPath, "---\nname: other\ndescription: Other\n---\n# Other\n", "utf8");
-		await writeFile(basePath, "---\nname: plan\nplan-template: true\ndescription: Base\n---\n# Base\n", "utf8");
+		await writeFile(basePath, "---\nname: pi-plan-mode\nplan-template: true\ndescription: Base\n---\n# Base\n", "utf8");
 		await writeFile(disabledPath, "---\nname: private\nplan-template: true\ndescription: Private\n---\n# Private\n", "utf8");
 		const skills: PlanSkillDescriptor[] = [
 			{ name: "software", description: "Software", filePath: taggedPath },
 			{ name: "other", description: "Other", filePath: untaggedPath },
-			{ name: "plan", description: "Base", filePath: basePath },
+			{ name: "pi-plan-mode", description: "Base", filePath: basePath },
 			{ name: "private", description: "Private", filePath: disabledPath, disableModelInvocation: true },
 		];
-		assert.deepEqual(discoverPlanTemplates(skills, "plan").map((skill) => skill.name), ["software"]);
+		assert.deepEqual(discoverPlanTemplates(skills, "pi-plan-mode").map((skill) => skill.name), ["software"]);
 		assert.deepEqual(
-			discoverPlanTemplates(skills, "plan", { includeDisabled: true }).map((skill) => skill.name),
+			discoverPlanTemplates(skills, "pi-plan-mode", { includeDisabled: true }).map((skill) => skill.name),
 			["software", "private"],
 		);
 		assert.equal(loadSkillBody(skills[0]), "# Software plan");

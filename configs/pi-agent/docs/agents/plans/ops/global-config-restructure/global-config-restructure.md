@@ -34,7 +34,7 @@ The repository will become a directly cloneable Pi global configuration: cloning
 
 ### Skill activation and Plan mode
 
-Root `skills/` becomes Pi's canonical global skill library. Remove the package manifest's special `Skills/plan` path and the extension's hard-coded tagged-skill discovery hook. Plan mode will continue selecting the base `plan` skill and tagged templates from Pi's already-loaded skill descriptors.
+Root `skills/` becomes Pi's canonical global skill library. Remove the package manifest's special `Skills/plan` path and the extension's hard-coded tagged-skill discovery hook. Plan mode will continue selecting the Pi-specific base `pi-plan-mode` skill and tagged templates from Pi's already-loaded skill descriptors.
 
 ### Unmatched Pi quarantine
 

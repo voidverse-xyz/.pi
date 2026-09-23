@@ -1,231 +1,183 @@
 ---
 name: containerized-development
-description: Develop inside Docker containers when Docker or Docker Compose is installed and available. Prefer containerized development over host tooling for local development work whenever Docker tooling is available, even if the needed host tools are also installed. Use a Dockerfile + docker compose (with `docker compose watch` for live sync/reload), bind-mount or sync the project source, keep Docker artifacts/state in a project `.docker/` dir, and install dependencies and run dev work inside the container.
+description: Design, add, or use Docker/Compose development environments. Use when the user explicitly asks for containers, when the repository already uses Docker as its supported development path, or when project instructions require containerized tooling. Do not introduce Docker merely because it is installed; preserve an existing host, devcontainer, Nix, or CI workflow unless the user chooses a migration.
 ---
 
-# Containerized development
+# Containerized Development
 
-**Use this skill when Docker or Docker Compose is installed and available.** If
-Docker tooling is available, switch to containerized development instead of using
-host runtimes, package managers, compilers, test runners, or project
-dependencies directly.
+Use containers as a project decision, not an automatic preference. Docker being
+installed proves only that it is available; it does not authorize adding Docker
+files, replacing a working development workflow, or starting services.
 
-Before using Docker, check for available Docker tooling, for example with
-`docker --version` and `docker compose version`. Prefer Compose when available.
-If Docker is missing, unavailable, or not running, do not scaffold Docker files
-as a workaround unless the user explicitly asks for Docker setup.
+This skill is host-platform-neutral. Adapt commands, paths, quoting, file-sharing,
+and wrapper scripts to the active environment (Windows/PowerShell or `cmd.exe`,
+macOS, Linux/Unix, WSL, CI, or a remote workspace). Docker host platform and
+container OS are separate: do not apply Linux-container commands to Windows
+containers, or vice versa. The bundled examples explicitly target Linux
+containers and are not universal templates.
 
-When this skill applies, keep the host clean: avoid installing language
-runtimes, project dependencies, or build toolchains locally just to complete the
-task. Everything for that project run should happen in the container; the host
-provides Docker and an editor.
+## Decide whether this skill applies
 
-This applies to local dev work whenever Docker tooling is available — first-time
-setup, running the app, builds, tests, and installing/updating dependencies. If
-Docker is available and the Docker files don't exist yet, **scaffold them
-first**, then proceed inside the container.
+Use it when at least one condition is true:
 
-**Stack-agnostic.** This is not a Node.js convention — it applies to any
-language or toolchain: C/C++ (gcc/clang, CMake, Make), Rust (cargo), Go, Python,
-Java, Ruby, etc. "Dependencies," "build," and "dev server" mean whatever they
-mean for the project's stack (compilers and headers, a build system, a compiled
-binary, an interpreter, a long-running server — or just a CLI that builds and
-exits). When this procedure applies, the rule is the same regardless: the
-toolchain and build happen in the container, not on the host.
+- The user requests Docker, Compose, a dev container, or container debugging.
+- Repository instructions identify containers as the supported workflow.
+- Existing `Dockerfile*`, `compose.y*ml`, `.devcontainer/`, or task scripts show
+  that the requested work is meant to run in containers.
 
-## The model
+If the repository has no container workflow, first inspect its documented setup.
+Offer containerization when it provides a concrete benefit, then wait for the
+user to choose it before scaffolding tracked files.
 
-- **`Dockerfile`** — defines the dev image: base runtime, system packages, and a
-  dependency-install step. This is where the toolchain lives.
-- **`compose.yaml`** (aka `docker-compose.yml`) — defines the dev service(s):
-  the build context, port mappings, env, and the **bind mount** of the project
-  source into the container's working directory.
-- **`docker compose watch`** — the preferred dev loop. It syncs source changes
-  into the running container (and rebuilds when dependency manifests change) so
-  you edit on the host and the change takes effect in the container immediately.
-  Plain `docker compose up` is the fallback when watch isn't configured.
-- **An in-container reloader** (nodemon, `node --watch`, uvicorn `--reload`,
-  `air`, `cargo watch`, …) — the second half of the loop. `watch` gets the
-  *files* into the container; the reloader restarts the *process* so they take
-  effect. See "Live reload" below — this is the nodemon-style auto-update.
+## Inspect before acting
 
-## Procedure
+1. Read repository instructions and setup documentation.
+2. Inspect existing Docker, Compose, devcontainer, CI, and ignore files.
+3. When a Docker operation is needed, check the available engine/CLI, active
+   context, daemon connectivity, container OS, architecture, and Compose version.
+   Docker Desktop, remote contexts, WSL integration, and compatible alternative
+   engines can differ materially.
+4. Identify the actual runtime versions, dependency lockfiles, services, ports,
+   environment variables, CPU architecture, host platform, and network/offline
+   constraints.
+5. Check version-control status when the repository and tooling support it, and
+   preserve unrelated or user-authored work.
 
-1. **Check whether this skill applies.** If Docker or Docker Compose is
-   available, use this procedure instead of host tools. Prefer Compose when it is
-   available.
-2. **Check for Docker files.** If `Dockerfile` and a compose file are absent,
-   scaffold them (see below) before doing containerized work.
-3. **Build the image.** `docker compose build` (or let `up` build on first run).
-4. **Bring it up.** Prefer `docker compose watch`; fall back to
-   `docker compose up`.
-5. **Install dependencies inside the container** for this procedure. Either bake
-   the install into the `Dockerfile`, or run it in the running container:
-   `docker compose exec <service> <install command>`. Adding a dependency means
-   updating the manifest and reinstalling **in the container**, then letting the
-   image rebuild.
-6. **Run project commands in the container** — dev server, builds, tests, REPLs,
-   one-off scripts — via the container (see below).
+Prefer established entry points over raw Compose commands: project wrappers,
+package scripts, Gradle/Maven wrappers, PowerShell or command scripts, `make`,
+`just`, or other task runners. Detect what exists rather than assuming a Unix
+shell or `make` is available.
 
-## Live reload: `docker compose watch` + an in-container reloader
+## Use the smallest sufficient workflow
 
-Auto-update is **two layers**, and both must be present or edits won't take effect:
+### Existing container workflow
 
-1. **Get the file into the container** — `docker compose watch` syncs the changed
-   host file into the running container (it does *not* need a bind mount; sync
-   copies the file in).
-2. **Restart the process so it picks up the file** — a running `node`/`python`/
-   compiled server won't notice a swapped file on its own. Either a process-level
-   reloader inside the container restarts it (nodemon-style), or watch restarts the
-   whole container for you. Pick **one** of these per service.
+Follow it. Reuse service names, profiles, volumes, health checks, and documented
+commands. Do not regenerate working configuration to match this skill.
 
-### The `develop.watch` actions
+For one-off commands:
 
-In `compose.yaml`, each service gets a `develop.watch` list. Each entry has a
-`path` (host), an `action`, and usually a `target` (container path) and `ignore`:
+- Use `docker compose exec <service> <command>` when the service is running.
+- Use `docker compose run --rm <service> <command>` for an isolated task.
+- Use the project's wrapper command when one exists.
 
-- **`sync`** — copy changed files into the running container. The file lands, but
-  the process is unchanged — so this **only auto-updates if something inside the
-  container is watching and restarting**, i.e. a nodemon-style reloader (or a
-  framework with built-in HMR like Vite/Next). This is the classic combo.
-- **`sync+restart`** — sync the file **and restart the container's main process**.
-  No in-container reloader needed — Compose itself is your "nodemon." Best for
-  config files, or any service whose entrypoint starts fresh quickly. Restarts the
-  container, does **not** rebuild the image.
-- **`sync+exec`** — sync, then run a command in the container (Compose ≥ v2.32).
-  Good for "file changed → run a migration / regenerate" without a full restart.
-- **`rebuild`** — rebuild the image and recreate the container. Use for dependency
-  manifests (`package.json`, `requirements.txt`, `go.mod`, `Cargo.toml`) and the
-  `Dockerfile` itself — anything that changes the image, not just source.
+### New container workflow
 
-A typical Node service uses two entries: `sync` on the source dir (nodemon
-restarts the process) and `rebuild` on `package.json`.
+First classify the workload: long-running web service, CLI/batch job, worker,
+database, desktop/GUI app, GPU or architecture-specific job, cross-compiler,
+monorepo, or CI-only task. Derive service lifetime, mounts, ports, devices,
+reload behavior, and verification from that workload; many containers need no
+published port or live-reload loop.
 
-### Two valid setups — choose one
+After the user chooses containerization, create only what the project needs:
 
-- **`sync` + a reloader in the container** (true nodemon-style): the container's
-  command is the reloader (`nodemon`, `node --watch`, `tsx watch`, `uvicorn
-  --reload`, `air`, `cargo watch -x run`, …). Fastest inner loop — only the app
-  process restarts, the container keeps running. Preferred for an active dev loop.
-- **`sync+restart`, no reloader**: simpler, no extra dev dependency; Compose
-  restarts the whole container on each change. Slightly slower per change but
-  nothing to configure inside the image. Good default when you don't want a
-  reloader, or for non-Node stacks without a great one.
+- A development `Dockerfile` with a runtime version derived from the project.
+- A `compose.yaml` when multiple services, ports, environment, or volumes justify
+  it; a plain `docker build`/`docker run` flow may be sufficient otherwise.
+- A `.dockerignore` that excludes VCS data, dependency caches, build output,
+  secrets, and local state without excluding required build inputs.
+- Documentation for build, run, test, reset, and troubleshooting commands.
 
-### The filesystem-events gotcha
+Keep conventional root filenames unless the repository already centralizes
+support files elsewhere. Do not impose a `.docker/` directory or host-mounted
+state layout on projects with a different convention.
 
-A reloader watching synced/bind-mounted files inside a container sometimes misses
-inotify events (common with bind mounts, and on macOS/Windows hosts). If saves
-don't trigger a restart, switch the reloader to **polling**:
+## Secure and reproducible defaults
 
-- **nodemon:** `nodemon -L` (a.k.a. `--legacy-watch`).
-- **chokidar-based** (Vite, webpack, many JS tools): env `CHOKIDAR_USEPOLLING=true`.
-- **Python watchdog / uvicorn reload:** generally works; if not, use polling-based
-  watchers (`watchmedo` `--debounce`/poll) or fall back to `sync+restart`.
+- Select a project-compatible image version. A major/minor tag is a compatibility
+  constraint, not an immutable pin; use a patch tag or digest when reproducible
+  bytes are required. Do not use `latest` or install unpinned global tools at
+  container start.
+- Install dependencies from lockfiles and preserve the package manager's frozen
+  or reproducible mode.
+- Run the application as a non-root user when practical. Verify bind-mounted
+  files remain writable without broadening permissions indiscriminately. Numeric
+  UID/GID mapping is primarily a Linux-host concern; Docker Desktop and Windows
+  containers have different ownership models.
+- Pass secrets at runtime through the repository's established secret mechanism.
+  Never bake them into image layers, Compose files, build arguments, or logs.
+- Expose only required ports and bind to loopback by default unless LAN access is
+  explicitly needed.
+- Add health checks when service readiness matters; dependency start order alone
+  is not readiness.
+- Verify image and tool support for the host/container architecture. Do not force
+  a `platform` value unless slower emulation or cross-building is deliberate.
+- Keep production and development concerns separate. Do not claim a development
+  image is production-ready without reviewing image size, privileges, secrets,
+  entrypoint behavior, and supply-chain requirements.
 
-Polling costs some CPU — only enable it if event-based watching actually fails.
+## Source sync and reload
 
-### Running it
+Choose one source-update strategy per service:
 
-`docker compose watch` (or `docker compose up --watch` to see app logs and watch
-in one terminal). Edit a file on the host → watch syncs it → the reloader (or
-`sync+restart`) restarts the process → the change is live.
+- **Bind mount:** simplest when host/container filesystem behavior is reliable.
+- **Compose watch:** useful when sync performs better than bind mounts or when
+  manifest changes should trigger rebuilds.
+- **Rebuild/recreate:** appropriate for compiled artifacts or configuration that
+  cannot be reloaded safely.
 
-**Concrete, copy-pasteable per-stack configs** (Node/nodemon, Vite, Python/uvicorn,
-Go/air, Rust/cargo-watch) live in `reference.md` — read it when scaffolding watch
-for a specific stack.
+File sync and process reload are separate concerns. Pair `sync` with an
+in-container watcher/HMR process, use `sync+restart`, or rebuild as appropriate.
+Do not add a watcher dependency unless the project needs a persistent dev loop.
+If macOS/Windows filesystem events are unreliable, try the project's polling
+option only after observing missed events because polling consumes extra CPU.
 
-## Running commands: `exec` vs `run`
+Before using Compose Watch, inspect `docker compose watch --help` and the action
+support in the installed Compose version. Fall back to bind mounts, rebuilds, or
+the project's existing watcher when unavailable.
 
-Both run a command in the container; pick by whether the service is already up.
+When scaffolding stack-specific watch configuration, read `reference.md` and
+adapt it to the installed Compose version and the project's existing scripts.
+Treat examples as Linux-container web-service patterns, not copy-paste
+requirements.
 
-- **`docker compose exec <service> <command>`** — runs inside the
-  **already-running** container started by `up`/`watch`. Use this for the normal
-  dev loop (tests, shells, scripts) while the stack is up. Fails if the service
-  isn't running.
-- **`docker compose run --rm <service> <command>`** — spins up a **fresh one-off**
-  container, runs the command, and removes it (`--rm`). Use when nothing is
-  running yet, or for isolated tasks (a migration, a single test run, a throwaway
-  shell). Note it does **not** publish the service's ports by default — add
-  `--service-ports` if you need them.
-- Prefer the compose forms over raw `docker exec <container> ...`, which needs the
-  container name/ID instead of the **service name** from `compose.yaml`.
+## Dependencies and generated files
 
-## Scaffolding when files are missing
+Update dependency manifests and lockfiles through the same environment the
+project documents. If that environment is the container, run the package manager
+there and verify ownership of changed files. Compose Watch is one-way,
+host-to-container sync: changes made only in a container's writable layer do not
+update the host checkout. For dependency changes, use an approved task with the
+source bind-mounted, or explicitly export the changed manifests and lockfiles to
+a staging location and reconcile them with current host files before replacing
+anything. Verify the host diff and ownership before recreating the container;
+then rebuild from those verified host inputs. Apply the same rule to generated
+source files that must survive container removal. Do not copy back the entire
+container tree or overwrite concurrent host edits.
 
-Create a minimal, stack-appropriate `Dockerfile` and `compose.yaml`:
+Avoid anonymous dependency volumes that silently mask host files unless the
+repository deliberately uses them.
 
-- `Dockerfile`: pick a base image matching the project's runtime, set a working
-  directory, copy the dependency manifest(s), run the install step, then copy the
-  rest of the source.
-- `compose.yaml`: define the dev service with `build: .`, the relevant published
-  ports, env, and a `develop.watch` block for `docker compose watch` — `sync` the
-  source path and `rebuild` on changes to the dependency manifest (see "Live
-  reload" above and `reference.md` for full configs).
-- **Dev command + reload strategy:** set the service `command` to a reloader
-  (e.g. `nodemon`) paired with `action: sync`, *or* use `action: sync+restart` and
-  a plain start command. Don't scaffold `sync` alone with a non-reloading command
-  — files would sync but the app would never restart.
+For local development databases, named volumes are often safer than host bind
+mounts. Preserve the established storage policy for ephemeral tests, CI, remote
+engines, externally managed databases, and non-local workloads. Bind-mount
+database storage only when the image and host filesystem support it.
 
-Keep it minimal and idiomatic for the stack. Confirm the runtime/version and
-exposed ports from the project before generating, rather than guessing.
+## Verification
 
-## Keep Docker stuff in a `.docker/` dir
+Run the narrowest checks that prove the requested work:
 
-Contain all Docker-related artifacts in a **`.docker/`** directory that lives at
-the **root of each individual project** (one per project — not in your home dir
-or any global location), instead of scattering them across the project root:
+1. Validate configuration with `docker compose config` when Compose is used.
+2. Build the affected image without relying on stale local layers when diagnosing
+   reproducibility problems.
+3. Start only required services and wait for actual readiness.
+4. Run the project's targeted tests or command inside the intended service.
+5. Confirm source updates/reload if the task changes the dev loop.
+6. Review logs for permission errors, leaked secrets, crash loops, and unhealthy
+   dependencies.
+7. Report exact commands run and any host/platform limitation.
 
-- Put supporting Docker config there — extra Dockerfiles, env files, init
-  scripts, named-volume data, and any local Docker state the project generates.
-- Point bind/named volumes at paths under `.docker/` (e.g. a database's data dir),
-  so persisted container state lives in one predictable place.
-- **Gitignore the data** under `.docker/` (volume contents, local env) while
-  keeping the config files tracked. Never commit volume data or secrets.
-- `Dockerfile` and `compose.yaml` can stay at the project root (tooling expects
-  them there) and reference `.docker/` for the rest; or move them in and point
-  `compose` at them — either is fine, just keep the *artifacts and state*
-  corralled in `.docker/`.
+## Cleanup and destructive actions
 
-## Clean up when done
+Ordinary cleanup may stop and remove containers created for this task. Treat data
+and shared-cache deletion as destructive:
 
-Containers, images, and volumes accumulate and consume real disk. When finished
-with a session or a project, tear down what you created:
+- `docker compose down -v`
+- `docker volume rm` / `docker volume prune`
+- `docker system prune`, especially with `-a` or `--volumes`
+- deleting bind-mounted state
+- removing images or networks not clearly created for this task
 
-- **Stop and remove the stack:** `docker compose down` removes the containers and
-  the default network. Add `-v` (`docker compose down -v`) to **also remove named
-  volumes** declared in the compose file — do this when you want a clean slate
-  (e.g. resetting a dev database).
-- **Remove the built image** when you no longer need it:
-  `docker compose down --rmi local` (removes images built by this compose
-  project), or `docker image rm <image>` for a specific one.
-- **Prune dangling/old artifacts** periodically: `docker image prune` (dangling
-  images), `docker container prune` (stopped containers), `docker volume prune`
-  (unused volumes). `docker system prune` does all of these at once; add
-  `--volumes` to include unused volumes and `-a` to also remove unused (not just
-  dangling) images.
-- **Careful with `-v` / `--volumes` and `prune`** — they delete persisted data
-  (databases, caches). Only run them when you actually want that state gone. Data
-  you keep under `.docker/` makes it obvious what's about to disappear.
-
-## Why
-
-- The host machine stays free of per-project runtimes and dependencies — no
-  version conflicts, no global pollution, trivially reproducible environments.
-- The container is the single source of truth for "how this project runs," so it
-  works the same on any machine and matches CI/production more closely.
-- `docker compose watch` keeps the edit-on-host / run-in-container loop fast.
-
-## Don't
-
-- Don't use this skill when Docker is missing, unavailable, or not running.
-- Don't choose host tools over Docker just because the host tools are already
-  installed.
-- Once this procedure applies, don't install deps or toolchains **on the host** to
-  "just get it working" — `npm install`, `pip install`, `cargo build`,
-  `apt install g++`, `cmake`, `go mod download`, `bundle install`, etc. belong
-  in the container.
-- Once this procedure applies, don't run the dev server, compiler/build, or tests
-  directly on the host.
-- Once this procedure applies, don't skip scaffolding the Docker files and develop
-  locally as a shortcut — set the container up first.
+Explain what will be deleted and obtain explicit confirmation immediately before
+running those commands. Never prune the user's global Docker environment as
+routine task cleanup.

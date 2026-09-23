@@ -22,7 +22,7 @@ Quick's length rule is a host-injected prompt rule, not a provider-level token c
 - `/quick` — toggle Quick mode; `/quick <message>` enables it and sends the message.
 - `/discuss|plan|quick on|off|exit|toggle|status` — explicit mode control.
 - `Shift+Tab` — cycle `Off → Discuss → Plan → Quick → Off` at any time.
-- `/skill:plan <task>` — invoke the underlying planning procedure for one task without enabling the host-enforced mode guard or `save_plan`.
+- `/skill:pi-plan-mode <task>` — invoke the Pi-specific base planning procedure for one task without enabling the host-enforced mode guard or `save_plan`.
 
 Mode controls are accepted while the agent is running. Selecting a different mode aborts the old run so its prompt and tool policy cannot carry into later work; the latest selection is persisted and becomes effective after `agent_settled`. If the user submits ordinary interactive input or an RPC `prompt` during that short transition, `pi-plan` holds it and starts it as a fresh top-level turn after settlement. Multiple held messages start one at a time on successive settled turns, and an item remains queued until its replacement run reaches `agent_start`. A busy `/discuss <message>`, `/plan <task>`, or `/quick <message>` follows the same fresh-turn boundary. A newer mode request cancels an older waiting command task. Explicit RPC `steer` and `follow_up` operations retain their native meaning and are not rerouted.
 
@@ -36,7 +36,7 @@ While a restricted mode is active, `pi-plan` publishes its plain mode label unde
 
 ## Plan-skill templates
 
-The base `plan` skill always supplies the host-controlled planning and save boundaries. Supplemental skills opt into routing with this top-level frontmatter field:
+The base `pi-plan-mode` skill always supplies the host-controlled planning and save boundaries. It is a Pi runtime adapter rather than a portable general planning skill. Supplemental skills opt into routing with this top-level frontmatter field:
 
 ```yaml
 ---
@@ -114,7 +114,7 @@ This global setup reserves `Shift+Tab` for mode cycling by remapping Pi's built-
 
 ## Shared skill
 
-The canonical base skill is root `skills/plan/SKILL.md`. Pi discovers it as a normal global skill when this repository is cloned to `~/.pi/agent`; the package manifest therefore registers only the extension and does not duplicate the skill.
+The canonical base skill is root `skills/pi-plan-mode/SKILL.md`. Pi discovers it as a normal global skill when this repository is cloned to `~/.pi/agent`; the package manifest therefore registers only the extension and does not duplicate the skill.
 
 ## Tests
 
@@ -127,4 +127,4 @@ node --test \
   configs/pi-agent/packages/pi-plan/extensions/plan/templates.test.ts
 ```
 
-An offline RPC `get_commands` smoke test should report `discuss`, `plan`, `quick`, and `skill:plan`, confirming that the package and shared skill load successfully.
+An offline RPC `get_commands` smoke test should report `discuss`, `plan`, `quick`, and `skill:pi-plan-mode`, confirming that the package and shared skill load successfully.

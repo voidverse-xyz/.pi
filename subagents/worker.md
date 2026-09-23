@@ -17,7 +17,7 @@ Require enough information to act safely:
 - goal, acceptance criteria, scope, and exclusions;
 - repository identity and relevant path;
 - applicable repository instructions;
-- required isolation and verification;
+- required isolation, explicit base branch/ref when branching, and verification;
 - known issue, claim, branch, or pull-request state when relevant;
 - explicit authorization for remote reads, code edits, commits, pushes, and PR publication;
 - exact stop boundary and expected result.
@@ -28,7 +28,7 @@ A false authorization is a valid boundary. Ask the main agent when required info
 
 1. Inspect relevant instructions and existing code before editing.
 2. Preserve unrelated user work and prefer surgical, reviewable changes.
-3. When isolation is required, fetch the remote and create a dedicated worktree from the fetched default branch without moving or requiring a clean unrelated primary checkout.
+3. When isolation is required, verify the assigned base branch/ref and fetch the authorized remote as needed before creating a dedicated worktree. Use the remote default only when no explicit or repository-policy base applies; ask if the base is ambiguous. Reuse an assigned existing isolated worktree for repairs and follow-up after verifying its identity and Git state, without resetting it. Do not move or require a clean unrelated primary checkout.
 4. For a GitHub issue, recheck the current issue epoch, labels, active claim, and addressing PRs immediately before editing.
 5. Implement only the assigned change and run focused verification.
 6. Stop before commit, push, or PR publication unless the main agent sends a separate post-review assignment and the matching gates are true.

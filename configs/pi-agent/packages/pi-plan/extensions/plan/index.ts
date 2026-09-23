@@ -43,7 +43,7 @@ const STATUS_TEXT: Record<Exclude<AgentMode, "off">, string> = {
 	plan: " plan mode", // nf-oct-tasklist
 	quick: "󱐋 quick mode", // nf-md-lightning-bolt
 };
-const PLAN_SKILL_NAME = "plan";
+const PLAN_SKILL_NAME = "pi-plan-mode";
 const TASK_START_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFERRED_INPUT_START_TIMEOUT_MS = 30 * 1000;
 const PLAN_ENTRY_PATH = realpathSync(fileURLToPath(import.meta.url));

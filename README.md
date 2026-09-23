@@ -97,8 +97,8 @@ root `skills/` is the canonical global skill library.
   and Quick modes through `/discuss`, `/plan`, `/quick`, and the `Shift+Tab`
   cycle. Quick keeps concise read-only chat; Discuss adds normal-length read-only
   discussion; Plan uses tagged planning skills and an authorized `save_plan`
-  path. Plan-mode workers are fresh read-only one-shot Pi Subagents. The shared
-  base instructions live in `skills/plan/`.
+  path. Plan-mode workers are fresh read-only one-shot Pi Subagents. The Pi-specific
+  base instructions live in `skills/pi-plan-mode/`.
 - **MCP:** `pi-mcp-client` loads machine-local `mcp.json` stdio server
   definitions with a minimal environment. Calls confirm by default, large
   catalogs use `mcp_search_tools`, and session shutdown owns process cleanup.

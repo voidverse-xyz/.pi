@@ -1,478 +1,354 @@
 ---
 name: fullstack-blueprint
-description: Scaffold an Express, Mongoose, Next.js, and React application with this opinionated layered architecture. Use only when the user explicitly chooses this blueprint; do not apply it automatically to existing applications, routine endpoint work, or frontend-backend integration.
+description: Scaffold a new application or deliberately migrate one toward a stack-neutral, layered full-stack architecture with explicit result envelopes and expected errors returned as values. Use only when the user explicitly chooses this blueprint; do not impose it on an existing repository, routine endpoint work, or frontend-backend integration that already has established conventions.
 ---
 
-# Fullstack Blueprint: Express+Mongoose API + Next.js/React frontend
+# Fullstack Blueprint
 
-A **portable build template** for scaffolding a new full-stack project in a clean,
-consistent style, or refactoring an existing app toward it. Every pattern below is
-stated completely enough to reproduce without seeing any original codebase.
+Use this opt-in blueprint to establish a coherent application architecture across
+client, server, persistence, background work, and operations without requiring a
+particular language, framework, database, package manager, shell, container
+runtime, or deployment model.
 
-Domain specifics use placeholders: `<Resource>` (a noun — "Order," "Document"),
-`<Role>` (a type of caller — "admin," "owner," "member"), `<Scope>` (a tenant
-boundary — "org," "workspace"). Code blocks are real shapes, genericized. Where a
-pattern hides a rough edge that deserves a deliberate decision rather than blind
-copying, it's flagged **⚠**.
+Its defining application contract is:
 
-## How to use this
+- operations return `{ success, output, data }`,
+- expected failures are values, not exceptions,
+- unexpected faults are handled at boundaries,
+- transport semantics such as HTTP status remain meaningful,
+- authorization and tenant scope are explicit,
+- features are built and migrated as vertical slices.
 
-Use this blueprint only after the user deliberately selects it for a new application or migration.
-For an existing application, its architecture and project-local instructions remain authoritative.
-If a selected blueprint pattern conflicts with a concrete correctness, security, maintainability,
-or performance requirement, explain the conflict and adapt the pattern rather than enforcing it
-mechanically.
+Preserve an existing application's established contracts unless the user has
+explicitly chosen to migrate them.
 
-1. Decide your roles/tenancy model first (§5) — it determines whether you need the
-   role-split pattern in §2.3 and §3.3 at all.
-2. Stand up the contract before any resource exists: the response envelope (§4.1), the
-   barrel convention (§4.2), the shared-constants file pair (§2.5.1/§3.6).
-3. Build one full vertical slice for one resource — schema → controller → route →
-   frontend service → hook/context → page — using §2 and §3 as the literal templates.
-   That slice becomes the copy-paste template for every later resource.
-4. Apply §1 throughout: it governs *how* you work, not just what the code looks like.
+## 1. Establish capabilities and constraints
 
----
+Before choosing files, packages, or processes, inspect the target environment:
 
-## 1. Operating principles
+- application shape: monolith, modular monolith, services, serverless functions,
+  workers, desktop/mobile client, frontend-only, or a combination,
+- languages, frameworks, persistence technologies, and repository layout,
+- dependency and build tooling,
+- runtime and deployment targets,
+- authentication, authorization, tenancy, and trust boundaries,
+- synchronous and asynchronous interfaces,
+- test, lint, type-check, migration, and observability capabilities,
+- host operating systems and supported developer workflows.
 
-These apply regardless of which layer you're touching.
+For an existing repository, read project instructions and trace one representative
+feature from entry point to persistence and back before proposing a structure. Do
+not replace working local patterns merely because this blueprint uses different
+names.
 
-**Follow the blueprint by default; flag a clearly-better path, don't take it silently.**
-These patterns win unless you have a specific reason they don't. When you do — a real
-correctness/security/maintainability/performance advantage you're confident in, not a
-preference — surface it to the user before deviating: state the blueprint's approach, your
-alternative, and why it's clearly better, then let them choose. Never strictly enforce a
-pattern you can see is wrong for the case, and never quietly swap in your own approach
-without saying so. Close calls and taste: follow the blueprint.
+For a new project, make consequential choices explicit. Do not silently assume a
+browser frontend, HTTP API, relational or document database, server process,
+Docker, Node.js, or Unix shell.
 
-**Explore before writing.** Before adding a resource, read one existing resource's full
-file set end to end (schema, controller, route, frontend service) and copy its shape —
-don't improvise a new one from memory of "what Express apps usually look like." For
-changes under ~2 files, skip the ceremony and just make the change.
+## 2. Choose the application boundaries
 
-**Verify, don't assert.** This template has no automated test suite by default (a real
-gap, see §4.5) — there's no safety net catching a wrong assumption after the fact. After
-writing a controller, trace the request by hand: authenticated actor context first,
-authorization and validation in the right order, query scoped by the actor's own id, and
-response through the one envelope shape. After wiring a backend route, grep the frontend for the literal path string you
-used — there's no compile-time link between the two stacks, so a typo is silent until
-checked.
+Adapt these logical layers to the workload; they do not require one directory per
+layer:
 
-**Match the existing level of complexity — don't add to it.** This style deliberately
-has no repository/ORM-abstraction layer, no generic data-fetching library, no test
-framework, no schema-hook magic. That's not an oversight to fix by default; it's the
-chosen tradeoff. Don't add error handling, validation, or abstractions for cases that
-can't happen — trust the layer that's supposed to own each check (sanitize at the route
-boundary, validate in the controller, `required: true` in the schema — once, not three
-times). Don't write comments explaining *what* code does; name things so it's
-unnecessary. A bug fix doesn't need surrounding cleanup; three similar functions don't
-need a premature shared abstraction extracted until a fourth reveals the real shape of it.
+1. **Delivery/adapters** — HTTP, RPC, events, commands, jobs, or UI events.
+2. **Application** — use cases, orchestration, authorization decisions, and result
+   values.
+3. **Domain** — business rules, entities/value types, and invariants when the
+   domain warrants them.
+4. **Infrastructure** — persistence, messaging, external services, filesystem,
+   clocks, and platform APIs.
+5. **Presentation/client** — rendering, user interaction, local state, and remote
+   service adapters.
 
-**Match the blast radius.** Take local, reversible actions freely (editing files,
-running a dev server, reading the schema). Confirm before anything hard to reverse or
-visible to others: deleting files/branches, force-push, amending pushed commits,
-touching a `Containerfile` or any file that bakes secrets/env vars into a deployed
-build, sending a real notification through the system you're building.
+Dependencies should point toward stable application/domain contracts. Framework
+objects, raw requests, database connections, and credentials should not flow into
+business operations. Do not add repositories, domain objects, dependency
+injection, or other abstractions unless they isolate a real boundary or enable a
+needed test/substitution.
 
-**Parallelize reads, never parallelize dependent writes.** Reading several existing
-files to learn a pattern: do it in parallel, they're independent. Writing a new
-resource's files: respect the real order — schema before controller (controller imports
-it), controller before route (route imports it), backend route before frontend service
-(the frontend's path string has to match something that already exists).
+Name modules according to repository and language conventions. A small application
+may colocate layers in a feature directory; a large system may separate packages
+or services. Preserve the boundary, not a ceremonial folder tree.
 
----
+## 3. Preserve the result envelope
 
-## 2. Backend (Express + Mongoose)
+Define one shared result constructor or equivalent type in each independently
+built runtime:
 
-### 2.1 Layout
-
-```
-server.js                         entry point — sequences service init, then starts listening
-routes/routes.js                  Express app, middleware, router mounting
-routes/paths/<role>/<resource>.js routes for <role> acting on <resource>
-controllers/base/<resource>.js    role-agnostic shared logic (no auth param — caller already authorized)
-controllers/<role>/<resource>.js  business logic for <role> acting on <resource>
-database/database.js              connection management, getModel()/getModelMain()
-database/schemas/<scope>/<resource>.js   schema definitions, plain functions not models
-services/<concern>.js             one cross-cutting concern per file (auth, validate, sanitize, ...)
-notify/                           ordered multi-channel notification dispatch with fallback
-languages/<locale>.json           flat i18n translation files
+```text
+getResult(success, output, data = null)
+    => { success, output, data }
 ```
 
-Every layer that touches a resource is barreled: `controllers/index.js`,
-`routes/paths/index.js`, `database/schemas/index.js`, `services/index.js` each re-export
-their directory's modules under a namespaced alias (`<x>Controller`, `<x>Service`). Named
-exports only — never `export default` — so `export * as x from "./x.js"` barrels work
-uniformly everywhere.
+The base contract is:
 
-### 2.2 Boot sequence
+- `success`: boolean outcome of the requested application operation,
+- `output`: safe user-facing or caller-facing message,
+- `data`: successful payload, otherwise `null` unless an explicitly documented
+  operation requires safe failure data.
 
-`server.js` does nothing but sequence initialization, in dependency order, ending with
-the HTTP listener — nothing should accept traffic before everything it might touch is
-ready:
+Use the exact field names consistently across application operations and clients.
+When separate projects cannot share a generated contract package, maintain
+contract tests or fixtures that verify identical serialization.
 
-```js
-async function main() {
-    languageService.initialize();   // must succeed or abort
-    loggerService.initialize();
-    await redis.connect();
-    await database.connect();       // open DB connection(s) — see §2.4
-    await notify.initialize();
-    await routes.start();           // LAST
-}
-main();
+### Expected errors are values
+
+Return `success: false` for anticipated outcomes the caller can handle:
+
+- invalid input or failed business rules,
+- unauthenticated or unauthorized operation,
+- inaccessible or missing resource,
+- conflict, stale version, quota, or rate limit,
+- dependency unavailability when it is an expected recoverable outcome.
+
+Do not throw merely to take an ordinary failure path. Callers inspect `success`
+and deliberately select UI, retry, fallback, or propagation behavior.
+
+```text
+function updateResource(actor, scopeId, input):
+    if not canUpdate(actor, scopeId):
+        return getResult(false, forbiddenMessage)
+
+    validation = validate(input)
+    if not validation.success:
+        return getResult(false, validation.output)
+
+    resource = store.updateWhereOwned(scopeId, actor.id, input)
+    if resource is absent:
+        return getResult(false, notFoundMessage)
+
+    return getResult(true, successMessage, resource)
 ```
 
-`routes/routes.js` wires Express: an explicit CORS policy when the frontend is cross-origin →
-`helmet()` → `compression()` → body parsers → request logging → resource routers → one global
-error handler. Cookie-authenticated cross-origin requests require a specific allowed origin and
-`credentials: true`; never combine credentials with a wildcard origin. The error handler checks
-`error.rateLimit` (or a similar short-circuit flag) so it does not double-send a response.
+### Unexpected errors remain exceptions
 
-### 2.3 Controllers — the core contract
+Programming defects, broken invariants, corrupt state, and unexpected
+infrastructure faults may raise/throw. Catch them at the nearest boundary that can
+add useful context and decide recovery—typically a transport, job runner, or top-
+level process handler. Log diagnostic details privately and return a safe failure
+envelope when a caller needs a response.
 
-**The role split.** A flat `controllers/<resource>.js` barrel re-exports per-role
-submodules — this is *not* inheritance, it's "different callers get different functions":
+Do not expose stack traces, queries, credentials, internal hostnames, or raw
+provider errors through `output`. Do not catch and silently convert an exception
+inside every function; that obscures faults and makes transactions or retries
+unsafe.
 
-```js
-// controllers/<resource>.js
-export * as <roleA> from "./<roleA>/<resource>.js";
-export * as <roleB> from "./<roleB>/<resource>.js";
+### Keep transport semantics
+
+The envelope does not replace protocol behavior. An HTTP adapter, for example,
+should map results to appropriate status codes while returning the envelope body.
+RPC, events, queues, and commands should use their own acknowledgement, retry, and
+dead-letter semantics. Document the mapping once and test it.
+
+A client service normalizes transport failures into the same application shape:
+
+```text
+async function callOperation(request):
+    try:
+        response = await transport.send(request)
+        if response has a valid result envelope:
+            return response.result
+        return getResult(false, safeTransportMessage)
+    catch expected network failure:
+        return getResult(false, safeNetworkMessage)
 ```
 
-`controllers/<roleA>/<resource>.js` and `controllers/<roleB>/<resource>.js` typically
-contain different functions because each role has different capabilities. Genuinely shared
-logic goes in `controllers/base/<resource>.js`; it receives an authenticated actor context,
-not a raw credential. **Only introduce this split once a resource actually has more than one
-type of caller** — a single-role resource can keep direct functions in
-`controllers/<resource>.js`.
+Cancellation should remain cancellation when the platform distinguishes it; do
+not misreport user cancellation or shutdown as a business failure.
 
-**The function contract** — authorize the actor, validate input, scope the query, and return the
-standard result:
+## 4. Authentication, authorization, and scope
 
-```js
-export async function get<Resource>(actor, <scope>Id, <resource>Id) {
-    if (!authorizationService.canRead<Resource>(actor, <scope>Id)) {
-        return getResult(false, tu(actor, "error_forbidden"));
-    }
+Authenticate at the delivery boundary and build an actor context containing only
+necessary identity, roles/capabilities, locale, and tenant/scope information.
+Pass that context to application operations—never pass raw credentials through
+business logic.
 
-    let validation = {};
-    if (!validationService.text(<resource>Id, validation, actor.langId, "invalid_<resource>")) {
-        return getResult(false, validation.output);
-    }
+Authorize each operation explicitly. For scoped resources, include the scope and
+ownership constraints in the persistence query when possible:
 
-    let model = getModel(<scope>Id, <resource>Schema);
-    let doc = await model.findOne({
-        _id: <resource>Id,
-        <scope>Id,
-        ownerId: actor._id,
-    }).lean().exec();
-    if (!doc) return getResult(false, tu(actor, "invalid_<resource>"));
-
-    return getResult(true, tu(actor, "<role>_get_<resource>_success"), doc);
-}
+```text
+find resource where
+    id = requestedId
+    and scopeId = actor.scopeId
+    and ownerId = actor.id
 ```
 
-Authentication middleware verifies the session or token once and creates the actor context. Passing
-that context keeps controllers reusable from routes, socket handlers, jobs, and tests without
-passing credentials through business logic. Scoping ownership inside the query filter avoids
-revealing whether an inaccessible record exists. Unexpected exceptions remain centralized in the
-Express error handler.
+This prevents confused-deputy mistakes and avoids revealing whether inaccessible
+records exist. Decide whether tenants share storage, schemas, databases, or
+services based on compliance, isolation, operational cost, and scale—not a
+framework default.
 
-`getResult` is one function, defined once, used everywhere on both stacks:
-```js
-export function getResult(bool, output, data = null) { return { success: bool, output, data }; }
+Enforce CSRF protections for state-changing cookie-authenticated browser requests,
+use explicit cross-origin policies, and centralize bearer/session handling. Never
+place long-lived credentials in URLs or ordinary request bodies.
+
+## 5. Input, validation, and contracts
+
+Keep boundary normalization distinct from business validation:
+
+- **Parse/normalize/sanitize** converts an untrusted representation into safe
+  primitives or rejects an invalid shape.
+- **Validate** evaluates business rules and returns an expected failure result.
+- **Persisted constraints** protect storage invariants and race-sensitive rules.
+
+Do not validate the same rule in every layer. Generate or share schemas/types when
+supported; otherwise use contract tests and representative fixtures across
+independently built components.
+
+Treat public APIs, events, stored data, configuration, and inter-process messages
+as versioned contracts. Define compatibility, idempotency, ordering, concurrency,
+limits, pagination/streaming, and error behavior as applicable.
+
+## 6. Delivery adapters stay thin
+
+A delivery handler should normally:
+
+1. authenticate and establish request/job context,
+2. enforce protocol protections and limits,
+3. parse and normalize input,
+4. call one application operation,
+5. map the result envelope to the transport,
+6. emit logs, metrics, and traces without exposing secrets.
+
+Keep business decisions out of routing, controllers, UI event handlers, consumers,
+or command parsers. Centralize unexpected-error handling and ensure a response or
+acknowledgement is emitted at most once.
+
+For uploads, downloads, and large payloads, define size limits, temporary-storage
+ownership, cleanup on every outcome, content validation, and streaming/backpressure
+behavior.
+
+## 7. Persistence and external services
+
+Expose only operations needed by the application rather than leaking a global
+connection or provider client. Keep tenant/scope constraints visible. Make
+transaction boundaries, consistency guarantees, retries, idempotency, timeouts,
+and cleanup explicit.
+
+Prefer explicit behavior over hidden persistence hooks when hooks make ordering,
+failure, or testing difficult. Use framework-native capabilities when they remain
+visible and locally conventional; the blueprint does not prohibit them.
+
+For schema or data changes, define forward compatibility, backfill, verification,
+rollback or roll-forward recovery, and legacy cleanup. Separate reversible deploy
+steps from irreversible data changes.
+
+External service adapters should translate provider-specific responses into
+application-level results or typed infrastructure failures. Apply timeouts and
+bounded retries only where the operation is safe to retry.
+
+## 8. Client and presentation architecture
+
+Keep remote calls behind a client/service adapter so authentication, transport
+configuration, envelope validation, and failure normalization have one owner.
+Navigation paths and API/operation identifiers are different contracts; do not
+mix them merely because both are strings.
+
+UI state must distinguish states the product needs. The envelope defines operation
+outcomes but does not require one state library or forbid explicit loading/error
+state. A simple screen may infer loading from absent data; a workflow that must
+show retries, stale data, partial failure, or optimistic updates should model those
+states explicitly.
+
+Keep state ownership close to the narrowest common consumer. Introduce shared
+stores, contexts/providers, query caches, or event buses only when their lifecycle
+and invalidation behavior are justified.
+
+Never treat `data` as successful without first checking `success`:
+
+```text
+function dataOrDefault(result, fallback):
+    if result.success and result.data is not null:
+        return result.data
+    return fallback
 ```
 
-### 2.4 Database
+## 9. Asynchronous work and notifications
 
-Schema files export plain functions, never a compiled model:
+Jobs and event consumers use the same application operations where practical but
+retain broker/runtime delivery semantics. Define idempotency keys, retry limits,
+backoff, poison-message handling, cancellation/shutdown, ordering, and
+reconciliation.
 
-```js
-export function getSchema() {
-    return new Schema(
-        { <scope>Id: { type: String, required: true, index: true }, /* ...fields */ },
-        { collectionOptions: { changeStreamPreAndPostImages: { enabled: true } } },
-    );
-}
-export function getName() { return "<resources>"; }       // literal collection name
-export function santize(doc) { delete doc.password; }      // optional — strip sensitive fields
-```
+When notification channels are fallbacks rather than broadcasts, try them in an
+explicit order and stop after the first confirmed success. When every channel must
+receive the message, model fan-out separately. Do not blur these semantics.
 
-No Mongoose `methods`/`statics`/`virtuals`/hooks — every behavior that touches a document
-is a plain exported function, called explicitly, visible at the call site. For a document
-that "extends" another collection's record, add a `populate(doc)` function that does a
-second query and merges fields in manually (`copyObject(doc, otherDoc)`) rather than using
-Mongoose refs.
+Real-time delivery must authenticate subscriptions, authorize each topic/resource,
+handle reconnect and deduplication, and provide a fallback or resynchronization
+path when delivery is not guaranteed.
 
-`database.js` exposes `getModel(scopeId, schema)` / `getModelMain(schema)` so controllers
-never hold a connection reference directly. ⚠ **Tenancy decision**: a per-tenant model
-opens one full Mongoose connection *per tenant* (hard data isolation — only adopt this if
-you have a real compliance or data-residency requirement). Default instead to one
-connection with a `scopeId` field on every document, included in every query filter —
-simpler, one connection pool, one set of indexes.
+## 10. Configuration, observability, and operations
 
-### 2.5 Services — one file per concern, barreled
+Load configuration through one typed/validated boundary when the platform permits.
+Fail startup for missing required configuration before accepting work. Keep
+secrets out of source, logs, client bundles, build arguments, and generated
+artifacts.
 
-| file | responsibility |
-|---|---|
-| `auth.js` | verify sessions/tokens and build actor context; authorization stays explicit at the boundary |
-| `validate.js` | business-rule predicates → boolean + translated `validation.output` message |
-| `sanitize.js` | raw input → safe primitive; never throws, never sets an error message |
-| `utils.js` | `getResult()`, shared enums/constants (roles, epoch durations, notify-event names) |
-| `env.js` | typed getters over `process.env`, no validation by default — see ⚠ below |
-| `logger.js` | buffered request/error logging, periodic flush to durable storage |
-| `limit.js` | rate limiting + spam detection, Redis-backed, keyed by actor id or IP |
-| `language.js` | i18n: `t(langId, key, ...args)` / `tu(user, key, ...args)`, `{{n}}` placeholders |
+Instrument boundaries and important use cases with structured logs, metrics, and
+traces appropriate to the runtime. Include correlation/request/job identifiers and
+safe scope identifiers; exclude credentials and sensitive payloads. Define health,
+readiness, alerting, and graceful shutdown behavior.
 
-Keep `validate` and `sanitize` separate even though they look similar: sanitize defends
-against bad *shapes* so later code never crashes; validate enforces business rules and
-produces the user-facing message. Don't let one do the other's job.
+Do not hard-code one process model. A web server, function, worker, desktop app,
+or static client has different initialization and shutdown requirements. Start
+accepting work only after required dependencies are ready.
 
-#### 2.5.1 Shared constants
+## 11. Build one vertical slice
 
-`utils.js` holds the epoch-duration constants, role-number enum, and notify-event-name
-enum used across the whole backend. **This same constant block must be duplicated,
-byte-for-byte, in the frontend's `lib/utils.js`** (§3.6) — there's no shared package
-between the two Node projects, so keeping role numbers and event names in sync across the
-stacks is a manual discipline, not something the type system enforces. Update both files
-in the same change whenever you touch one.
+After the foundational contracts exist, implement one representative feature end
+to end:
 
-⚠ **Env vars**: by default, every `env.js` getter is an unchecked passthrough
-(`process.env.X`) with no required-vs-optional enforcement and no startup assertion.
-Decide deliberately whether that's acceptable for your project or whether you want
-validation once, centrally, at boot — don't scatter validation across individual getters
-either way.
+1. contract/schema and result cases,
+2. persistence or external adapter,
+3. application operation with actor and scope,
+4. delivery adapter,
+5. client/service adapter when applicable,
+6. presentation or consuming workflow,
+7. tests and observability.
 
-### 2.6 Routes — thin wiring only
+Verify the literal paths, operation names, schemas, and envelope behavior across
+boundaries. Use the completed slice as a local example, then adapt rather than
+blindly copy it.
 
-```js
-router.post("/get-<resource>", requireAuth, requireCsrf, async (req, res) => {
-    await limit(req, res);
+For migrations, move feature by feature so the application remains runnable.
+Create compatibility adapters when old and new contracts must coexist. Do not
+migrate layer by layer if that leaves every feature half-converted.
 
-    let json = req.body ?? {};
-    let scopeId = sanitizeService.text(json.<scope>Id);
-    let resourceId = sanitizeService.text(json.<resource>Id);
-    let result = await <resource>Controller.<role>.get<Resource>(req.actor, scopeId, resourceId);
+## 12. Verification strategy
 
-    res.send(result);
-    logResult(req, result);
-});
-```
+Choose tests based on risks and available tooling:
 
-Every leaf handler follows the same boundary: authenticate → enforce CSRF protection for
-cookie-authenticated state-changing requests → rate-limit → sanitize each field (never pass
-`req.body` straight through) → call one controller function with the actor and scope context → send
-the envelope → log. Route paths are inline kebab-case literals — no
-shared constants module on the backend (the frontend has its own internal path-builder
-service, kept separate — §3.4). File uploads route through a `multer`-based
-`handleUpload(req, res, configureMulter, action)` helper that only calls `action()` once
-the file is on disk; file downloads `res.sendFile()` the result and clean up the temp
-file in the callback regardless of outcome.
+- unit tests for business rules and expected result values,
+- integration tests for persistence, transactions, and external adapters,
+- contract tests for envelope shape, statuses, schemas, and compatibility,
+- authorization tests across roles and tenant boundaries,
+- end-to-end tests for critical vertical slices,
+- migration tests for forward/backward compatibility and data verification,
+- operational tests for startup, shutdown, retry, recovery, and observability.
 
-### 2.7 Notifications
+At minimum, test both success and important `success: false` cases, plus unexpected
+exception mapping at each delivery boundary. Verify that failure `output` is safe
+and that failure data does not leak inaccessible resources.
 
-Not a fan-out broadcast — an ordered list of channels tried until one succeeds:
+## 13. Operating principles
 
-```js
-async function notify(users, data) {
-    for (let user of users.filter(Boolean)) {
-        for (let stream of streams) {                // e.g. [socketStream, smsStream]
-            if (await stream(user, data)) break;       // first success wins, stop trying others
-        }
-    }
-}
-```
+- **Opt in:** use this blueprint only after explicit selection.
+- **Explore first:** existing project instructions and patterns are authoritative.
+- **Keep decisions visible:** explain deliberate deviations and trade-offs.
+- **Match complexity:** add an abstraction only for a demonstrated boundary.
+- **Preserve local work:** make reversible edits and confirm destructive actions.
+- **Respect dependencies:** parallelize independent research, not dependent writes.
+- **Keep vertical coherence:** change contracts and all affected consumers together.
+- **Verify claims:** run the repository's supported checks and report limitations.
 
-Each transport's `setupXStream()` returns `(target, data) => Promise<boolean>`. Adding a
-channel is: write the module, append it to the ordered `streams` array. Authenticate socket
-connections with a secure session cookie or the transport's authentication payload using a
-short-lived token. Never place long-lived credentials in a handshake query string.
+## Completion report
 
----
+Report:
 
-## 3. Frontend (Next.js App Router + React)
-
-### 3.1 Layout
-
-```
-app/
-  layout.js                    server component — metadata, delegates to layoutapp.js
-  layoutapp.js                 "use client" — ONLY nests Context providers, no markup
-  <route>/layout.js            role/scope boundary — wraps children in a Provider
-  <route>/page.js               "use client" — reads Context, calls backendService
-  <route>/_components/          components used only within this route subtree
-components/
-  <flat-file>.js                 generic, role-agnostic widgets
-  ui/*.jsx                       shadcn/ui generated primitives
-  <feature>/                     domain/role-specific component groups
-context/<name>.js               createContext + Provider only — delegates ALL logic to the hook
-hooks/<name>.js                 ALL useState/useEffect logic — no JSX, no createContext
-services/
-  backend/client.js              the ONLY place fetch() is called
-  backend/<role>/<resource>.js   API calls, mirrors the backend's role-split structure exactly
-  path/<role>/path.js            frontend route URL builders — kept separate from API calls
-lib/utils.js                    cn() helper + the SAME shared constants as backend utils.js
-```
-
-### 3.2 `layout.js` vs `layoutapp.js`
-
-`layout.js` is the Next.js special file — keep it a server component when possible, doing
-only metadata + rendering a client wrapper. `layoutapp.js` is a project convention, not a
-framework file: a `"use client"` component whose only job is nesting providers in a fixed
-order, with zero markup of its own:
-
-```js
-export function AppLayout({ children }) {
-    return <LanguageLayout><PWAProvider><NetworkLayout><ToastLayout>{children}
-        </ToastLayout></NetworkLayout></PWAProvider></LanguageLayout>;
-}
-function ToastLayout({ children }) {
-    const { dir } = useContext(LanguageContext);     // reads a value from an outer provider
-    return <ToastProvider dir={dir}>{children}</ToastProvider>;
-}
-```
-
-When one provider needs a value from another, add a small wrapper function like
-`ToastLayout` that calls `useContext` on the outer one — don't reach across providers any
-other way.
-
-### 3.3 Context + hook pairing — strictly 1:1
-
-```js
-// hooks/<name>.js — logic only
-export function use<Name>(<deps>) {
-    const [<name>, set<Name>] = useState(null);
-    const onUseEffect = useEffectEvent(() => { /* compute, then set<Name>(value) */ });
-    useEffect(() => { onUseEffect(); }, [<deps>]);
-    return { <name> };
-}
-
-// context/<name>.js — wiring only, never its own useState
-export const <Name>Context = createContext(null);
-export const <Name>Provider = ({ <deps>, children }) => {
-    const { <name> } = use<Name>(<deps>);
-    return <<Name>Context.Provider value={{ <name> }}>{<name> && children}</<Name>Context.Provider>;
-};
-```
-
-Use `{<name> && children}` when children genuinely can't function without the value (e.g.
-a user record); skip it when children should render an empty/loading state instead. Use
-`useEffectEvent` for any effect that calls async logic or reads multiple state values — it
-keeps the `useEffect` dependency array to just "what should retrigger this" while the
-event body can freely reference the latest state without stale-closure bugs.
-
-**Two distinct context families, don't merge their jobs**: `data/<role>` hooks bulk-fetch
-and cache a role's dashboard records (parallel fetches, one updater per resource, plus a
-combined `update()`); `portal/<role>` hooks do nothing but check "is this auth valid for
-this role" and gate whether `children` render at all. Don't let fetching logic leak into a
-portal hook, or auth-gating leak into a data hook. This mirrors the backend role split
-(§2.3) on the client.
-
-### 3.4 The API layer
-
-```js
-// services/backend/client.js — the only fetch() call site
-export async function post(api, data) {
-    try {
-        const response = await fetch(`${process.env.URL_API}/${api}`, {
-            method: "POST",
-            credentials: "include",
-            headers: {
-                "Content-Type": "application/json",
-                "X-CSRF-Token": csrfService.getToken(),
-            },
-            body: JSON.stringify(data),
-        });
-        if (!response.ok) return getResult(false, response.statusText);
-        return await response.json();
-    } catch (error) {
-        return getResult(false, error.message);
-    }
-}
-```
-
-Every backend-call function returns the same `{ success, output, data }` shape regardless
-of whether the failure was a bad HTTP status or a thrown exception. The shared client owns
-a secure HttpOnly session cookie or, when the application uses bearer tokens, injects the
-`Authorization` header centrally. Cookie sessions use an appropriate `SameSite` policy and the
-established CSRF token or origin-check mechanism for state-changing requests. Credentials never
-belong in request bodies or URLs.
-
-```js
-// services/backend/<role>/<resource>.js
-export async function get<Resource>s(scopeId) {
-    return await client.post("<role>/<resource>/get-<resource>s", { scopeId });
-}
-```
-
-The path string must match the backend's mounted route exactly — there's no shared
-constant between the stacks, so a typo here 404s silently into the normal failure envelope
-instead of failing at compile time. Keep `services/path/**` (frontend navigation URLs,
-used with `router.push`/`<Link>`) strictly separate from `services/backend/**` (API call
-paths) even though both "build a string" — one is a UX concern, the other an API contract.
-
-### 3.5 Error/loading state — no library, by design
-
-```js
-export function getDataFromResult(result, defaultData) {
-    return (!result.success || !result.data) ? defaultData : result.data;
-}
-```
-
-Every hook initializes state to an empty/falsy default, fetches, pipes the result through
-this helper. There's no explicit `loading` boolean or `error` state — loading is inferred
-from the value still being the default; failures are logged once in `client.js`. Don't
-reach for React Query/SWR or a `{data,loading,error}` triple by default — only add it if
-the project's UX genuinely needs visible loading/error states the empty-state inference
-can't express.
-
-### 3.6 Shared constants (`lib/utils.js`)
-
-```js
-export function cn(...inputs) { return twMerge(clsx(inputs)); }
-export function getDataFromResult(result, defaultData) { /* see §3.5 */ }
-// PLUS: the exact same EPOCH_*, ROLE_*, NOTIFY_* constants as backend/services/utils.js (§2.5.1)
-```
-
-### 3.7 UI components
-
-Generate `components/ui/*` via the shadcn CLI, don't hand-author — `cva` for variants,
-Radix primitives, a `cn()`-merged `className`, `data-slot` attributes. Plain
-function-declaration components elsewhere, props destructured inline, no class components,
-minimal-to-no comments.
-
----
-
-## 4. Cross-cutting conventions
-
-1. **One response envelope, no exceptions, on both stacks**: `{ success, output, data }`.
-   This single convention is why neither stack needs try/catch sprinkled through business
-   logic.
-2. **A barrel `index.js` at every layer boundary** — import the barrel from outside its
-   own directory; only import a sibling file directly within the same directory or to
-   break a real circular-import edge case.
-3. **Mirror role/resource structure across every layer that touches a resource**: backend
-   controller ↔ backend route ↔ frontend service, same `<role>/<resource>` path in all
-   three. Touching two of three without the third breaks the mirror.
-4. **Identical formatting config on both stacks** (4-space indent, double quotes,
-   semicolons, trailing commas, 120 cols) so contributors don't context-switch style
-   between them.
-5. **No automated tests by default** — a real gap, not a pattern to aspire to. Decide
-   deliberately whether to add a test framework rather than silently inheriting the gap.
-
----
-
-## 5. Build order
-
-1. Decide roles/tenancy first — it determines whether you need the role-split pattern at
-   all, and whether single-connection-plus-tenant-field or per-tenant-connection fits
-   (§2.4).
-2. Stand up the contract before any resource exists: `getResult()`, the barrels, the
-   `client.js` error-normalization, the shared-constants file pair.
-3. Build one full vertical slice for one resource end-to-end; copy its file set for every
-   resource after.
-4. When refactoring an existing app toward this structure, move resource-by-resource
-   (schema + controller + route + frontend service + hook/context together), not
-   layer-by-layer — keep the app runnable at every commit.
+- detected workload and stack,
+- selected boundaries and explicit deviations,
+- result-envelope and error-as-value behavior implemented,
+- authentication, tenancy, compatibility, and failure decisions,
+- tests and operational checks performed,
+- unresolved risks or unverified runtime assumptions.

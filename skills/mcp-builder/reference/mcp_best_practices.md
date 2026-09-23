@@ -1,249 +1,214 @@
-# MCP Server Best Practices
+# MCP Protocol and Security Guide
 
-## Quick Reference
+Summary: implement the intersection of the selected protocol, SDK, and client
+capabilities. Do not combine lifecycle rules from different revisions.
 
-### Server Naming
-- **Python**: `{service}_mcp` (e.g., `slack_mcp`)
-- **Node/TypeScript**: `{service}-mcp-server` (e.g., `slack-mcp-server`)
+Maintenance notice: substantially rewritten; the package's original license is
+retained in `../LICENSE.txt`.
 
-### Tool Naming
-- Use snake_case with service prefix
-- Format: `{service}_{action}_{resource}`
-- Example: `slack_send_message`, `github_create_issue`
+## Protocol compatibility comes first
 
-### Response Formats
-- Support both JSON and Markdown formats
-- JSON for programmatic processing
-- Markdown for human readability
+The official versioning documentation identified `2026-07-28` as current when
+this guide was revised. That does not prove any installed SDK or client supports
+it. Consult the [versioning overview](https://modelcontextprotocol.io/docs/2026-07-28/learn/versioning)
+and the target SDK's tagged documentation and supported-version definitions.
+Treat rolling `main` documentation as research, not a dependency pin.
 
-### Pagination
-- Always respect `limit` parameter
-- Return `has_more`, `next_offset`, `total_count`
-- Default to 20-50 items
+| Concern | `2026-07-28` | Legacy `2025-11-25` and earlier |
+| --- | --- | --- |
+| Version and capabilities | Per-request `_meta` envelope; HTTP also carries `MCP-Protocol-Version` | `initialize` request/response followed by `notifications/initialized` |
+| Discovery | Servers implement `server/discover`; clients need not call it before other requests | Initialization exchanges server/client information and capabilities |
+| Unsupported revision | `UnsupportedProtocolVersionError` reports supported revisions | Follow that revision's initialization negotiation/failure rules |
+| Protocol session | No implicit protocol-level session; explicit application handles can outlive requests | Initialization/session lifecycle; HTTP may use `Mcp-Session-Id` |
+| Client-assisted interaction | Multi round-trip requests with `InputRequiredResult`, `inputResponses`, and optional `requestState` | Supported server-to-client requests on the established connection |
+| Change notifications | Explicit `subscriptions/listen` streams when supported | Revision-specific notifications and resource subscriptions |
 
-### Transport
-- **Streamable HTTP**: For remote servers, multi-client scenarios
-- **stdio**: For local integrations, command-line tools
-- Avoid SSE (deprecated in favor of streamable HTTP)
+For modern requests, use the SDK to supply the reserved `_meta` keys for
+`io.modelcontextprotocol/protocolVersion`, client identity, and client
+capabilities. Do not invent envelope fields or manually reuse a legacy handshake
+with a modern version string. Validate HTTP header/body consistency as required
+by the selected revision. Test both a supported and an unsupported version.
 
----
+Use the [modern version contract](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning)
+or the [legacy lifecycle](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)
+as appropriate. Support multiple revisions only through a tested adapter/SDK;
+do not silently claim compatibility by accepting every date string.
 
-## Server Naming Conventions
+## Schemas, results, and errors
 
-Follow these standardized naming patterns:
+Use JSON Schema semantics from the selected revision and validators supported by
+the SDK. Check dialect, required fields, bounds, enums, nullable versus optional
+values, and unknown fields. Configure reference resolution so an untrusted schema
+cannot trigger arbitrary file/network reads; do not fetch remote `$ref` targets
+without a verified, authorized resolution policy.
 
-**Python**: Use format `{service}_mcp` (lowercase with underscores)
-- Examples: `slack_mcp`, `github_mcp`, `jira_mcp`
+Tool inputs are objects. Validate tool arguments at the boundary and business
+constraints in the domain layer. If an output schema is advertised, return
+conforming `structuredContent` and test the serialized result, including empty
+and error cases under the target revision's rules. Do not advertise a schema the
+SDK cannot represent or validate.
 
-**Node/TypeScript**: Use format `{service}-mcp-server` (lowercase with hyphens)
-- Examples: `slack-mcp-server`, `github-mcp-server`, `jira-mcp-server`
+In `2026-07-28`, `structuredContent` may be any JSON value; older revisions/SDKs
+may restrict it to objects. An object envelope is often the simplest shared
+contract, but do not describe it as a universal current-protocol requirement.
+For compatible clients, also return serialized structured data in a text block,
+keeping the two representations consistent. Binary/media content must use the
+protocol's content types rather than ad hoc JSON serialization of SDK objects.
 
-The name should be general, descriptive of the service being integrated, easy to infer from the task description, and without version numbers.
+Example successful tool result (not a complete JSON-RPC response):
 
----
-
-## Tool Naming and Design
-
-### Tool Naming
-
-1. **Use snake_case**: `search_users`, `create_project`, `get_channel_info`
-2. **Include service prefix**: Anticipate that your MCP server may be used alongside other MCP servers
-   - Use `slack_send_message` instead of just `send_message`
-   - Use `github_create_issue` instead of just `create_issue`
-3. **Be action-oriented**: Start with verbs (get, list, search, create, etc.)
-4. **Be specific**: Avoid generic names that could conflict with other servers
-
-### Tool Design
-
-- Tool descriptions must narrowly and unambiguously describe functionality
-- Descriptions must precisely match actual functionality
-- Provide tool annotations (readOnlyHint, destructiveHint, idempotentHint, openWorldHint)
-- Keep tool operations focused and atomic
-
----
-
-## Response Formats
-
-All tools that return data should support multiple formats:
-
-### JSON Format (`response_format="json"`)
-- Machine-readable structured data
-- Include all available fields and metadata
-- Consistent field names and types
-- Use for programmatic processing
-
-### Markdown Format (`response_format="markdown"`, typically default)
-- Human-readable formatted text
-- Use headers, lists, and formatting for clarity
-- Convert timestamps to human-readable format
-- Show display names with IDs in parentheses
-- Omit verbose metadata
-
----
-
-## Pagination
-
-For tools that list resources:
-
-- **Always respect the `limit` parameter**
-- **Implement pagination**: Use `offset` or cursor-based pagination
-- **Return pagination metadata**: Include `has_more`, `next_offset`/`next_cursor`, `total_count`
-- **Never load all results into memory**: Especially important for large datasets
-- **Default to reasonable limits**: 20-50 items is typical
-
-Example pagination response:
 ```json
 {
-  "total": 150,
-  "count": 20,
-  "offset": 0,
-  "items": [...],
-  "has_more": true,
-  "next_offset": 20
+  "content": [{"type": "text", "text": "{\"items\":[],\"nextCursor\":null}"}],
+  "structuredContent": {"items": [], "nextCursor": null},
+  "isError": false
 }
 ```
 
----
+This example's `nextCursor` belongs to the tool's application data, not MCP's
+list-method pagination envelope. Define its semantics in the tool output schema.
 
-## Transport Options
+Separate failure layers:
 
-### Streamable HTTP
+- Malformed JSON-RPC, unknown methods/tools, and invalid request envelopes use
+  the protocol/SDK error mechanism.
+- Tool execution failures, including domain validation and upstream failures,
+  use tool results with `isError: true` where the target contract specifies it.
+  SDK argument-validation behavior varies; test it rather than assuming every
+  validation failure becomes the same error category.
+- Authentication/transport failures retain meaningful HTTP status and auth
+  challenges. Do not convert an unauthenticated request into a successful tool
+  response.
+- Unexpected faults get redacted public errors and correlated internal logs.
+  Do not return stack traces, tokens, raw upstream bodies, or private paths.
+- Cancellation remains cancellation, not success, an empty result, or an
+  automatically retryable domain error.
 
-**Best for**: Remote servers, web services, multi-client scenarios
+Clients/evaluators must preserve content types, structured results, error flags,
+and request IDs instead of treating all responses as strings or successful data.
+See [tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools).
 
-**Characteristics**:
-- Bidirectional communication over HTTP
-- Supports multiple simultaneous clients
-- Can be deployed as a web service
-- Enables server-to-client notifications
+## Pagination and bounded data
 
-**Use when**:
-- Serving multiple clients simultaneously
-- Deploying as a cloud service
-- Integration with web applications
+MCP list methods use opaque cursors. Follow `nextCursor` until absent, with an
+overall page/item/time limit and repeated-cursor detection. Do not assume the
+first page contains every tool, resource, template, or prompt.
 
-### stdio
+Pagination inside a tool is an application contract: specify input cursor and
+page-size limits, output continuation fields, stable ordering, and invalid or
+expired cursor behavior. Scope cursors to the caller/query; validate any encoded
+state. Do not treat possession of a cursor as authorization.
 
-**Best for**: Local integrations, command-line tools
+Bound response bytes/items and upstream work. Expose truncation explicitly and
+provide a documented continuation or resource reference. Never slice arbitrary
+serialized JSON or media bytes and still present the result as valid content.
 
-**Characteristics**:
-- Standard input/output stream communication
-- Simple setup, no network configuration needed
-- Runs as a subprocess of the client
+## Local stdio versus HTTP
 
-**Use when**:
-- Building tools for local development environments
-- Integrating with desktop applications
-- Single-user, single-session scenarios
+### Local stdio
 
-**Note**: stdio servers should NOT log to stdout (use stderr for logging)
+- Let the client own launching and terminating the child process. Supply command,
+  argument array, working directory, and only necessary environment variables
+  through its supported configuration; avoid shell concatenation.
+- stdout contains MCP messages only. Send diagnostics to stderr, including those
+  from dependencies and startup code.
+- Close upstream clients, streams, and child tasks on EOF, cancellation, or
+  shutdown. Test startup failure and paths with spaces on the target OS.
+- Grant filesystem and credential access deliberately. A local server executes
+  with real local authority; client-provided roots are not a sandbox.
 
-### Transport Selection
+### HTTP
 
-| Criterion | stdio | Streamable HTTP |
-|-----------|-------|-----------------|
-| **Deployment** | Local | Remote |
-| **Clients** | Single | Multiple |
-| **Complexity** | Low | Medium |
-| **Real-time** | No | Yes |
+Use the selected revision's Streamable HTTP transport. HTTP+SSE from the older
+transport is a compatibility path, not a default for new servers. Streaming SSE
+responses within Streamable HTTP are not the same as that deprecated transport.
+Choose JSON responses versus streaming based on required capabilities; do not
+assume stateless JSON alone supports every notification/interaction flow.
 
----
+Enforce TLS at the appropriate boundary, authentication on each request,
+request/body limits, Origin validation and Host/DNS-rebinding protections.
+Reject invalid Origins according to the transport specification. Bind local
+listeners to loopback unless external exposure is intentional and secured.
+CORS is not authentication. Test proxy buffering, disconnects, and configured
+timeouts using the actual deployment path.
 
-## Security Best Practices
+For legacy session-based HTTP, scope session identifiers and state to the
+principal, expire/clean them up, and verify reconnect/resumption semantics.
+A session ID never substitutes for authentication. For modern stateless protocol
+requests, keep durable application state behind explicit, authorized handles
+with a retention policy; do not rely on connection affinity.
 
-### Authentication and Authorization
+See [Streamable HTTP](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http).
 
-**OAuth 2.1**:
-- Use secure OAuth 2.1 with certificates from recognized authorities
-- Validate access tokens before processing requests
-- Only accept tokens specifically intended for your server
+## Authorization and data boundaries
 
-**API Keys**:
-- Store API keys in environment variables, never in code
-- Validate keys on server startup
-- Provide clear error messages when authentication fails
+For an OAuth-protected HTTP deployment, use the selected revision's protected
+resource metadata, authorization-server discovery, resource indicators, and
+applicable client registration flow. Reuse a maintained OAuth implementation.
+Verify issuer, audience/resource binding, signature, expiration, scopes, and
+principal/tenant identity. Clients must use the required PKCE and redirect
+validation protections for applicable authorization-code flows. Do not pass an
+MCP access token through to an upstream service as that service's credential.
 
-### Input Validation
+Separate MCP access authorization from delegated upstream authorization. Store
+upstream secrets securely and bind them to the correct user/tenant. Enforce
+object-level permissions on every tool, resource, prompt context fetch, cursor,
+and application handle. Avoid cross-user caches and shared mutable request
+context. Check authorization again when continuing an interaction.
 
-- Sanitize file paths to prevent directory traversal
-- Validate URLs and external identifiers
-- Check parameter sizes and ranges
-- Prevent command injection in system calls
-- Use schema validation (Pydantic/Zod) for all inputs
+Treat tool arguments, resources, prompts, upstream content, and elicitation
+responses as untrusted data. Constrain filesystem paths after canonicalization,
+URL destinations/redirects against SSRF, and subprocess arguments against
+injection. Names, descriptions, and `readOnlyHint`/`destructiveHint`/
+`idempotentHint`/`openWorldHint` are not security controls.
 
-### Error Handling
+Explicitly authorize real external calls, mutations, costs, and data transfer.
+Read-only operations can still disclose sensitive data. Redact logs and fixtures;
+keep secrets out of prompts, URLs, results, transcripts, and source control.
+See [authorization](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization).
 
-- Don't expose internal errors to clients
-- Log security-relevant errors server-side
-- Provide helpful but not revealing error messages
-- Clean up resources after errors
+## Optional interactions and deprecations
 
-### DNS Rebinding Protection
+Check capabilities at the correct revision's scope. Do not require sampling,
+elicitation, roots, subscriptions, or background tasks for a simple server.
 
-For streamable HTTP servers running locally:
-- Enable DNS rebinding protection
-- Validate the `Origin` header on all incoming connections
-- Bind to `127.0.0.1` rather than `0.0.0.0`
+For modern elicitation, use the SDK's multi round-trip mechanism rather than a
+legacy back-channel request. Validate `inputResponses`; treat echoed
+`requestState` as attacker-controlled. Protect integrity when state affects
+business logic, access, or authority; bind it to the principal and original
+operation, expire it, and enforce one-time consumption when needed. Bound the
+number of rounds. Perform irreversible side effects only after required inputs
+and authorization are settled, with replay/idempotency protection.
 
----
+Handle accept, decline, cancellation, unsupported capability, and abandoned
+interaction. Never infer consent from a timeout or from an echoed state token.
+Form elicitation must not collect passwords, API keys, access tokens, or payment
+credentials. Use supported secure out-of-band URL interaction for such needs;
+validate the target and obtain user consent. URL elicitation is not a replacement
+for authorization to the MCP server itself.
 
-## Tool Annotations
+The `2026-07-28` registry deprecates roots, sampling, protocol logging, and dynamic
+client registration; deprecated does not mean removed. Avoid adopting these in
+new modern implementations; retain compatible legacy behavior where required.
+Do not replace sampling with a provider call without explicit data-transfer and
+cost authorization. Model choice and telemetry remain optional project decisions.
 
-Provide annotations to help clients understand tool behavior:
+Sources: [multi round-trip requests](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr),
+[elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation),
+[deprecations](https://modelcontextprotocol.io/specification/2026-07-28/deprecated).
 
-| Annotation | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `readOnlyHint` | boolean | false | Tool does not modify its environment |
-| `destructiveHint` | boolean | true | Tool may perform destructive updates |
-| `idempotentHint` | boolean | false | Repeated calls with same args have no additional effect |
-| `openWorldHint` | boolean | true | Tool interacts with external entities |
+## Deadlines, cancellation, and shutdown
 
-**Important**: Annotations are hints, not security guarantees. Clients should not make security-critical decisions based solely on annotations.
+Set per-call/upstream deadlines and a maximum total duration that progress cannot
+extend indefinitely. Propagate cancellation into I/O and child tasks and free
+resources. Under `2026-07-28`, closing an HTTP SSE response stream signals
+cancellation of that request; stdio uses `notifications/cancelled`. Older
+revisions have different disconnect/resumption semantics: test the chosen SDK
+and transport, not a universal disconnect rule.
 
----
-
-## Error Handling
-
-- Use standard JSON-RPC error codes
-- Report tool errors within result objects (not protocol-level errors)
-- Provide helpful, specific error messages with suggested next steps
-- Don't expose internal implementation details
-- Clean up resources properly on errors
-
-Example error handling:
-```typescript
-try {
-  const result = performOperation();
-  return { content: [{ type: "text", text: result }] };
-} catch (error) {
-  return {
-    isError: true,
-    content: [{
-      type: "text",
-      text: `Error: ${error.message}. Try using filter='active_only' to reduce results.`
-    }]
-  };
-}
-```
-
----
-
-## Testing Requirements
-
-Comprehensive testing should cover:
-
-- **Functional testing**: Verify correct execution with valid/invalid inputs
-- **Integration testing**: Test interaction with external systems
-- **Security testing**: Validate auth, input sanitization, rate limiting
-- **Performance testing**: Check behavior under load, timeouts
-- **Error handling**: Ensure proper error reporting and cleanup
-
----
-
-## Documentation Requirements
-
-- Provide clear documentation of all tools and capabilities
-- Include working examples (at least 3 per major feature)
-- Document security considerations
-- Specify required permissions and access levels
-- Document rate limits and performance characteristics
+Retry only bounded, classified transient failures and safe/idempotent work. Do
+not retry mutations after ambiguous completion without an idempotency/recovery
+contract. Cancellation does not undo committed effects: report their state via
+the application's reconciliation/status path when necessary. Implement orderly
+shutdown and verify no orphan processes, streams, or request-scoped tasks remain.
+See [cancellation](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/cancellation).

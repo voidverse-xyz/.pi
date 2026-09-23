@@ -20,8 +20,8 @@ Maintain one evolving plan and distinguish proposals from agreements. Immediate 
 This is a collaboration skill, not a `plan-template: true` template for Pi's `/plan` router. Invoke it through normal skill discovery or `/skill:decision-by-decision-planning`; do not pass it to `/plan --skill`.
 
 - In unrestricted mode, update the plan file after each agreement, respecting project instructions and preserving unrelated edits.
-- Host-managed Plan mode and the base `plan` skill take precedence over this skill's save cadence. Do not use ordinary edit/write tools there; save only the complete final plan through authorized `save_plan` when those boundaries permit it.
-- In Discuss, Quick, direct `/skill:plan`, or any other read-only context, keep the evolving decisions in chat and state that they are not saved. Do not bypass restrictions or change modes yourself to persist them.
+- Host-managed Plan mode and the base `pi-plan-mode` skill take precedence over this skill's save cadence. Do not use ordinary edit/write tools there; save only the complete final plan through authorized `save_plan` when those boundaries permit it.
+- In Discuss, Quick, direct `/skill:pi-plan-mode`, or any other read-only context, keep the evolving decisions in chat and state that they are not saved. Do not bypass restrictions or change modes yourself to persist them.
 - If a write is blocked or fails, retain the agreed change in chat, report the failure, and do not say the file was updated.
 
 ## Core contract

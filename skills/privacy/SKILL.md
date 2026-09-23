@@ -1,180 +1,168 @@
 ---
 name: privacy
-description: Prevent Claude, Codex, or any other agent from leaking private, local, or sensitive information into outward-facing artifacts (PR/issue/commit text, comments, public files, external services). Use before writing anything that leaves the local machine — especially PR descriptions, commit messages, issue bodies, and review comments. Also requires clear, explicit user confirmation before sending any data to a remote host outside the local network.
+description: Prevent sensitive or private information from leaking through remote requests, commits, pull requests, issues, reviews, documentation, generated files, logs, or agent handoffs. Use before any outbound or public-facing action and whenever handling secrets, personal data, private repositories, local paths, internal hosts, or redacted material. Require clear, scoped user authorization before sending data to a remote service unless the current request already authorizes that exact destination and purpose.
 ---
 
 # Privacy
 
-Anything that leaves the local machine is **publishing**. PR descriptions, issue
-bodies, commit messages **and their trailers**, the **contents of any committed
-file** (yes, including `.gitignore` comments, `AGENTS.md`, `README`), code review
-comments, and content sent to external services can be cached, indexed, and read
-by anyone — and stay visible even after you "delete" them. Treat every
-outward-facing string as permanent and public.
+Minimize what crosses the established trust boundary. “Local” does not
+necessarily mean safe: containers, CI runners, remote workspaces, hosted IDEs,
+WSL, plugins, mounted directories, subprocesses, and telemetry may process data
+outside the user's machine or control. Determine the actual boundary for the
+current workload. Outbound data can be retained in service logs, request
+metadata, caches, indexes, forks, telemetry, or backups even when the visible
+artifact is later edited or deleted.
 
-## Confirm before any data leaves the machine for a remote host
+Do not describe chat as inherently private: the agent provider, harness, plugins,
+or logging configuration may process or retain it. Keep sensitive detail out of
+chat too unless it is necessary to complete the user's task.
 
-Treat the **network boundary** as a gate, not just the publish step. Before any
-action sends data to a host that is **not** loopback and **not** on the local
-network — i.e. anything beyond `localhost`/`127.0.0.1`/`::1`, the private ranges
-`10.*`, `172.16–31.*`, `192.168.*`, link-local, and `*.local`/mDNS names — **stop
-and ask the user first**, unless they have already, in this session, explicitly
-asked for that specific action.
+## Classify the data and destination
 
-This is broader than PRs and commits. It includes, for example:
+Before an outbound action, identify:
 
-- `git push`, `gh pr|issue|api`, and anything else touching GitHub/GitLab/etc.
-- `curl`/`wget`/`fetch` that **upload** or POST data to a public URL
-- Uploading files or images to image hosts, pastebins, gists, transfer/CDN services
-- Publishing packages (`npm publish`, `pip upload`, container registries)
-- Calling external/cloud APIs, webhooks, or **remote** MCP servers
-- Any "share this" / "send this somewhere" that resolves to a public host
+1. **Payload:** body, file contents, diff, prompts, query strings, URL paths,
+   headers, filenames, branch/repository names, and generated metadata.
+2. **Sensitivity:** secrets; credentials; personal, customer, health, financial,
+   or proprietary data; private source; local paths; internal hosts/IPs; session
+   IDs; unpublished vulnerabilities; and facts inferred from redactions.
+3. **Destination:** service and account/organization, public or private scope,
+   subprocess/plugin/MCP boundaries, redirects, proxies, and whether the user
+   controls the receiver.
+4. **Purpose and minimum:** why transmission is needed and whether a smaller,
+   redacted, aggregated, or local-only input is sufficient.
 
-Why the gate exists: once data reaches a third-party server the user doesn't
-control, it can be **logged, cached, indexed, retained, and read by others —
-permanently, even after deletion** — and it cannot be pulled back. The
-destination, the payload, and the *fact that it was sent* all leave the user's
-hands the moment it crosses the boundary. That is the user's call to make, not
-yours — and "the payload looks harmless" is not a reason to skip the ask.
+A private IP range, VPN address, `.local` name, or loopback proxy does not by
+itself prove that a destination is trusted. A public address does not prove it is
+untrusted. Use the actual service and data-flow boundary when known; if it is
+unclear, treat it as external and ask.
 
-### Make the confirmation clear and specific
+Outbound disclosure includes GET requests: URLs, query parameters, DNS lookups,
+repository coordinates, search terms, headers, and client IP metadata can all be
+logged. It is not limited to uploads or POST bodies.
 
-A vague "OK to push?" is not enough. The ask must let the user decide with full
-information, so spell out all four:
+## Authorization rule
 
-1. **What** data/content is being sent — name the file, the diff, the text.
-2. **Where** it's going — the remote host/service by name (e.g. `github.com`,
-   `img.shields.io`), and that it is **outside the local network**.
-3. **Why** it needs to leave the machine for this task.
-4. **What it means** — it becomes effectively public/retained and can't be
-   reliably un-sent.
+Obtain explicit user authorization immediately before sending data to an
+external service unless the current conversation already requests that exact
+action with a sufficiently clear destination and purpose.
 
-Template:
+Authorization may cover a well-defined batch, for example: "create these three
+issues in OWNER/REPO using the reviewed drafts." It does not silently extend to a
+new service, repository, account, payload category, or purpose. A request to
+commit locally does not authorize pushing; a request to push to GitHub does not
+authorize uploading screenshots elsewhere.
 
-> ⚠️ This will send **<what>** to **<remote service / host>**, which is outside
-> your local network. Once it's there, that service may store, cache, or index it,
-> and it can't be reliably deleted. Want me to go ahead?
+For confirmation, state concisely:
 
-The only bypass is prior authorization: if the user said "push it", "open the PR",
-or "upload the screenshot to X", that specific egress is covered — don't re-ask
-for the thing they just told you to do. But authorization for one destination or
-payload does **not** extend to another: pushing to GitHub ≠ uploading an image to
-a third-party host. Confirm each new destination separately.
+- what will be sent,
+- where and under which visible scope when relevant,
+- why it is needed,
+- any important retention/publication consequence.
 
-## The core rule: never describe what was hidden
+Example:
 
-If something is excluded for privacy (gitignored, redacted, kept local), do
-**not** name it in any public artifact. **The exclusion itself is sensitive.**
+> This will send the reviewed patch and description to the private repository
+> `OWNER/REPO` on GitHub to open the requested PR. GitHub may retain request and
+> repository data. Proceed?
 
-Saying "I excluded `settings.json`, `start-agent.sh`, and
-`.agent/settings.local.json`" leaks the exact filenames, paths, and existence
-of the private files — handing a reader the map you were trying to withhold.
+Do not repeat sensitive values in the confirmation. Refer to them by category.
+Avoid confirmation fatigue: one scoped approval can cover a coherent batch, but
+ask again when its boundary changes.
 
-- ❌ "Personal files (`settings.json`, `start-agent.sh`, `.agent/settings.local.json`) are gitignored and excluded."
-- ✅ "Local/personal config is gitignored." — or say nothing at all.
-- ✅ Better: don't mention the exclusion in the public artifact; report it to the user **in chat** instead, where the detail is useful and stays private.
+## Minimize before sending
 
-The distinction that matters: **chat with the user is private; the PR is public.**
-Details that help the user (specific filenames, paths, IPs, what was excluded
-and why) belong in your reply to them — never copied into the published text.
+- Send only the fields and files required for the task.
+- Prefer local processing, summaries, hashes, or small excerpts over entire
+  repositories, logs, screenshots, or conversations.
+- Remove secrets rather than masking only their display; inspect generated
+  metadata, archives, image EXIF, notebook output, and source maps when relevant.
+- Use neutral portable placeholders such as `<user-config-directory>/...`,
+  `<home-directory>/...`, or `<repository-root>/...` in outward-facing text. Do
+  not publish usernames or absolute home paths.
+- Keep unrelated projects, accounts, internal hostnames, private IPs, and local
+  tooling details out of external artifacts.
+- Do not name redacted or deliberately excluded private files merely to explain
+  that they were excluded. The existence and names can themselves be sensitive.
+- Never send credentials through URLs, issue bodies, commits, or prompts. Do not
+  assume command arguments, environment variables, response files, temporary
+  files, process listings, shell history, CI logs, crash reports, or OS credential
+  stores are safe without understanding the host and tool behavior. Use the
+  documented approved secret channel; if none exists, do not transmit the
+  credential and ask the user for an approved method.
 
-This applies to **committed files**, not just PR/commit prose:
+## Public and durable artifacts
 
-- A committed `.gitignore` must list a pattern to ignore it, but keep its comments
-  generic (`# local/personal — gitignored`); don't enumerate the personal
-  filenames in editorial comments or repeat them in `AGENTS.md`/`README`/docs.
-- Better still: a file that only exists on *your* machine (e.g. a personal
-  launcher script) doesn't belong in the committed `.gitignore` at all — ignore it
-  via `.git/info/exclude` (local, never committed) so its name is never published.
-- ❌ committed `AGENTS.md`: "Keep machine-local files (`settings.json`,
-  `start-agent.sh`, `.agent/`) out of git."
-- ✅ committed `AGENTS.md`: "Machine-local config is gitignored; committed source of
-  truth lives under `Agents/`." — names nothing personal.
+Treat commits, pushed files, PR/issue text, review comments, package metadata,
+release notes, and published documentation as durable disclosures even when the
+repository or channel is currently private. Access settings can change and copies
+can persist.
 
-## Never put these in outward-facing text
+Before publishing, review the exact final content when feasible. For large,
+binary, encrypted, generated, or streamed artifacts, perform the strongest
+practical review—such as manifests, file lists, provenance, metadata, decoded or
+sampled content—and disclose limitations. Block transmission when sensitivity
+cannot be bounded.
 
-- Absolute home/user paths (`/home/<user>/...`, `/Users/<user>/...`)
-- Private/LAN IPs and hostnames (`192.168.*`, `10.*`, internal DNS names)
-- Other projects, clients, or repos unrelated to the current one
-- Names of gitignored / redacted / `.local.*` / `.env*` files
-- Tokens, keys, credentials, emails, session URLs (obvious, but scan anyway)
-- Machine-specific or harness-specific config (permission modes, local aliases)
-- **Agent session URLs / IDs in commit trailers** (`Claude-Session: https://claude.ai/code/session_...`, `Codex-Session: ...`) — never commit these
-- **Harness/model-build detail bolted onto trailers or generated-by text** (`(1M context)`, `(fast mode)`, internal model IDs, local sandbox/permission details)
+Review applicable content, including:
 
-## Commit trailers — the one safe shape
+- commit subject, body, trailers, and signatures,
+- staged file contents and generated files,
+- PR/issue/review title and body,
+- attachment names and metadata,
+- URLs and query strings,
+- tool-added attribution or session fields.
 
-Commit messages may get auto-appended trailers, and they are committed history
-the same as the message body. Claude, Codex, and other agent tools can all leak
-through this channel. Watch for these:
+Do not add agent session URLs/IDs, internal model/build names, sandbox details,
+absolute paths, or generated-by footers. Follow repository instructions for
+attribution; otherwise omit agent attribution rather than inventing it.
 
-- **Session trailers** such as `Claude-Session:`, `Codex-Session:`,
-  `OpenAI-Session:`, or any other session URL/ID. A session URL/ID is a private
-  identifier for the conversation — it is on the never-publish list above.
-  **Strip it from every commit.** It must never reach a pushed branch.
-- **`Co-Authored-By:` with extra parenthetical or harness details.** If a tool
-  appends a co-author trailer, the only acceptable shape is a neutral agent/model
-  name + the normal noreply address, nothing else:
+Use targeted scans as a supplement, not proof. Review accessible outbound
+material for likely secret formats, home paths, private hosts, emails, tokens,
+session IDs, and names of intentionally withheld items. Use available native or
+harness tools; do not install software, invoke a remote scanner, or upload files
+merely to perform the review without authorization. When tooling is unavailable,
+manually review the exact accessible payload and disclose limitations. A clean
+pattern scan cannot establish that content is safe.
 
-  - ✅ `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`
-  - ✅ `Co-Authored-By: Codex <noreply@openai.com>` if that is the tool's normal neutral identity
-  - ❌ `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`
-  - ❌ `Co-Authored-By: Codex (sandbox: workspace-write, model build: internal) <noreply@openai.com>`
-  - ❌ any `Claude-Session:`, `Codex-Session:`, `OpenAI-Session:`, or session-URL line
-- **Generated-by footers** that include session links, local paths, internal model
-  identifiers, sandbox settings, or execution environment details. Remove the
-  private detail; if attribution is needed, keep it generic.
+## Generic outbound actions
 
-Before committing, read the trailers and generated-by footers, not just the
-message body. These ride along on *every* commit, so one leaked session URL
-becomes one-per-commit across a branch.
+Apply the same review to package publication, container images and provenance,
+cloud/object storage, email and chat attachments, database exports, deployment
+systems, support portals, observability/telemetry, model providers, CI artifacts,
+and generated binaries. GitHub is one example, not the default workload.
 
-## Before publishing, do a leak pass
+## Git and remote-service operations
 
-Before `gh pr create/edit`, `gh issue ...`, `git commit`, posting a review
-comment, or sending content to any external service, re-read the exact text and
-grep your own draft for: home paths, private IPs, other project names, and the
-names of anything you deliberately excluded. If a detail is only useful to the
-user, move it to chat.
+This section applies when the workload uses Git or repository hosting.
 
-Also, before committing, run the pass over the parts that aren't the message body:
+- A local commit still creates durable content that may later be pushed, so run
+  the disclosure review before committing.
+- Verify the remote, repository, branch, and account before pushing or using a
+  service CLI.
+- Prefer structured API fields or the tool's documented file/stdin input for
+  multiline content. Follow the active shell's quoting rules and avoid placing
+  sensitive multiline content directly in command arguments.
+- Read remote objects back after creation/edit when supported and authorized,
+  preferably using narrowly scoped metadata or fields rather than retrieving or
+  printing the entire sensitive object.
+- Never reveal tokens with diagnostic flags or paste authentication output into
+  chat or logs.
+- Agent handoffs, web search, hosted model calls, remote MCP tools, and image
+  generation are outbound services too; pass only the minimum necessary context.
 
-- **Commit trailers** — `git log <base>..HEAD --format='%(trailers)'` (or just read
-  them): no `Claude-Session:`, `Codex-Session:`, other session trailers, or
-  session URLs; co-author lines use the exact safe shape.
-- **Committed files you're adding/editing** — does any `.gitignore` comment,
-  `AGENTS.md`, `README`, or doc *name* an excluded personal file or describe what
-  was withheld? `git grep -nE 'start-(claude|codex|agent)|settings\.json|\.env|/home/|/Users/' -- <staged paths>`.
+## If disclosure occurs
 
-## If you already leaked
+1. Stop further transmission and tell the user what category of data, destination,
+   and artifact were involved without unnecessarily repeating the sensitive value.
+2. Remove or edit the visible artifact when possible.
+3. Treat secrets and session credentials as compromised and rotate/revoke them.
+4. Preserve evidence needed for remediation without spreading it to more systems.
+5. Explain residual risk: caches, copies, logs, backups, and version-control
+   history (for example, Git clones, forks, or reflogs) may retain prior content.
+6. Ask before destructive history rewriting or force-pushing; deletion alone is
+   not reliable remediation.
 
-Fix it immediately, then tell the user:
-
-- PR/issue body or title: `gh pr edit <n> --body ...` / `gh issue edit`.
-- Review/issue comment: edit or delete it (`gh api` for comment endpoints).
-- Commit message or trailer: amend if unpushed; if pushed, warn the user that
-  history rewrite + force-push is required and that the old content may persist in
-  forks, caches, and the provider's reflog. A leak in *one* commit is
-  `git commit --amend`; the same trailer across *many* commits needs a
-  `git rebase` reword (or `git filter-repo --message-callback`) over the range.
-- Treat any leaked secret as compromised — rotation, not just deletion, is the
-  real fix.
-
-## Why this skill exists
-
-An agent listed three gitignored personal filenames in a public PR description
-while explaining that they'd been excluded — defeating the exclusion. The
-exclusion was correct; advertising it in a public artifact was the leak.
-
-A later incident leaked two more ways at once: every commit on a pushed branch
-carried an agent session URL and a `Co-Authored-By: ... (1M context)` trailer,
-and a committed `AGENTS.md` + `.gitignore` comment spelled out machine-local
-filenames. The message *bodies* and the PR description were clean — the leaks
-were entirely in trailers and committed-file prose, the parts that are easy to
-skip on a leak pass. This applies equally to Claude, Codex, and any other agent
-that writes commit text, docs, comments, or outbound payloads.
-
-The same principle extends to the **network boundary itself**: sending data to any
-third-party host the user didn't ask you to contact is a leak waiting to happen,
-no matter how innocuous the payload looks. The user, not the agent, decides what
-is allowed to leave their machine — so ask first, clearly, every new destination.
+Privacy review is a decision process, not a promise that an artifact is safe.
+When sensitivity or authorization is ambiguous, pause and ask rather than making
+an irreversible disclosure.

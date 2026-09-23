@@ -25,14 +25,14 @@ The `plan-mode` status producer uses `󰍩 discuss mode`, ` plan mode`, and `
 
 - Off marks pi-plan restrictions as inactive for the current run and supersedes historical mode claims without weakening unrelated instructions, safety policies, or active-tool restrictions.
 - Discuss permits normal response length and organization but forbids implementation and delegation.
-- Plan loads the shared `skills/plan/` boundaries and at most one supplemental tagged planning template.
+- Plan loads the Pi-specific `skills/pi-plan-mode/` boundaries and at most one supplemental tagged planning template.
 - Quick requires a direct 1–4 sentence response with no padding or extra sections.
 
 Quick brevity is a prompt-level rule because the extension API does not expose a per-mode provider output-token setting. Tool restrictions are independently enforced by the host.
 
 ## Template routing
 
-The base `skills/plan/` skill defines Plan's planning, delegation, and save boundaries. Supplemental loaded skills become candidates only when their top-level frontmatter contains `plan-template: true`. Automatic mode excludes `disable-model-invocation` skills, caps the catalog at 20 entries and descriptions at 1024 characters, and lets the model read exactly one matching `SKILL.md` through Pi's bounded progressive-disclosure flow.
+The base `skills/pi-plan-mode/` skill defines Plan's planning, delegation, and save boundaries. Supplemental loaded skills become candidates only when their top-level frontmatter contains `plan-template: true`. Automatic mode excludes `disable-model-invocation` skills, caps the catalog at 20 entries and descriptions at 1024 characters, and lets the model read exactly one matching `SKILL.md` through Pi's bounded progressive-disclosure flow.
 
 `/plan --skill <name> <task>` is explicit user invocation: it may select a disabled template, validates the tag/readability, and caps direct injection at 50 KiB. If a forced template disappears, persisted selection is cleared before automatic fallback. A selected template's required output layout overrides the base default layout.
 
@@ -89,6 +89,6 @@ node --test \
 
 Offline RPC smoke coverage should verify:
 
-1. `get_commands` includes `discuss`, `plan`, `quick`, and `skill:plan` with no `extension_error`.
+1. `get_commands` includes `discuss`, `plan`, `quick`, and `skill:pi-plan-mode` with no `extension_error`.
 2. `/discuss on`, `/plan on`, `/quick on`, and `/quick off` publish the expected status sequence without routine notifications.
 3. `get_entries` contains branch-local mode states in that same sequence.
