@@ -187,6 +187,20 @@ target runtime's discovery contract first. In Pi, project skills use `.agents/sk
 project subagent definitions use `.pi/subagents/<type>.md`, and executable saved procedures use
 `.pi/procedures/<name>.js`.
 
+## Shared Service Boundaries
+
+- Keep general-purpose infrastructure services domain- and feature-agnostic. Do not put
+  feature-specific keys, constants, serialization, policy, error labels, or convenience wrappers in
+  generic storage, cache, network, logging, or similar services; keep them in the owning feature
+  service instead.
+- Change a shared service only when the change is independently useful as a generic capability. For
+  example, returning success or failure from a generic storage write is appropriate; adding a
+  biometric preference helper to generic storage is not.
+- When a feature needs specialized behavior that a shared service does not expose, implement it in
+  the feature service unless there are multiple concrete consumers for a generic abstraction. Check
+  existing callers and preserve established shared-service contracts unless a deliberate migration
+  is part of the task.
+
 ## JavaScript and React Import Ordering
 
 Order JavaScript/React imports by shape, not alphabetically and not by module type:
