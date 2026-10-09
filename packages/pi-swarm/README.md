@@ -598,7 +598,7 @@ this migration, and no live provider request is part of the completion checks.
 
 ## Low-usage workflow
 
-The repository defaults the main Pi model to `gpt-6-luna` with low thinking.
+The repository defaults the main Pi model to `gpt-6.1-sol` with medium thinking.
 Swarm choices remain explicit and pinned through the normal `start` agreement;
 no model is silently substituted. For bounded work, propose `initialWorker` with
 `id`, `specialization` and `brief` to start one implementer immediately. Recruit

@@ -1,7 +1,7 @@
 {
   "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-6-luna",
-  "defaultThinkingLevel": "low",
+  "defaultModel": "gpt-6.1-sol",
+  "defaultThinkingLevel": "medium",
   "theme": "void-agent-gruvbox",
   "packages": [
     "./packages/pi-teams",
