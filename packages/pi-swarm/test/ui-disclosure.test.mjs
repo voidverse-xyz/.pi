@@ -10,6 +10,9 @@ for (const transport of [undefined, "scripted-memory", "pi-native"]) {
 			endpoint: "https://fixture.invalid/v1/chat/completions", outboundData: [...PROVIDER_DATA_SCOPE] } : undefined;
 		const summary = approvalPacket({ action: "launch", specification: { objective: "Goal" }, changes: [], provider });
 		assert.equal(typeof summary, "string");
+		assert.match(summary, /workers manage scoped tasks, peer handoffs, recruitment and independent review within approved limits/);
+		assert.match(summary, /final verification using approved Bash access/);
+		assert.match(summary, /native settlement and existing Safety\/receipt checks/);
 		if (transport === "pi-native") {
 			assert.match(summary, /LAUNCH \(Pi native provider\)/);
 			assert.match(summary, /credentials, OAuth, environment and routing/);

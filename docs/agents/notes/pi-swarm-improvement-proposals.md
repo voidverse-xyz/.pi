@@ -301,3 +301,42 @@ forecast or a measured before/after savings estimate.
 The guide and temporary diagnostic extension retain the method for future
 regressions. Other sources of prefix changes, cache lifetime/routing and possible
 performance tradeoffs remain separate evidence-driven investigations.
+
+
+## Self-coordination and owner interface — 2026-10-10
+
+The owner clarified that main should be the intermediary between the user and Swarm,
+while workers coordinate execution themselves. Existing worker tools already supported
+scoped tasks, claims, peer mail and recruitment; the missing runtime handoffs still made
+candidate/review reports wake main for routine supervision.
+
+- Worker and main tool instructions now assign routine decomposition, task selection,
+  dependency handoffs, recruitment and review to Swarm. Main forwards steering and
+  handles owner decisions, authorization questions and unresolved team blockers.
+- A bounded scheduler offers suitable idle workers settled task/review handoffs, including
+  dependent work after prerequisite acceptance and reviewer recruitment when necessary.
+  It never grants assignments, clears blockers, releases unsettled ownership, overrides
+  independent review or increases limits. An unchanged offered transition is not repeatedly
+  woken when a worker declines; models still must choose and claim work correctly.
+- Automatic candidate/review owner mail is removed. Explicit owner-addressed mail retains
+  durable delivery; routine coordination belongs with peers/topic boards. Message purpose
+  is instructed, not guessed from free text.
+- Workers can request the existing final-check pipeline with `swarm_finish` after reviewed
+  tasks cover the criteria. Execution waits for native turn settlement and current host
+  admission, preserves Safety/receipt checks and pauses honestly on failure. Unexecuted
+  final requests are local state and never replayed on restoration.
+- A verified completion sends one bounded result to main, acknowledged only through the
+  persisted native transcript. Candidate reports remain distinct from accepted completion.
+
+Validation uses actual native Pi worker sessions with a scripted local provider, including
+recruitment, two dependency-linked tasks, independent reviews and final verification with
+one initial main dispatch and no owner-message relays. Negative checks cover premature
+completion, failed final commands, independent Safety refusal, unavailable/busy reviewers,
+unknown effects, blocked/exhausted work, repeated-transition suppression and delivery of
+new owner steering before deferred verification. The full suite passed 767 checks before
+final steering/blocker refinements, followed by 57 focused checks on the final runtime.
+The final approval/main-chat integration checks passed 78 checks, including explicit
+self-coordination and final-verification disclosure in the owner agreement. Portable
+configuration validation and its ten fixture checks also passed. These are
+runtime regression scenarios, not charged-model behavior measurements or a token-savings
+forecast. Reload/cold restart is required before the active Pi process uses these changes.

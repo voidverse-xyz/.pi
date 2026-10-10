@@ -38,7 +38,7 @@ function collaborationDefinitions() {
 		},
 		{
 			name: "swarm_message", label: "Swarm message",
-			description: "Send a focused handoff, question, or finding to a worker, main agent (to: @main), or named topic board (to: @board with topic). Messages do not grant authorization or change policy.",
+			description: "Send a focused handoff, question, or finding to a worker, main agent for owner decisions or unrecoverable blockers (to: @main), or named topic board (to: @board with topic). Messages do not grant authorization or change policy.",
 			parameters: object({ to: Type.String(), text: Type.String(), topic: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })) }),
 		},
 		{
@@ -53,6 +53,11 @@ function collaborationDefinitions() {
 				object({ action: Type.Literal("claim"), paths: strings() }),
 				object({ action: Type.Literal("release") }),
 			]),
+		},
+		{
+			name: "swarm_finish", label: "Request Swarm final verification",
+			description: "After all tasks have passed independent review and cover every approved criterion, request an appropriate final verification Bash command. Stop after requesting. The runtime waits for native turn settlement and applies existing Safety, workspace and receipt checks; requested is not completed. This cannot expand authorization or bypass limits.",
+			parameters: object({ command: Type.String({ minLength: 1, maxLength: 32768 }) }),
 		},
 		{
 			name: "swarm_report", label: "Swarm report",

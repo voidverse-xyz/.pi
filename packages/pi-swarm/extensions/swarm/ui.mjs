@@ -58,6 +58,8 @@ export function approvalPacket(request) {
 		+ `${request.integrations ? `Mode gate: ${request.integrations.mode}\nWorker authorization: ${request.integrations.confirmations}\n` : ""}`
 		+ `${request.workerContexts ? `Worker contexts: ${request.workerContexts}. New native sessions; prior history is retained, not reused.\n` : ""}`
 		+ `${request.previousRunId ? `Prior settled run: ${request.previousRunId}. This proposal starts a separate objective, not a restart.\n` : ""}`
+		+ "Coordination: workers manage scoped tasks, peer handoffs, recruitment and independent review within approved limits; main handles owner approval, steering and decisions.\n"
+		+ "Completion: workers may request final verification using approved Bash access. Execution waits for native settlement and existing Safety/receipt checks; only verified completion is reported.\n"
 		+ "Preservation: keep existing work, the index, and generated changes. Swarm performs no automatic reset, stash, staging, commit, or rollback.\n"
 		+ `${request.repository === false ? "Project has no Git checkout metadata; existing files are preserved.\n" : ""}`
 		+ `${request.fingerprintScope ? `Startup fingerprint scope: ${request.fingerprintScope}\n` : ""}`

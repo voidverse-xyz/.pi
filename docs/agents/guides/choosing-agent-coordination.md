@@ -16,7 +16,7 @@ This guide is for agents selecting a workflow in this Pi configuration. Package 
 | Dimension | Subagents | Teams | Swarm |
 |---|---|---|---|
 | Best fit | Focused independent assignments | Ongoing specialist collaboration | End-to-end bounded objectives |
-| Coordination | Strict hub-and-spoke through main | Main coordination; optional peer messaging | Managed task and worker coordination |
+| Coordination | Strict hub-and-spoke through main | Main coordination; optional peer messaging | Workers coordinate execution; main bridges owner decisions |
 | Lifetime | One-shot or persistent | Persistent until explicitly retired | Persistent workers within a run; fresh contexts for a new objective |
 | Completion | Worker reports back | Assignment ends; specialist remains available | Independent review and recorded verification determine completion |
 | Relative overhead | Usually lowest | More coordination | Most governance and setup |
@@ -92,7 +92,9 @@ Agent practice:
 
 - Prepare and explain the complete agreement before execution. Only a new owner reply of exactly `start` approves an ordinary pending proposal; the original request is not launch confirmation.
 - Choose a bounded objective, explicit criteria, scope/exclusions, tools, and limits.
-- For bounded implementation, consider one initial implementer and recruit an independent reviewer after candidate settlement rather than creating a large team or an unnecessary planning worker.
+- Main acts as the owner interface, not the task dispatcher. Forward owner steering, handle actionable escalations and present results; let workers manage routine assignments and peer handoffs.
+- For bounded implementation, consider one initial implementer; workers recruit an independent reviewer after candidate settlement rather than creating a large team or an unnecessary planning worker. Settled board transitions offer bounded task/review wakes without main relays.
+- Workers request `swarm_finish` after independent task acceptance and criterion coverage. Runtime final verification produces the completion result; a request alone is not completion.
 - Model selections must use the available catalog, be disclosed, and remain pinned to the approved settings. Recommend and obtain permission before changing models.
 - Coordinate file claims and quiet verification windows; do not retry-loop behind peers retaining claims.
 - Candidate reports are not completion. Require independent review and fresh recorded verification.

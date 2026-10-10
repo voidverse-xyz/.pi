@@ -14,6 +14,7 @@ import { effectiveWorkerSelection, resolveModelSettings } from "./model-settings
 
 import { workerStatus, taskRows } from "./worker-context.mjs";
 import { usageLimitReason, measuredUsage } from "./usage.mjs";
+import { coordinationHandoffs } from "./coordination.mjs";
 
 const attached = new WeakSet();
 const terminal = new Set(["paused", "stopped", "completed", "failed"]);
@@ -69,6 +70,10 @@ export class SwarmSessions {
 	#closed = false;
 	#pumpQueued = false;
 	#drain = null;
+	#handoffs = new Set();
+	#finalRequest;
+	#finalizing;
+	#finalVerificationFailed = false;
 
 	constructor(controller, workspace, modelRuntime, tickIntervalMs, admission, providerCapability, resolveProviderCapability) {
 		this.#controller = controller;
@@ -91,7 +96,7 @@ export class SwarmSessions {
 	snapshot() {
 		return { queued: [...this.#queue.keys()], active: [...this.#active.keys()],
 			sdkIdle: [...this.#entries.values()].every(entry => entry.session?.isIdle === true),
-			errors: [...this.#errors], sessions: this.#controller.snapshot().sessions };
+			errors: [...this.#errors], finalVerificationFailed: this.#finalVerificationFailed, sessions: this.#controller.snapshot().sessions };
 	}
 
 	#recordError(error) {
@@ -164,7 +169,7 @@ export class SwarmSessions {
 		this.#controller.assertOwned();
 		const turn = entry.active;
 		const state = this.#controller.snapshot();
-		check(turn && !turn.signal.aborted && !signal?.aborted && state.status === "running", "FENCED", "Specialist turn is not active");
+		check(turn && !entry.finishing && !turn.signal.aborted && !signal?.aborted && state.status === "running", "FENCED", "Specialist turn is not active");
 		check(turn.cycle === state.cycle && turn.generation === state.generation && turn.guidanceRevision === state.guidanceRevision, "FENCED", "Specialist context changed");
 		check(state.sessions.turns.some(item => item.id === turn.id && item.kind === "prompt"), "FENCED", "Prompt turn has not been admitted");
 		return state;
@@ -226,11 +231,21 @@ export class SwarmSessions {
 				worker.release(); return { released: true };
 			}
 			case "swarm_report": {
-				const task = currentTask();
+				currentTask();
 				const worker = this.#workspace.worker(entry.workerId);
 				const result = await (params.action === "submit" ? worker.submit(params.summary, params.receipts) : worker.review(params.approved, params.summary));
-				await dispatch("message.send", { to: "owner", topic: task.id, text: `${params.action === "submit" ? "Candidate submitted; independent review still required" : "Review recorded; final verification still required"}: ${params.summary}`.slice(0, 32768) });
 				return result;
+			}
+			case "swarm_finish": {
+				check(typeof params.command === "string" && params.command.trim() && params.command.length <= 32768, "INPUT", "Final verification command required");
+				check(state.sessions.codingTools.includes("bash"), "AUTHORITY", "Final verification requires approved Bash access");
+				check(!this.#finalRequest && !this.#finalizing, "BUSY", "Final verification is already requested");
+				check(state.tasks.length > 0 && state.tasks.every(task => task.status === "done" && !task.assignment && !task.pending), "INCOMPLETE", "All tasks must independently complete first");
+				check(state.criteria.every((_, index) => state.tasks.some(task => task.criteria.includes(index))), "INCOMPLETE", "All acceptance criteria need completed task coverage");
+				check(!state.workspace.operations.length, "UNSETTLED", "Workspace operations must settle first");
+				this.#finalRequest = { command: params.command, turnId: turn.id, cycle: state.cycle, generation: state.generation, guidanceRevision: state.guidanceRevision };
+				entry.finishing = true;
+				return { requested: true, completed: false, settlementRequired: true };
 			}
 			case "read": currentTask(); return this.#workspace.worker(entry.workerId).read(params.path, call, params);
 			case "write":
@@ -258,7 +273,7 @@ export class SwarmSessions {
 	}
 
 	#pump() {
-		if (this.#quiescence || this.#usageBlocked) return;
+		if (this.#quiescence || this.#usageBlocked || this.#finalRequest || this.#finalizing) return;
 		try { this.#admission?.assert(); } catch { this.#queue.clear(); return; }
 		const state = this.#controller.snapshot();
 		if (this.#closed || state.status !== "running") { this.#queue.clear(); return; }
@@ -281,7 +296,9 @@ export class SwarmSessions {
 		}).finally(async () => {
 			this.#active.delete(workerId);
 			await this.#settleDrain();
+			await this.#finishRequested();
 			if (settled && !this.#usageBlocked && this.#controller.snapshot().status === "running" && pendingMail(this.#controller.snapshot(), workerId).length) this.#enqueue(workerId, "Remaining durable mail");
+			if (settled && kind === "prompt") this.#coordinate(workerId);
 			this.#pump();
 		});
 		this.#active.set(workerId, promise);
@@ -308,6 +325,7 @@ export class SwarmSessions {
 			throw error;
 		}
 		entry.active = context;
+		entry.finishing = false;
 		entry.usageDenied = false;
 		let abortPromise;
 		const abort = () => { entry.session.abortCompaction(); abortPromise ??= entry.session.abort(); void abortPromise.catch(error => this.#recordError(error)); };
@@ -348,6 +366,7 @@ export class SwarmSessions {
 					}
 				}
 			}
+			if (outcome !== "settled" && this.#finalRequest?.turnId === context.id) this.#finalRequest = undefined;
 			await this.#controller.system("session.turn.end", { id: context.id, outcome });
 			entry.active = null;
 			const task = this.#controller.snapshot().tasks.find(task => task.assignment?.workerId === workerId);
@@ -355,6 +374,39 @@ export class SwarmSessions {
 		}
 		if (failure && !context.signal.aborted) throw failure;
 		return outcome;
+	}
+
+	#coordinate(preferredWorkerId) {
+		if (this.#closed || this.#quiescence || this.#usageBlocked || this.#finalRequest || this.#finalizing) return;
+		const unavailable = new Set([...this.#active.keys(), ...this.#queue.keys()]);
+		const handoffs = coordinationHandoffs(this.#controller.snapshot(), unavailable, this.#handoffs, preferredWorkerId);
+		for (const handoff of handoffs) {
+			if (this.#enqueue(handoff.workerId, handoff.reason)) this.#handoffs.add(handoff.key);
+		}
+	}
+
+	async #finishRequested() {
+		if (!this.#finalRequest || this.#active.size || this.#finalizing) return;
+		const request = this.#finalRequest;
+		this.#finalRequest = undefined;
+		const state = this.#controller.snapshot();
+		if (state.status !== "running" || request.cycle !== state.cycle || request.generation !== state.generation || request.guidanceRevision !== state.guidanceRevision || this.#usageBlocked) return;
+		// Deliver new steering/mail before completing; do not discard admitted handoffs.
+		if (this.#queue.size || state.workers.some(worker => pendingMail(state, worker.id).length)) {
+			this.#handoffs.delete(`${state.cycle}:${state.generation}:${state.guidanceRevision}:final:${state.workspace.fingerprint}`);
+			return;
+		}
+		// Completion is owned by the existing receipt/Safety pipeline after native turns settle.
+		this.#finalizing = this.#workspace.finalCheck(request.command);
+		try { await this.#finalizing; }
+		catch (error) {
+			this.#finalVerificationFailed = true;
+			this.#recordError(error);
+			if (["running", "verifying"].includes(this.#controller.snapshot().status)) {
+				try { await this.#controller.system("run.pause"); } catch (failure) { this.#recordError(failure); }
+			}
+		} finally { this.#finalizing = undefined; }
+		await this.#settleDrain();
 	}
 
 	async #settleDrain() {
@@ -416,6 +468,7 @@ export class SwarmSessions {
 		check(!this.#active.size && !this.#drain, "UNSETTLED", "Settle session preparation and execution before continuation");
 		check(restart || !usageLimitReason(this.#controller.snapshot()), "USAGE_LIMIT", "Explicit restart/fresh objective required for exhausted or unmeasured model allowance");
 		await this.#controller.owner(restart ? "run.restart" : "run.resume", { reconciled });
+		this.#finalVerificationFailed = false;
 		this.#usageBlocked = Boolean(usageLimitReason(this.#controller.snapshot()));
 	}
 
@@ -474,7 +527,7 @@ export class SwarmSessions {
 		};
 		signal?.addEventListener("abort", release, { once: true });
 		try {
-			while (this.#active.size || this.#controller.snapshot().sessions.turns.length || this.#drain) {
+			while (this.#active.size || this.#controller.snapshot().sessions.turns.length || this.#drain || this.#finalizing) {
 				signal?.throwIfAborted();
 				check(this.#controller.snapshot().sessions.turns.every(turn => this.#active.has(turn.workerId)),
 					"UNSETTLED", "Journaled orphan turns require explicit reconciliation");
@@ -509,10 +562,11 @@ export class SwarmSessions {
 	}
 
 	async idle() {
-		while (this.#active.size || (!this.#quiescence && this.#queue.size) || this.#pumpQueued || this.#drain) {
+		while (this.#active.size || (!this.#quiescence && this.#queue.size) || this.#pumpQueued || this.#drain || this.#finalizing) {
 			this.#pump();
 			await Promise.allSettled([...this.#active.values()]);
 			if (this.#drain) await this.#drain;
+			if (this.#finalizing) await this.#finalizing.catch(() => { });
 			await Promise.resolve();
 		}
 	}
@@ -527,13 +581,13 @@ export class SwarmSessions {
 	/** Read-only settlement check; must not construct, cancel or dispose sessions. */
 	assertReplaceable() {
 		const state = this.snapshot();
-		check(!state.active.length && !state.queued.length && !this.#drain && !this.#pumpQueued,
+		check(!state.active.length && !state.queued.length && !this.#drain && !this.#pumpQueued && !this.#finalizing && !this.#finalRequest,
 			"UNSETTLED", "Queued or live SDK work remains unsettled");
 		check(state.sdkIdle, "UNSETTLED", "SDK session preparation or work remains unsettled");
 	}
 
 	async close() {
-		check(!this.#active.size && !this.#queue.size && !this.#drain, "UNSETTLED", "Pause and settle before closing SDK sessions");
+		check(!this.#active.size && !this.#queue.size && !this.#drain && !this.#finalizing, "UNSETTLED", "Pause and settle before closing SDK sessions");
 		check(terminal.has(this.#controller.snapshot().status), "STATE", "Pause or stop before close");
 		for (const entry of this.#entries.values()) {
 			await entry.ready;

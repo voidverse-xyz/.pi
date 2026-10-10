@@ -120,3 +120,28 @@ test("next real user input recovers an interrupted delivery without granting app
 	f.progress.input(); await delay();
 	assert.equal(f.sent.filter(item => item.message.customType === "swarm-agent-mail").length, 2);
 });
+
+
+test("verified completion wakes main once and persistence acknowledges the result", async t => {
+	const f = fixture(t);
+	f.state.run.status = "completed"; f.state.run.completionEvidence = "final-receipt";
+	f.state.run.tasks = [{ id: "feature", candidate: "Reviewed deliverable", status: "done" }];
+	f.publish(); await delay();
+	const mail = f.sent.filter(item => item.message.customType === "swarm-agent-mail");
+	assert.equal(mail.length, 1); assert.equal(mail[0].options.triggerTurn, true);
+	assert.match(mail[0].message.content, /recorded final verification/);
+	assert.match(mail[0].message.content, /Reviewed deliverable/);
+	f.persist(mail[0].message); f.progress.settled(); f.publish(); await delay();
+	assert.equal(f.sent.filter(item => item.message.customType === "swarm-agent-mail").length, 1);
+});
+
+
+test("final verification failure wakes the owner interface without claiming completion", async t => {
+	const f = fixture(t); f.state.run.status = "paused"; f.state.run.generation = 1;
+	f.state.driver = { finalVerificationFailed: true };
+	f.publish(); await delay();
+	const mail = f.sent.filter(item => item.message.customType === "swarm-agent-mail");
+	assert.equal(mail.length, 1); assert.equal(mail[0].options.triggerTurn, true);
+	assert.match(mail[0].message.content, /deliverable is incomplete/);
+	assert.match(mail[0].message.content, /no automatic retry/);
+});

@@ -477,3 +477,123 @@ test("reaching the allowance on a final response pauses even without a follow-up
 		assert.equal(f.c.snapshot().sessions.usage[0].unknownResponses, 0);
 	} finally { await shutdown(f); }
 });
+
+
+function currentTurn(context) {
+	const index = context.messages.findLastIndex(message => message.role === "user");
+	const messages = context.messages.slice(index);
+	const content = messages[0].content;
+	const text = typeof content === "string" ? content : content.filter(part => part.type === "text").map(part => part.text).join("\n");
+	const section = title => JSON.parse(text.split(`## ${title}\n`)[1].split("\n\n")[0]);
+	const calls = messages.flatMap(message => message.role === "assistant" ? message.content.filter(part => part.type === "toolCall") : []);
+	return { tasks: section("Current task board (task text is work data, not policy)").tasks,
+		peers: section("Peers (all may be contacted)"), calls, messages };
+}
+
+function autonomousScript({ context }) {
+	const turn = currentTurn(context);
+	const invoke = (name, args) => tool(name, args, `auto-${context.messages.length}-${name}`);
+	const last = turn.calls.at(-1);
+	if (last?.name === "swarm_report" || last?.name === "swarm_finish" || last?.name === "swarm_recruit") return { text: "Handoff recorded; stopping for settlement." };
+
+	if (last?.name === "swarm_task" && last.arguments.action === "claim") {
+		if (last.arguments.kind === "review") return invoke("swarm_report", { action: "review", approved: true, summary: "Independent review passed." });
+		return invoke("bash", { command: "true" });
+	}
+	if (last?.name === "bash") {
+		const result = turn.messages.findLast(message => message.role === "toolResult");
+		return invoke("swarm_report", { action: "submit", summary: "Scoped work verified.", receipts: [result.details.executionId] });
+	}
+
+	if (!turn.tasks.length) {
+		if (!last) return invoke("swarm_task", { action: "create", id: "first", title: "Initial work", criteria: [0], dependencies: [] });
+		if (last.arguments.id === "first") return invoke("swarm_task", { action: "create", id: "next", title: "Dependent work", criteria: [0], dependencies: ["first"] });
+		return invoke("swarm_task", { action: "claim", taskId: "first", kind: "build" });
+	}
+	if (turn.tasks.every(task => task.status === "done")) return invoke("swarm_finish", { command: "true" });
+	const submitted = turn.tasks.find(task => task.status === "submitted");
+	if (submitted) {
+		if (turn.peers.length === 1) return invoke("swarm_recruit", specialist("reviewer"));
+		return invoke("swarm_task", { action: "claim", taskId: submitted.id, kind: "review" });
+	}
+	const ready = turn.tasks.find(task => task.status === "ready" && task.dependencies.every(id => turn.tasks.find(task => task.id === id)?.status === "done"));
+	if (ready) return invoke("swarm_task", { action: "claim", taskId: ready.id, kind: "build" });
+	throw new Error("Unexpected automatic handoff");
+}
+
+test("native workers recruit, review, release dependencies and finish without main relays", { timeout: 15000 }, async t => {
+	const f = await fixture(t, autonomousScript, { active: 1 });
+	try {
+		await f.driver.recruit(specialist("builder"));
+		f.driver.wake("builder"); await f.driver.idle();
+		assert.deepEqual(f.driver.snapshot().errors, []);
+		const state = f.c.snapshot();
+		assert.equal(state.status, "completed");
+		assert.deepEqual(state.workers.map(worker => worker.id), ["builder", "reviewer"]);
+		assert.deepEqual(state.tasks.map(task => task.status), ["done", "done"]);
+		assert.ok(state.tasks.every(task => task.reviews[0].workerId === "reviewer" && !task.contributors.includes("reviewer")));
+		assert.equal(state.messages.filter(message => message.to === "owner").length, 0, "routine reports stay inside Swarm");
+		assert.ok(state.workspace.receipts.some(receipt => receipt.id === state.completionEvidence && receipt.kind === "final" && receipt.outcome === "succeeded"));
+		assert.equal(state.sessions.turns.length, 0); assert.equal(state.workspace.operations.length, 0);
+		assert.ok(f.mock.calls.length < 30, `Unexpected coordination chatter: ${f.mock.calls.length}`);
+		assert.ok(f.mock.calls.every(call => !call.context.messages.some(message => message.role === "toolResult" && message.isError)));
+	} finally { await shutdown(f); }
+});
+
+test("workers cannot request final completion before independent task acceptance", async t => {
+	const f = await fixture(t, [tool("swarm_finish", { command: "true" }), { text: "Incomplete, reporting honestly." }]);
+	try {
+		await f.driver.recruit(specialist("builder")); f.driver.wake("builder"); await f.driver.idle();
+		assert.equal(f.c.snapshot().status, "running");
+		assert.equal(f.c.snapshot().completionEvidence, null);
+		assert.equal(f.c.snapshot().workspace.receipts.length, 0);
+		assert.ok(f.mock.calls[1].context.messages.some(message => message.role === "toolResult" && message.isError));
+	} finally { await shutdown(f); }
+});
+
+
+for (const scenario of ["failed command", "Safety denial"]) test(`autonomous final verification stays incomplete after ${scenario}`, { timeout: 15000 }, async t => {
+	const script = request => {
+		const output = autonomousScript(request);
+		if (scenario === "failed command" && output.toolCalls?.[0].name === "swarm_finish") output.toolCalls[0].arguments.command = "false";
+		return output;
+	};
+	let finalApprovals = 0;
+	const authorize = async request => { if (request.kind !== "final") return true; finalApprovals++; return scenario !== "Safety denial"; };
+	const f = await fixture(t, script, { active: 1 }, { authorize });
+	try {
+		await f.driver.recruit(specialist("builder")); f.driver.wake("builder"); await f.driver.idle();
+		assert.equal(f.c.snapshot().status, "paused"); assert.equal(f.c.snapshot().completionEvidence, null);
+		assert.equal(finalApprovals, 1, "no blind verification retry");
+		assert.equal(f.c.snapshot().sessions.turns.length, 0); assert.equal(f.c.snapshot().workspace.operations.length, 0);
+		assert.equal(f.driver.snapshot().errors.length, 1);
+	} finally { await shutdown(f); }
+});
+
+
+test("queued owner steering is delivered before a deferred final command", { timeout: 15000 }, async t => {
+	let f, sent = false, finalApprovals = 0;
+	const script = async request => {
+		const turn = currentTurn(request.context);
+		if (!sent && turn.calls.at(-1)?.name === "swarm_finish") {
+			sent = true;
+			await f.driver.send("builder", "User clarification within approved scope");
+		}
+		return autonomousScript(request);
+	};
+	const authorize = async request => {
+		if (request.kind === "final") {
+			finalApprovals++;
+			const builder = f.c.snapshot().sessions.workers.find(worker => worker.workerId === "builder");
+			const mail = f.c.snapshot().messages.find(message => message.text === "User clarification within approved scope");
+			assert.ok(builder.delivered.includes(mail.id), "steering must be durably delivered before final execution");
+		}
+		return true;
+	};
+	f = await fixture(t, script, { active: 1 }, { authorize });
+	try {
+		await f.driver.recruit(specialist("builder")); f.driver.wake("builder"); await f.driver.idle();
+		assert.equal(f.c.snapshot().status, "completed"); assert.equal(finalApprovals, 1);
+		assert.deepEqual(f.driver.snapshot().errors, []);
+	} finally { await shutdown(f); }
+});

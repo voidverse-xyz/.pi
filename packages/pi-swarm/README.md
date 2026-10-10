@@ -291,6 +291,47 @@ sandbox: shell commands must not bypass this boundary. Non-ignored submodule eff
 are included in before/after receipts; indirect ignored-file effects remain outside
 coverage. No submodule commits, resets, updates or cleanup are performed by inspection.
 
+## Self-coordination and the main-agent boundary
+
+The main agent is the interface between the owner and Swarm: it proposes the full
+agreement, obtains owner approval, forwards steering, handles owner decisions and
+presents the result. Workers own decomposition, task claims, dependencies, recruitment,
+file handoffs, verification and independent review within that agreement. Main should
+not dispatch each task, relay routine peer messages or repeatedly poll transcripts.
+
+After a native worker turn and its assignment settle, the runtime offers eligible idle
+workers bounded handoff wakes for ready tasks and independent review. Completing a
+prerequisite makes dependent work eligible. A wake grants no assignment: the worker must
+inspect current state and claim through the existing admission checks. One offer per
+board transition avoids model-driven polling or an endless loop when a worker declines.
+Busy/assigned workers retain ownership. Blockers, unknown effects and exhausted task
+allowances are not automatically cleared. Workers reuse peers or recruit within approved
+limits; missing review capacity is an owner escalation, never self-approval.
+
+Candidate/review reports remain on the board and no longer automatically send mail to
+main. Workers send routine coordination to peers/topics; `@main` is for owner decisions,
+unclear authorization or blockers the team cannot resolve. Explicit main-addressed mail
+retains durable delivery. This is routing guidance, not a claim that every message is
+semantically classified by the runtime.
+
+When every task has passed independent review and covers the approved criteria, a worker
+can call `swarm_finish` with an appropriate final verification Bash command, then stop.
+The request is not completion. The runtime waits for native turns to settle, rechecks
+cycle/generation/guidance and admission, and uses the existing final-check pipeline with
+Safety, workspace fingerprints and execution receipts. Bash must already be approved;
+failed/denied verification pauses without retry or invented success. A cancelled, failed
+or superseded request is not replayed. An unexecuted request is local runtime state;
+restoration does not recover it as authorization to execute.
+
+Final verification failure/refusal sends an actionable incomplete-result notice to main.
+New queued owner steering is delivered before a deferred final command; it is not discarded.
+Verified completion delivers one compact result to main through the existing persisted
+mail acknowledgment path. It is not commit, push or deployment authorization. Loading,
+restoration, status inspection and paused/stopped runs never dispatch these handoffs.
+Worker model/time/task limits, no-self-approval and unknown-settlement protections remain
+unchanged. Bounded offers improve handoffs; they do not guarantee that a model takes the
+right next action or that a team with no independent review capacity can complete.
+
 ## Workers and safeguards
 
 Workers use Pi's native `read`, `edit`, `write` and `bash` definitions, schemas, rendering,
@@ -541,6 +582,15 @@ or deletion occurs.
 | `dashboard.mjs`, `focus.mjs`, `composer.mjs`, `transcript.mjs`, `progress.mjs` | Read-only mail inspection, Steer transcripts/composer and event-driven notices |
 
 ## Verification
+
+For a focused self-coordination regression run from this package directory:
+
+```sh
+node --experimental-import-meta-resolve --import ./test/sdk-register.mjs --test --test-name-pattern='native workers recruit|cannot request final|autonomous final|queued owner steering|verified completion|final verification failure|only independent|dependency settlement|missing reviewer|paused, unknown|final verification wake' test/coordination.test.mjs test/sdk-driver.test.mjs test/mail.test.mjs
+```
+
+This uses real native Pi sessions and guarded operations with an offline scripted provider;
+it does not measure live-model judgment or quota savings. `npm test` runs the complete suite.
 
 Tests resolve the managed installation automatically. `PI_SDK_DIR` overrides the SDK
 package directory; `PI_BIN` overrides the JavaScript CLI entry, **not** the managed shell
