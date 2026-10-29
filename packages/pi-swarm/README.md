@@ -699,7 +699,7 @@ chat confirmation with offline scripted models, plus independent Safety policy d
 `/fixture-swarm` command in some harnesses drives the registered main tools; it is never
 registered by the production package. No paid/live-provider trial is part of these checks.
 
-On Windows, `scripts/swarm-wsl-test.sh --pty` tests the current worktree inside WSL.
+On Windows, `test/wsl.sh --pty` tests the current worktree inside WSL.
 Read the script's prerequisites first. It retains a unique test checkout and logs under
 `~/swarm-runs/`, without replacing prior runs. This verifies Linux behavior, not Windows.
 

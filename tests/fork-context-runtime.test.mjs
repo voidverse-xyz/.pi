@@ -2,8 +2,8 @@ import { unlinkSync } from "node:fs";
 import test from "node:test";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { EXT, jiti } from "../pi-subagents/test/e2e/env.mjs";
-import { makeWorld, piSdk } from "../pi-subagents/test/e2e/harness.mjs";
+import { EXT, jiti } from "../packages/pi-subagents/test/e2e/env.mjs";
+import { makeWorld, piSdk } from "../packages/pi-subagents/test/e2e/harness.mjs";
 
 const world = await makeWorld("fork-context");
 world.writeDef("scout", "You are the independent SCOUT_ROLE.");

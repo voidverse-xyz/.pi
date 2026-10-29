@@ -601,7 +601,7 @@ test("queued owner steering is delivered before a deferred final command", { tim
 
 test("Swarm fork defaults and per-worker overrides preserve native identity, history and request accounting", async t => {
 	const { SessionManager } = await import("@earendil-works/pi-coding-agent");
-	const { captureWorkerContext } = await import("../../shared/worker-context.mjs");
+	const { captureWorkerContext } = await import("../extensions/swarm/context/fork.mjs");
 	const parent = SessionManager.inMemory("/fixture-parent");
 	parent.appendMessage({ role: "user", content: "APPROVED_PARENT_SCHEMA", timestamp: 1 });
 	const seed = captureWorkerContext({ sessionManager: parent, getContextUsage: () => ({ percent: 80 }) }, "fork");
