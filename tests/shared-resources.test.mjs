@@ -13,11 +13,10 @@ test("Pi discovers the shared skills through its compatibility directory", async
   try {
     const { loadSkills } = await import(pathToFileURL(join(findPiPackage(), "dist/index.js")).href);
     const result = loadSkills({ cwd: temporary, agentDir: join(root, "agent"), skillPaths: [], includeDefaults: true });
-    assert.equal(result.skills.length, 37);
+    assert.equal(result.skills.length, 32);
     assert.deepEqual(result.diagnostics, []);
     const names = new Set(result.skills.map((skill) => skill.name));
-    assert.ok(names.has("coding"));
-    for (const oldName of ["code-conventions", "readable-code", "reviewable-code"]) {
+    for (const oldName of ["coding", "code-conventions", "readable-code", "reviewable-code", "api-endpoint-blueprint", "frontend-backend-call", "live-notifications", "i18n"]) {
       assert.equal(names.has(oldName), false, `${oldName} must not remain discoverable`);
     }
     for (const skill of result.skills) {
