@@ -32,8 +32,11 @@ test("all configured packages register together in isolated offline Pi", () => {
     assert.equal(records.some((record) => record.type === "extension_error" || record.success === false), false, result.stdout);
     assert.doesNotMatch(result.stderr, /failed to load|extension error|invalid theme/i);
     const commands = records.find((record) => record.id === "commands")?.data?.commands ?? [];
-    for (const name of ["plan", "safety", "subagents", "teams", "procedures", "swarm", "handoff", "prune", "matrix", "tools"]) {
+    for (const name of ["plan", "safety", "subagents", "teams", "procedures", "swarm", "handoff", "prune", "tools"]) {
       assert.ok(commands.some((command) => command.name === name), `missing command ${name}`);
+    }
+    for (const name of ["matrix", "working-animation"]) {
+      assert.equal(commands.some((command) => command.name === name), false, `retired command ${name} must stay absent`);
     }
     const tools = JSON.parse(readFileSync(output, "utf8"));
     for (const name of ["subagent_spawn", "team_spawn", "procedure", "todo_write", "web_search", "image_generation", "ask_user", "show_files", "swarm_start"]) {

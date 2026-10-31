@@ -10,7 +10,7 @@ const failures = [];
 const notes = [];
 
 const EXPECTED_PACKAGE_COUNT = 32;
-const EXPECTED_SKILL_COUNT = 37;
+const EXPECTED_SKILL_COUNT = 32;
 const AGENT_PACKAGE_PREFIX = "./packages/";
 
 function fail(message) {
