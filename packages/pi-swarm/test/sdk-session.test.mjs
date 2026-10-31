@@ -441,7 +441,7 @@ for (const cancel of [false, true]) test(`automatic compaction ${cancel ? 'cance
 
 test("a bound fork with missing native history is fenced rather than reseeded", async t => {
 	const { SessionManager } = await import("@earendil-works/pi-coding-agent");
-	const { captureWorkerContext } = await import("../../shared/worker-context.mjs");
+	const { captureWorkerContext } = await import("../extensions/swarm/context/fork.mjs");
 	const { unlinkSync } = await import("node:fs");
 	const f = await fixture(t);
 	const parent = SessionManager.inMemory(f.options.cwd);

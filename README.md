@@ -252,7 +252,7 @@ Run:
 
 ```bash
 node scripts/validate-global-config.mjs
-node --test scripts/validate-global-config.test.mjs
+node --test tests/validate-global-config.test.mjs
 node tests/typecheck.mjs
 python3 .agents/tests/shotcut.test.py -v
 git diff --check

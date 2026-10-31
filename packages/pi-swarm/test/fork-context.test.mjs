@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { captureWorkerContext, seedWorkerSession, assertWorkerContextReady, selectWorkerContext, validateWorkerContext, workerSessionStats } from "./worker-context.mjs";
+import { captureWorkerContext, seedWorkerSession, assertWorkerContextReady, selectWorkerContext, validateWorkerContext, workerSessionStats } from "../extensions/swarm/context/fork.mjs";
 
 function parentContext(percent) {
 	const manager = SessionManager.inMemory("/fixture");

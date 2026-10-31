@@ -2,7 +2,7 @@
 # Run the pi-swarm test suite on Linux (WSL) against a Windows worktree's current state.
 #
 # Usage (from Git Bash on Windows):
-#   scripts/swarm-wsl-test.sh [--pty] [--distro NAME] [WORKTREE]
+#   packages/pi-swarm/test/wsl.sh [--pty] [--distro NAME] [WORKTREE]
 #
 #   WORKTREE   Windows git worktree to test (default: the current repository root).
 #              Its HEAD commit, uncommitted diff and untracked files are all included.

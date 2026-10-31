@@ -10,16 +10,13 @@ declared package dependencies. Optional integrations must remain optional when a
 Resolve resources through the package location or Pi's configured agent/project paths;
 never assume the user installed the full configuration repository at a fixed location.
 
-The context-fork helper is bundled in `extensions/teams/context/fork.mjs`
-with its type declaration. The parent repository's `packages/shared/worker-context.*`
-files are development sources only, not runtime dependencies. When working in the full
-repository, edit that canonical source, then run
-`node scripts/sync-worker-context.mjs --write` and
-`node scripts/sync-worker-context.mjs --check` from its root. Do not let the bundled
-copies drift.
+The context-fork helper in `extensions/teams/context/fork.mjs` and its type declaration
+belong to this package alone. Change them here without copying from, or synchronizing
+with, another extension; the other coordination packages keep their own versions.
+Its unit tests are in `test/fork-context.test.mjs`.
 
 Before publishing changes, run the relevant package checks and the standalone portability
-tests in `packages/shared/portable-extensions.test.mjs` from the full repository. Those
+tests in `tests/portable-extensions.test.mjs` from the full repository. Those
 tests copy one package at a time, check import boundaries, load it with Pi's own loader,
 and exercise a native forked worker. Preserve the package's manifest, supported runtime
 contracts and independent resource discovery. Portability does not justify claiming

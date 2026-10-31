@@ -20,14 +20,13 @@ for (const configured of packages) {
   const directory = resolve(root, "agent", configured);
   for (const file of walk(directory)) {
     if (/\.test\.(?:ts|mjs)$/.test(file)) {
-      files.push(file.endsWith("pi-tool-monitor/test/tool-monitor.test.ts") ? join(directory, "test/run.mjs") : file);
+      files.push(file.endsWith(join("pi-tool-monitor", "test", "tool-monitor.test.ts")) ? join(directory, "test/run.mjs") : file);
     } else if (integration && /[\\/]test[\\/]e2e[\\/](?:phase\d[^/\\]*|loadcheck|lifecycle-runtime|wake-policy)\.mjs$/.test(file)) {
       files.push(file);
     }
   }
 }
-files.push(...walk(join(root, "packages/shared")).filter(file => /\.test\.mjs$/.test(file)));
-files.push(...["runtime.test.mjs", "managed-runtime.test.mjs", "standalone-invocation.test.mjs", "shared-resources.test.mjs"].map((name) => join(root, "tests", name)));
+files.push(...["runtime.test.mjs", "managed-runtime.test.mjs", "standalone-invocation.test.mjs", "shared-resources.test.mjs", "fork-context-runtime.test.mjs", "portable-extensions.test.mjs"].map((name) => join(root, "tests", name)));
 const results = [];
 for (const [index, file] of [...new Set(files)].sort().entries()) {
   const log = join(logs, `${String(index).padStart(3, "0")}.log`);

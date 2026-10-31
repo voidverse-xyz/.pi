@@ -2,13 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { createPiJiti, findPiPackage } from "../../tests/runtime.mjs";
-import { makeWorld, piSdk } from "../pi-subagents/test/e2e/harness.mjs";
-import { createMockRuntime } from "../pi-swarm/test/sdk-env.mjs";
+import { createPiJiti, findPiPackage } from "./runtime.mjs";
+import { makeWorld, piSdk } from "../packages/pi-subagents/test/e2e/harness.mjs";
+import { createMockRuntime } from "../packages/pi-swarm/test/sdk-env.mjs";
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { loadExtensions } = await import(pathToFileURL(join(findPiPackage(), "dist/core/extensions/loader.js")).href);
 const packages = [["pi-subagents", "subagents", 7], ["pi-teams", "teams", 9], ["pi-swarm", "swarm", 5]];
 
@@ -23,11 +23,10 @@ for (const [name, extension, toolCount] of packages) test(`${name} runs alone wi
 		const source = readFileSync(file, "utf8");
 		for (const match of source.matchAll(/(?:from\s*|import\s*\(\s*)["'](\.[^"']+)["']/g)) {
 			const target = resolve(dirname(file), match[1]);
-			assert.ok(target.startsWith(directory + "/"), `${name}: runtime import escapes its package: ${match[1]}`);
+			assert.ok(target.startsWith(directory + sep), `${name}: runtime import escapes its package: ${match[1]}`);
 			assert.ok(existsSync(target), `${name}: missing local dependency: ${match[1]}`);
 		}
 	}
-	for (const suffix of ["mjs", "d.mts"]) assert.equal(readFileSync(join(base, "context", `fork.${suffix}`), "utf8"), readFileSync(join(root, "packages/shared", `worker-context.${suffix}`), "utf8"), "bundled copies must match canonical source");
 	const agentDir = join(temporary, "agent"); mkdirSync(agentDir);
 	const loaded = await loadExtensions([join(directory, "extensions", name === "pi-swarm" ? "index.ts" : `${extension}/index.ts`)], agentDir);
 	assert.deepEqual(loaded.errors, []); assert.equal(loaded.extensions.length, 1);
