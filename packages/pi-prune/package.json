@@ -1,0 +1,17 @@
+{
+  "name": "pi-prune",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Provides /prune to delete the current session and start a new one.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

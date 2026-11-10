@@ -1,0 +1,16 @@
+{
+  "name": "pi-git-status",
+  "version": "1.2.0",
+  "description": "Publishes cwd and rich Git state for Pi's shared status layout.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

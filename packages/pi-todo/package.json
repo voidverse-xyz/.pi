@@ -1,0 +1,20 @@
+{
+	"name": "pi-todo",
+	"version": "0.1.0",
+	"type": "module",
+	"description": "Claude Code-style todo list: transition-safe whole-list updates, task-pivot cleanup, a width-safe live widget, alt+o view cycling, and branch-correct session restore.",
+	"keywords": [
+		"pi-package"
+	],
+	"pi": {
+		"extensions": [
+			"./extensions"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	}
+}

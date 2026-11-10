@@ -1,0 +1,17 @@
+{
+  "name": "pi-browse",
+  "version": "1.0.1",
+  "description": "/browse — a native TUI file & directory tree browser with add-to-chat.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

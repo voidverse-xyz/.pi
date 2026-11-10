@@ -1,0 +1,7 @@
+{
+  "app.thinking.cycle": "alt+t",
+  "app.model.cycleForward": "alt+m",
+  "app.message.dequeue": "alt+up",
+  "tui.editor.deleteWordBackward": ["ctrl+w", "alt+backspace", "ctrl+backspace"],
+  "tui.editor.deleteWordForward": ["alt+d", "alt+delete", "ctrl+delete"]
+}

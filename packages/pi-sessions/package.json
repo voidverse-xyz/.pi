@@ -1,0 +1,17 @@
+{
+  "name": "pi-sessions",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Provides /sessions as an alias for Pi's /resume command.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

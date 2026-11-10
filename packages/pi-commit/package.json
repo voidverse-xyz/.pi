@@ -1,0 +1,19 @@
+{
+  "name": "pi-commit",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "/commit — a native TUI for layered Git review and path-scoped commits.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

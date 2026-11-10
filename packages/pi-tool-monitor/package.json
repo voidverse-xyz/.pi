@@ -1,0 +1,20 @@
+{
+  "name": "pi-tool-monitor",
+  "version": "1.1.0",
+  "description": "Publishes plain running-tool status for the shared footer, plus a scrollable /tools detail panel.",
+  "keywords": [
+    "pi-package"
+  ],
+  "scripts": {
+    "test": "node ./test/run.mjs"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

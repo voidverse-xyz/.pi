@@ -1,0 +1,18 @@
+{
+  "name": "pi-notify-user",
+  "version": "1.0.0",
+  "description": "notify_user tool for end-of-turn success, warning, and error bands with an optional immediate urgent toast.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}

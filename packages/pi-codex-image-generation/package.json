@@ -1,0 +1,19 @@
+{
+  "name": "pi-codex-image-generation",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Pi image_generation tool backed by Codex native image generation and the existing ChatGPT login.",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  }
+}

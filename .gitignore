@@ -1,0 +1,144 @@
+# Pi credentials and private provider configuration.
+/auth.json*
+/oauth.json*
+/models.json*
+
+# Pi runtime state, caches, managed installs, and migration quarantine.
+/sessions/
+/trust.json*
+/models-store.json*
+/npm/
+/install/
+/git/
+/bin/
+/tools/
+/tmp/
+/pi-debug.log*
+/settings.json.bak*
+/settings.json.lock
+
+# Same runtime/private files when this repository is cloned one level above
+# Pi's effective agent directory (repo at ~/.pi, live config at ~/.pi/agent).
+/agent/auth.json*
+/agent/oauth.json*
+/agent/models.json*
+/agent/sessions/
+/agent/trust.json*
+/agent/models-store.json*
+/agent/npm/
+/agent/install/
+/agent/git/
+/agent/bin/
+/agent/tools/
+/agent/tmp/
+/agent/pi-debug.log*
+/agent/settings.json.bak*
+/agent/settings.json.lock
+
+# Extension-owned mutable settings, state, and audit output.
+/safety.json
+/safety-audit.jsonl*
+/command-safety.json
+/command-safety-audit.jsonl*
+/void-agent.json
+/status-line.json
+/subagent-asklimit.json
+/subagents.json
+/teams.json
+/procedures.json
+/commit.json
+/mcp.json
+/mcp-auth.json*
+/mcp.log*
+/changes-*.patch
+/agent/safety.json
+/agent/safety-audit.jsonl*
+/agent/command-safety.json
+/agent/command-safety-audit.jsonl*
+/agent/void-agent.json
+/agent/status-line.json
+/agent/subagent-asklimit.json
+/agent/subagents.json
+/agent/teams.json
+/agent/procedures.json
+/agent/commit.json
+/agent/mcp.json
+/agent/mcp-auth.json*
+/agent/mcp.log*
+/agent/changes-*.patch
+
+# Root runtime output.
+/*.jsonl
+/*.log
+/*.sqlite*
+/*.db*
+/*.tmp-*
+/agent/*.jsonl
+/agent/*.log
+/agent/*.sqlite*
+/agent/*.db*
+/agent/*.tmp-*
+
+# Local host-specific Codex configuration and runtime state.
+codex/configs/config.toml
+codex/configs/*.local.toml
+codex/configs/auth.json
+codex/configs/history.jsonl
+codex/configs/session_index.jsonl
+codex/configs/*.sqlite*
+codex/configs/cache/
+codex/configs/sessions/
+codex/configs/archived_sessions/
+codex/configs/logs/
+codex/configs/tmp/
+codex/configs/.tmp/
+
+# Managed dependencies, virtual environments, and tool caches.
+**/node_modules/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.cache/
+**/.venv/
+**/venv/
+**/coverage/
+
+# Legacy local records remain quarantined; new artifacts use .agents/artifacts/.
+# That path belongs to the submodule and is ignored by .agents/.gitignore.
+/docs/
+
+# Local agent state and setup bundles.
+/.claude/
+/archive/
+/archive/*.zip
+
+# Credentials, private keys, and SSH material.
+.ssh/
+**/id_rsa
+**/id_ed25519
+**/id_ecdsa
+**/id_dsa
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Environment files; sanitized templates remain trackable.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+/.worktrees/
+
+# Host and editor artifacts.
+.DS_Store
+Thumbs.db
+desktop.ini
+*~
+*.swp
+*.swo
+*.tmp
+*.bak
