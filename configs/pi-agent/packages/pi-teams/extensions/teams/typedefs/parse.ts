@@ -9,8 +9,9 @@
  * duplicate keys are hard errors with line numbers — a type author gets a clear
  * message, never a silently mis-parsed capability grant.
  *
- * Slim schema (D20): name, description, model, thinking, projectContext, tools.
- * v1's readOnly/writePaths/denyPaths and budget ceilings are gone (no pi-teams
+ * Slim schema (D20): name, description, model, thinking, projectContext, tools,
+ * peers, peerScope, and peerTypes. v1's readOnly/writePaths/denyPaths and budget
+ * ceilings are gone (no pi-teams
  * territory sandbox; pi-safety gates risk).
  *
  * Pure module: no fs.
@@ -33,6 +34,10 @@ export interface TypeConfig {
 	 * agent coordinates the team — everything cross-agent routes through main.
 	 */
 	peers?: boolean;
+	/** Restrict visible/reachable peer addresses. Omitted means every peer in the owning session. */
+	peerScope?: "all" | "same-id";
+	/** Optional peer type allowlist, enforced at delivery and reflected in the roster. */
+	peerTypes?: string[];
 }
 
 export interface TypeDefinition {
@@ -43,7 +48,7 @@ export interface TypeDefinition {
 
 export type ParseResult = { ok: true; definition: TypeDefinition } | { ok: false; errors: string[] };
 
-const KNOWN_FIELDS = new Set(["name", "description", "model", "thinking", "projectContext", "tools", "peers"]);
+const KNOWN_FIELDS = new Set(["name", "description", "model", "thinking", "projectContext", "tools", "peers", "peerScope", "peerTypes"]);
 
 /** Split leading `---\n…\n---\n` frontmatter from the body. */
 function splitFrontmatter(content: string): { frontmatter: string; body: string } | { error: string } {
@@ -196,6 +201,18 @@ function validateConfig(map: Map<string, RawValue>, filenameStem: string): { con
 	const peers = map.get("peers");
 	if (peers !== undefined && typeof peers !== "boolean") errors.push("peers must be a boolean");
 
+	const peerScope = map.get("peerScope");
+	if (peerScope !== undefined && peerScope !== "all" && peerScope !== "same-id") {
+		errors.push("peerScope must be one of all|same-id");
+	}
+
+	const peerTypes = map.get("peerTypes");
+	if (peerTypes !== undefined) {
+		if (!Array.isArray(peerTypes) || !peerTypes.every((type) => typeof type === "string" && type.trim() !== "")) {
+			errors.push("peerTypes must be an array of non-empty strings");
+		}
+	}
+
 	if (errors.length > 0) return { errors };
 	const config: TypeConfig = {
 		name: name as string,
@@ -206,6 +223,8 @@ function validateConfig(map: Map<string, RawValue>, filenameStem: string): { con
 	if (typeof thinking === "string") config.thinking = thinking as ThinkingLevel;
 	if (Array.isArray(tools)) config.tools = tools as string[];
 	if (typeof peers === "boolean") config.peers = peers;
+	if (peerScope === "all" || peerScope === "same-id") config.peerScope = peerScope;
+	if (Array.isArray(peerTypes)) config.peerTypes = peerTypes as string[];
 	return { config };
 }
 

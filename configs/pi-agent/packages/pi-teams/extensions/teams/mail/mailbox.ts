@@ -188,7 +188,10 @@ export function recordSentQuestion(mailboxDir: string, envelopeId: string, text:
 export function lookupSentQuestion(mailboxDir: string, correlationId: string, from: string): string | undefined {
 	const entry = readJsonMap<SentQuestion>(sentQuestionsFileOf(mailboxDir))[correlationId];
 	if (!entry) return undefined;
-	return entry.expectedFrom === from ? entry.text : undefined;
+	if (entry.expectedFrom === from) return entry.text;
+	// A human may answer an agent's question addressed to main. User is a trusted
+	// delegate only for that upward channel, never for peer-to-peer questions.
+	return entry.expectedFrom === "main" && from === "user" ? entry.text : undefined;
 }
 
 /** Drop sent-question entries once answered (called after markDone of the answer). */

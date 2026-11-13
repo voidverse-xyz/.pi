@@ -7,7 +7,7 @@ Pi Subagents and Pi Teams now resolve typed agent definitions from the same cano
 - global: `~/.pi/agent/subagents/<type>.md`
 - trusted project: `<project>/.pi/subagents/<type>.md`
 
-The root `subagents/` directory is therefore the only tracked production definition library. Its shared inventory includes `planner.md`, `reviewer.md`, `scout.md`, and `worker.md`; Pi Teams continues to discover the planner and scout there. The former root `teams/` copies and `agent/teams` compatibility shim were removed.
+The root `subagents/` directory is therefore the only tracked production definition library. Its shared inventory includes the general `planner`, `reviewer`, `scout`, and `worker` roles plus the issue-scoped `issue-coordinator`, `issue-builder`, and `issue-reviewer` roles. Pi Teams discovers all of them there. The former root `teams/` copies and `agent/teams` compatibility shim were removed.
 
 ## Boundaries
 
@@ -17,7 +17,7 @@ Only definition discovery is shared. Pi Teams retains its independent behavior a
 - project settings: `<project>/.pi/teams.json`
 - session-scoped runtime state: the existing `sessions/<project>/teams/<session-id>/` tree
 
-Pi Teams continues to parse its `peers` field. Pi Subagents tolerates Teams-only frontmatter keys as warnings, so a single definition can configure Teams without preventing Subagents use.
+Pi Teams parses `peers`, `peerScope`, and `peerTypes`. `peerScope: same-id` plus `peerTypes` provides runtime-enforced peer isolation for role groups that share an instance ID. Pi Subagents tolerates Teams-only frontmatter keys as warnings, so a single definition can configure Teams without preventing Subagents use.
 
 ## Migration behavior
 

@@ -58,6 +58,8 @@ export interface SubagentsCore {
 	/** Explicit in-run join for a final/collect result (D27'). */
 	awaitResult(options: AwaitOptions): Promise<AwaitResult>;
 	status(): Promise<RosterEntry[]>;
+	/** Stable owning main-session scope for durable external bindings. */
+	ownerScopeId(): string;
 	peek(address: string, tail?: number): Promise<AgentDetail | null>;
 	steer(to: string, text: string): Promise<SteerResult>;
 	interrupt(to: string): Promise<InterruptResult>;
@@ -137,6 +139,7 @@ export function createCore(options: CoreOptions): SubagentsCore {
 		collect: (to, schema) => runtime.collect(to, schema),
 		awaitResult: (awaitOptions) => runtime.awaitResult(awaitOptions),
 		status: () => runtime.status(),
+		ownerScopeId: () => options.layout.ownerSessionId,
 		peek: (address, tail) => runtime.peek(address, tail),
 		steer: (to, text) => runtime.steer(to, text),
 		interrupt: (to) => runtime.interrupt(to),

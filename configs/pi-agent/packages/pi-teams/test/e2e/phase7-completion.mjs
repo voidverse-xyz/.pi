@@ -86,12 +86,20 @@ await test("await(final) returns the correlated final report", async () => {
 	assert.ok(result.report.text.includes("task done"));
 });
 
-await test("await returns 'attention' when the agent asks instead of finishing", async () => {
+await test("attention → answer → final preserves the original await anchor", async () => {
 	scripts.push({ match: (c) => c.address === "worker/j2", reply: () => ({ tools: [{ name: "ask", args: { text: "which config?" } }] }) });
 	const { taskEnvelopeId } = await core.spawn({ type: "worker", id: "j2", task: "do job" });
-	const result = await core.awaitResult({ to: "worker/j2", waitFor: "final", anchorId: taskEnvelopeId, timeoutSeconds: 10 });
-	assert.equal(result.status, "attention");
-	assert.ok(result.attention.text.includes("which config?"));
+	const attention = await core.awaitResult({ to: "worker/j2", waitFor: "final", anchorId: taskEnvelopeId, timeoutSeconds: 10 });
+	assert.equal(attention.status, "attention");
+	assert.ok(attention.attention.text.includes("which config?"));
+
+	// A roster change invalidates dormant handles; the task anchor must survive it.
+	await core.spawn({ type: "worker", id: "peer-change" });
+	scripts.push({ match: (c) => c.address === "worker/j2" && c.lastUser.includes("use project config"), reply: () => ({ tools: [{ name: "report", args: { text: "continued task done", final: true } }] }) });
+	await core.send({ to: "worker/j2", text: "use project config", correlationId: attention.attention.id });
+	const completed = await core.awaitResult({ to: "worker/j2", waitFor: "final", anchorId: taskEnvelopeId, timeoutSeconds: 10 });
+	assert.equal(completed.status, "completed");
+	assert.ok(completed.report.text.includes("continued task done"));
 });
 
 await test("await times out when nothing arrives (consumes nothing)", async () => {

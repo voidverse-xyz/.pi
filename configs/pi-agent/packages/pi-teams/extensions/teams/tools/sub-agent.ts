@@ -2,7 +2,7 @@
  * tools/sub-agent.ts — the tool trio a SUBAGENT sees (01-power-matrix sub→sub +
  * reverse channel). Address is closed over — an agent cannot spoof its identity.
  *
- *   send_message — peer→peer mail (flat comm, D12). Not to main/user.
+ *   send_message — peer→peer mail within the sender's runtime ACL (D12). Not to main/user.
  *   report       — progress / final result to the main agent (final:true, D26').
  *   ask          — a non-blocking question to the main agent (D14).
  *
@@ -37,7 +37,7 @@ const ReportParams = Type.Object({
 	text: Type.String({ maxLength: MAX_REPORT_TEXT_CHARS }),
 	final: Type.Optional(Type.Boolean({ description: "true = this task is complete. (A oneshot auto-retires after its final report.)" })),
 	data: Type.Optional(Type.Any({ description: "Structured result (e.g. a collect result). Kept on disk; summarized in the main agent's digest." })),
-	correlationId: Type.Optional(Type.String({ description: "The collect-request id when fulfilling team_collect." })),
+	correlationId: Type.Optional(Type.String({ description: "Explicit main task or collect-request anchor. Final task reports normally inherit the current assignment." })),
 });
 
 const AskParams = Type.Object({
@@ -53,7 +53,7 @@ export function createSubagentTools(address: string, port: SubagentMailPort, opt
 	const sendMessage: ToolDefinition<typeof SendParams> = {
 		name: "send_message",
 		label: "Message a peer",
-		description: "Send mail to a PEER subagent (flat team — any peer listed in your context). Not for the main agent (use report/ask).",
+		description: "Send mail to a PEER subagent listed in your runtime-scoped context. Not for the main agent (use report/ask).",
 		parameters: SendParams,
 		async execute(_id, params) {
 			if (params.to === "main" || params.to === "user") return errorResult("send_message is peer-only; use `report` or `ask` for the main agent.");

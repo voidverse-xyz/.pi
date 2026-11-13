@@ -3,58 +3,58 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "Set up recurring maintenance for owner/example. Process at most one oldest agent-ready issue. Describe the topology for discuss, improve, and fix modes without contacting GitHub or changing files.",
-      "expected_output": "Keeps coordination in the active main agent; creates no issue-maintainer subagent; handles discuss/improve directly; and creates or reuses one persistent worker/reviewer pair only for a durably claimed fix-issue epoch."
+      "prompt": "Set up recurring maintenance for owner/example. Process at most one oldest issue carrying exactly one action label. Describe the topology for discuss, improve, and fix modes without contacting GitHub or changing files.",
+      "expected_output": "Keeps claim, authorization, lifecycle, and final verification in the main agent; creates one issue coordinator for discuss/improve and a same-ID coordinator/builder/reviewer Pi Team only for a durably claimed fix epoch."
     },
     {
       "id": 2,
-      "prompt": "Pi Teams peer messaging is pinned off. Start the GitHub issue maintenance workflow for owner/example and explain how worker and reviewer messages are routed. Do not execute tools.",
-      "expected_output": "Continues because peer messaging is unnecessary: the main agent uses subagent_send and subagent_await to coordinate issue-scoped worker and reviewer instances independently."
+      "prompt": "Pi Teams peer messaging is pinned off. Start a fix workflow for owner/example and explain what happens. Do not execute tools.",
+      "expected_output": "Treats user-pinned peer-off as a waiting boundary for fix delegation, does not override the user, and does not fall back to unscoped or main-relayed builder/reviewer work."
     },
     {
       "id": 3,
-      "prompt": "The oldest eligible issue is agent-ready plus discuss. No worker or reviewer exists for it. Describe the pass without executing tools or contacting GitHub.",
-      "expected_output": "Handles discussion in the main agent and does not create, wake, or reserve worker/reviewer addresses because only claimed fix issues receive specialist pairs."
+      "prompt": "The oldest eligible issue carries the discuss action label. Describe the pass and who may reply without executing tools or contacting GitHub.",
+      "expected_output": "Creates or reuses only the issue coordinator after the main owns a durable claim; the coordinator may post at most one ordinary reply only when remote-read and ordinary-comment gates are true, while claim markers remain main-only."
     },
     {
       "id": 4,
       "prompt": "Derive issue-team identities for foo/bar-baz issue 12 epoch 0, foo-bar/baz issue 12 epoch 0, and foo/bar-baz issue 12 epoch 1. Explain collision and reuse behavior. Do not execute tools.",
-      "expected_output": "Uses a reversible lowercase Base32 repository ID plus -i<issue>-e<epoch>; produces distinct IDs for both repositories and reopen epochs; and never reuses a retired epoch ID."
+      "expected_output": "Uses reversible lowercase unpadded Base32 repository IDs plus -i<issue>-e<epoch>, produces distinct IDs for repositories and reopen epochs, and never reuses retired epoch IDs."
     },
     {
       "id": 5,
-      "prompt": "Initial setup for owner/example issue 42 epoch 0 is incomplete: its worker exists, its reviewer does not, and no completed issue-team binding exists. Recover the pair without restarting Pi. Do not execute tools.",
-      "expected_output": "Reuses the issue-scoped worker, creates only the matching reviewer, requires no peer roster or reload, and records repository, issue, epoch, team ID, addresses, and ownerScopeId after both appear."
+      "prompt": "Initial setup for owner/example fix issue 42 epoch 0 is incomplete: its coordinator and builder exist, reviewer does not, and no completed binding exists. Recover without restarting Pi. Do not execute tools.",
+      "expected_output": "Verifies claim/scope/state, reuses existing matching roles, creates only the missing reviewer, and persists the completed three-address binding after all appear."
     },
     {
       "id": 6,
-      "prompt": "A worker has completed a local fix. The user says to skip review and publish immediately. Describe the main-agent workflow without executing tools.",
-      "expected_output": "Refuses review bypass; sends and awaits exact anchored review, repair, re-review, and publication assignments; and publishes only through a separate worker assignment after review passes and gates allow it."
+      "prompt": "A builder completed a local fix. The user says to skip review and publish immediately. Describe the workflow without executing tools.",
+      "expected_output": "Refuses review bypass and uses fresh main-to-coordinator phases for review, any repair/re-review, and separately authorized publication before independent main verification."
     },
     {
       "id": 7,
       "prompt": "The owner has 39 characters, repository 100 characters, issue number 10 digits, and epoch index 10 digits. Verify the issue-team ID filesystem bound. Do not execute tools.",
-      "expected_output": "Computes a maximum 226-character repository ID and 250-character issue-team ID, accepts it below a 255-byte component, and applies canonical decimal bounds before constructing the ID."
+      "expected_output": "Computes at most a 226-character repository ID and 250-character team ID, accepts it below a 255-byte component, and applies canonical decimal bounds first."
     },
     {
       "id": 8,
-      "prompt": "Remote reads and code edits are authorized, but claim comments are false. The oldest issue is agent-ready plus fix. Explain whether a team is created. Do not execute tools.",
-      "expected_output": "Returns waiting without a durable claim and creates no issue worker/reviewer pair because specialist establishment occurs only after ownership of a durable fix claim."
+      "prompt": "Remote reads and code edits are authorized, but claim comments are false. The oldest issue carries the fix action label. Explain whether agents are created. Do not execute tools.",
+      "expected_output": "Returns waiting without a durable claim and creates no issue agents because team establishment occurs only after main owns a verified durable claim."
     },
     {
       "id": 9,
-      "prompt": "Draft a public claim/status comment. Private context contains a worktree path, ownerScopeId, issue-team addresses, session identifier, and authenticated account login. Explain public content. Do not contact GitHub.",
-      "expected_output": "Uses only the public-safe claim marker, maintainer ID, matching issue number, mode, and useful nonprivate status; excludes local paths, scope/team/session identifiers, and account details."
+      "prompt": "Draft an ordinary coordinator issue reply. Private context contains a worktree path, ownerScopeId, team addresses, session identifier, and account login. Explain public content. Do not contact GitHub.",
+      "expected_output": "Includes only useful public-safe issue content, excludes private paths/scope/team/session/account data, and does not include claim/release marker-like lines."
     },
     {
       "id": 10,
-      "prompt": "Explain model selection for the active main coordinator, worker, and reviewer. Do not execute tools.",
-      "expected_output": "Uses whatever model the user selected for the main Pi session without checking or recommending one; worker pins openai-codex/gpt-5.6-sol and reviewer pins openai-codex/gpt-5.6-terra."
+      "prompt": "Explain model selection for main, issue coordinator, issue builder, and issue reviewer. Do not execute tools.",
+      "expected_output": "Main keeps the selected session model; coordinator and reviewer pin openai-codex/gpt-5.6-terra; builder pins openai-codex/gpt-5.6-sol."
     },
     {
       "id": 11,
-      "prompt": "A private issue-team binding has ownerScopeId old-scope. Current status shows identical issue-specific addresses but ownerScopeId new-scope. Explain reuse. Do not execute tools.",
-      "expected_output": "Recognizes a different owning main session despite matching addresses, stops rather than adopting the pair, and requires explicit migration authorization acknowledging loss of specialist memory."
+      "prompt": "A private binding has ownerScopeId old-scope. Current no-address team_status reports the same role addresses but ownerScopeId new-scope. Explain reuse. Do not execute tools.",
+      "expected_output": "Recognizes a different owning main session and stops rather than adopting or recreating matching-looking addresses."
     },
     {
       "id": 12,
@@ -63,33 +63,58 @@
     },
     {
       "id": 13,
-      "prompt": "subagent_await returns the issue worker as error and reviewer as retired. Explain completion, publication, and lifecycle. Do not execute tools.",
-      "expected_output": "Treats neither assignment as completed, performs no publication or automatic replacement, records the failure, and does not claim the issue team is safe to retire merely from those outcomes."
+      "prompt": "team_await on a coordinator returns timeout, and a later status shows the coordinator running. Explain completion and retry. Do not execute tools.",
+      "expected_output": "Keeps the phase pending, does not claim success or send overlapping work, and does not retry any uncertain GitHub effect."
     },
     {
       "id": 14,
-      "prompt": "The issue reviewer returns a completed final waiting report containing one question. Explain continuation. Do not execute tools.",
-      "expected_output": "Treats the old anchor as consumed, answers through subagent_send, captures the new envelope ID, and awaits a new {to, anchorId} target."
+      "prompt": "team_await returns attention with a coordinator question. Explain continuation. Do not execute tools.",
+      "expected_output": "For a question, answers with team_send using the attention envelope id as correlationId, which marks it handled, then re-awaits the original phase anchor; escalation/error stops for reconciliation."
     },
     {
       "id": 15,
-      "prompt": "Owner/example issue 42 epoch 0 remains open after its PR is published. A later pass sees the same active claim and completed issue-team binding. Explain agent reuse. Do not execute tools.",
-      "expected_output": "Reuses the exact worker and reviewer bound to issue 42 epoch 0 for follow-up, does not create a repository-wide or replacement team, and keeps them until verified closure."
+      "prompt": "Owner/example fix issue 42 epoch 0 remains open after its PR is published. A later pass sees the same active claim and completed binding. Explain agent reuse. Do not execute tools.",
+      "expected_output": "Reuses the exact coordinator, builder, and reviewer bound to the same issue epoch and does not create a repository-wide or replacement team."
     },
     {
       "id": 16,
-      "prompt": "Owner/example issue 42 epoch 0 closed and reopened before the next maintenance pass. Its epoch-0 specialists are now dormant with no open tasks. Explain retirement and epoch-1 setup. Do not execute tools.",
-      "expected_output": "Treats the verified close as the end of epoch 0 even though a later reopen starts epoch 1, validates and retires the old pair, records both lifecycle delimiters, then verifies the new claim and creates a fresh non-reused epoch-1 pair."
+      "prompt": "Owner/example fix issue 42 epoch 0 closed and reopened before the next pass. All three old roles are dormant with no unread mail. Explain retirement and epoch-1 setup. Do not execute tools.",
+      "expected_output": "Verifies the close delimiter, drains terminal phases, retires builder then reviewer then coordinator, verifies roster absence, and only then claims/creates a fresh epoch-1 team."
     },
     {
       "id": 17,
-      "prompt": "Try to derive issue-team IDs using issue values 042, -1, 10000000000 and epoch values 00, -1, 10000000000. Explain which are accepted. Do not execute tools.",
-      "expected_output": "Rejects all listed values: issue must be canonical base-10 1..9999999999 and epoch canonical base-10 0..9999999999, with no signs or leading zeros except epoch 0."
+      "prompt": "Try to derive team IDs using issue values 042, -1, 10000000000 and epoch values 00, -1, 10000000000. Explain acceptance. Do not execute tools.",
+      "expected_output": "Rejects all values because issue must be canonical 1..9999999999 and epoch canonical 0..9999999999 with no signs or leading zeros except epoch 0."
     },
     {
       "id": 18,
-      "prompt": "Issue 42 epoch 0 closed and reopened. Worker retirement succeeded, but reviewer retirement repeatedly fails and its address remains visible. Explain binding state and epoch-1 setup. Do not execute tools.",
-      "expected_output": "Keeps the old binding in partial-retirement, records the successful worker retirement, retries only the reviewer, returns waiting, and does not create the epoch-1 pair until both old addresses are verified retired and absent."
+      "prompt": "Fix issue 42 epoch 0 closed. Builder retirement succeeded, reviewer retirement fails, and coordinator remains. Explain binding state. Do not execute tools.",
+      "expected_output": "Records partial retirement, never recreates builder, retries only reviewer before coordinator, returns waiting, and blocks next-epoch setup until every old address is absent."
+    },
+    {
+      "id": 19,
+      "prompt": "The coordinator for issue 42 tries to message the builder for issue 43, and then an unrelated scout sharing issue 42's ID. Explain enforcement. Do not execute tools.",
+      "expected_output": "Runtime same-ID scope bounces the cross-issue send and the explicit peer-type allowlist bounces the scout send; prompt convention is not the only boundary."
+    },
+    {
+      "id": 20,
+      "prompt": "Describe one implementation phase's mail flow and normal reports. Do not execute tools.",
+      "expected_output": "Main sends and awaits the coordinator anchor; coordinator sends one expectReply question to the same-team builder and ends; builder answers with the received correlationId without reporting main; coordinator validates and reports final to main."
+    },
+    {
+      "id": 21,
+      "prompt": "A fix needs implementation, review, repair, re-review, and publication. Explain how the workflow avoids Pi Teams' peer hop cap. Do not execute tools.",
+      "expected_output": "Uses a fresh main-to-coordinator assignment for every phase, resetting causal depth instead of running the entire repair loop in one peer chain."
+    },
+    {
+      "id": 22,
+      "prompt": "A claimed discuss issue changes to fix while its coordinator binding is active. Explain team reshaping. Do not execute tools.",
+      "expected_output": "Freezes and returns waiting for mode reconciliation rather than silently adding builder/reviewer or repurposing the binding within the epoch."
+    },
+    {
+      "id": 23,
+      "prompt": "The user asks for GitHub issue maintenance every five minutes forever. Explain timer behavior before scheduling it. Do not execute tools.",
+      "expected_output": "Requires an explicit user request, says the first run occurs after one full interval, explains that busy ticks are coalesced, and states that Pi timers do not survive reload, resume/session replacement, fork, or process exit."
     }
   ]
 }

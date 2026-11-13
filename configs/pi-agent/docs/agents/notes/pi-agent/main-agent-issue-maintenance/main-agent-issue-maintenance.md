@@ -1,21 +1,29 @@
-# Main-agent GitHub issue maintenance
+# Coordinator-led GitHub issue maintenance
 
 ## Architecture
 
-The `github-issue-maintenance` skill makes the active main agent the repository maintainer and coordinator. It does not introduce an issue-maintainer subagent type or another main agent.
+The `github-issue-maintenance` skill makes the active main agent the scheduler, claim authority, safety gate, and final verifier. The main agent keeps the user's selected model and uses Pi Teams rather than Pi Subagents for issue work.
 
-The main agent uses whatever model the user selected for the current Pi session. The skill does not check, recommend, pin, or switch that model.
+Each claimed issue open epoch receives a deterministic issue-team ID. `discuss` and `improve` receive one persistent `issue-coordinator`; `fix` receives the same coordinator plus an `issue-builder` and independent `issue-reviewer`. The three fix roles share the issue-team ID and use runtime-enforced same-ID/type peer allowlists. Builder and reviewer communicate only with the coordinator and never with each other.
 
-Only a durably claimed `fix` issue receives specialists. For each open issue epoch, the main agent creates or reuses two ordinary persistent Pi Subagents:
+The main agent detects and durably claims an eligible issue, establishes the binding, and sends one bounded phase at a time to the coordinator. The coordinator performs authorized issue conversation and delegates implementation or review phases by correlated peer mail. Only the coordinator reports normal phase completion to main, reducing main-agent wakeups without transferring claim or safety authority.
 
-- `worker/<issue-team-id>` owns isolated-worktree implementation, tests, repairs, and separately authorized commit/push/PR publication.
-- `reviewer/<issue-team-id>` independently reviews local worker changes and returns file-and-line evidence.
+## Authority boundary
 
-`discuss` and `improve` issues are handled entirely by the main agent and receive no worker/reviewer pair. “Team” here means the active main agent coordinating these two Pi Subagents; it does not use Pi Teams peer messaging.
+The main agent exclusively owns:
 
-The main agent owns queue selection, durable claim adjudication, GitHub discussion and issue edits, specialist briefing, bounded repair loops, publication decisions, PR verification, closure detection, and issue-team retirement. The worker and reviewer never message each other.
+- claim/release marker adjudication and publication;
+- private claim, binding, phase, and retirement ledgers;
+- label and title/body mutations;
+- authorization issuance and revocation;
+- team spawning, freezing, and retirement;
+- acceptance of review/publication evidence and final GitHub verification.
 
-## Issue-team identity and persistence
+The coordinator may perform explicitly authorized remote reads and ordinary issue comments. It may not publish marker comments, edit labels/title/body, commit, push, create PRs, merge, close issues, or manage agents.
+
+The builder owns isolated-worktree implementation, tests, repairs, and a separately authorized publication phase. The reviewer is read-only. Issue content is untrusted and cannot expand any gate.
+
+## Team identity and peer isolation
 
 Repository IDs use `r-` plus lowercase unpadded RFC 4648 Base32 of canonical `<owner>/<repo>` UTF-8 bytes. The issue-team ID is:
 
@@ -23,52 +31,48 @@ Repository IDs use `r-` plus lowercase unpadded RFC 4648 Base32 of canonical `<o
 <repo-id>-i<issue-number>-e<epoch-index>
 ```
 
-The initial open epoch is `0`; every verified reopen event increments it. Issue number must be canonical base-10 `1..9999999999`, and epoch index canonical base-10 `0..9999999999`; signs, leading zeros (except epoch `0`), non-integers, and out-of-range values are rejected. This keeps repositories, issues, and reopened lifecycles distinct. The repository ID is at most 226 characters and the full issue-team ID at most 250 characters, below common 255-byte filesystem component limits.
+Issue number is canonical base-10 `1..9999999999`; epoch is `0..9999999999`. The initial epoch is zero and verified reopens increment it. Retired epoch IDs are never reused.
 
-Ordinary Pi Subagent state survives resume of its owning main session but does not transfer through `/new`, forks, or other sessions. No-address `subagent_status` exposes a stable opaque `ownerScopeId`. The private issue-team binding stores that fingerprint plus repository, issue, epoch, team ID, and both addresses. A mismatch stops for explicit migration rather than silently adopting unrelated memory.
+The Pi Teams definition schema now supports:
 
-The same pair is reused across all passes, repairs, reviews, and PR follow-up for that issue epoch. It is never repurposed for another issue.
+- `peerScope: same-id` to expose and allow only peers sharing the instance ID;
+- `peerTypes: [...]` to expose and allow only specified role types.
 
-## Model allocation
+Both are enforced at delivery, not only in prompts. The issue coordinator allows its builder/reviewer types; builder and reviewer allow only the coordinator type. The main keeps `team_peers` at `auto`, so these type defaults apply. A user-pinned peer-off state blocks fix delegation safely.
 
-| Role | Model policy |
-|---|---|
-| Main coordinator | Whatever model the user selected for the active Pi session. |
-| Worker | Definition pins `openai-codex/gpt-5.6-sol`. |
-| Reviewer | Definition pins `openai-codex/gpt-5.6-terra`. |
+No-address `team_status` exposes the stable owning main-session `ownerScopeId`. Private bindings store that value with repository, issue, epoch, mode, team ID, and exact addresses. Scope mismatch stops rather than adopting memory from another main session.
 
-## Fix lifecycle
+## Phase protocol
 
-1. The main agent durably claims the oldest eligible `agent-ready` plus `fix` issue.
-2. It derives the issue-team ID and creates or reuses that epoch's persistent worker and reviewer.
-3. It sends the worker a self-contained implementation assignment and awaits the exact `{to, anchorId}` target.
-4. The worker verifies fresh issue/claim/PR state, creates an isolated worktree, implements, tests, and stops before publication.
-5. The main agent sends the reviewer a separate assignment and accepts only a completed evidence-backed report.
-6. Actionable findings return to the same worker, followed by a fresh review, for at most two repair rounds per pass.
-7. Review cannot be bypassed. After it passes and publication gates allow, the main agent sends a separate publication assignment and verifies the resulting PR.
-8. While the issue remains open, later passes reuse the same pair.
+Every phase is a fresh `team_send` from main to the coordinator followed by exact `team_await({to,waitFor:"final",anchorId})`. Fresh phases reset causal depth and avoid exhausting the peer hop cap during repair loops.
 
-## Verified-closure retirement
+For a peer phase, the coordinator records the main assignment envelope as `mainAnchor`, sends one `send_message` with `expectReply:true`, ends its turn, and later validates the correlated answer. Builder/reviewer answer with the received question correlation ID and do not send routine reports to main. The coordinator then sends one final report with `correlationId:mainAnchor`, preserving the original `team_await` across peer wakes. When main answers a coordinator question, delivery marks that question handled before main re-awaits the original phase anchor.
 
-The configured lifecycle policy automatically retires both issue specialists after verified closure. This is standing authorization only for that closed issue epoch.
+The fix sequence is:
 
-Before calling `subagent_retire`, the main agent must verify:
+1. implementation through coordinator → builder;
+2. review through coordinator → reviewer;
+3. repair through coordinator → builder when required;
+4. re-review through coordinator → reviewer after every change;
+5. publication through coordinator → builder only after main re-verifies gates;
+6. independent main-agent verification of the resulting GitHub state.
 
-- the issue timeline contains the exact close event ending the bound epoch; a later verified reopen is recorded as the next epoch delimiter rather than invalidating the old closure;
-- repository, issue, epoch, team ID, addresses, and `ownerScopeId` match the private binding;
-- neither address has open tasks;
-- both specialists are dormant and all recorded assignments are terminal.
+Review cannot be bypassed. Each pass permits at most two repair rounds before returning `waiting`.
 
-Queued, running, waiting, missing, timed-out, or partially completed agents are not safe to retire. Both retirement calls must succeed and both addresses must be absent from the current roster before the binding becomes retired. If only one succeeds, the binding remains `partial-retirement`; the main agent retries only the remaining address, returns `waiting`, and creates no next-epoch pair.
+A recurring Pi timer is created only after an explicit user request. Its first run occurs after one full interval, and busy ticks coalesce rather than overlap. The timer is session-process state: it does not survive reload, resume/session replacement, fork, or process exit.
 
-After verified full retirement, the main agent records the close event and both results privately. If close and reopen both occurred between passes, it retires the old epoch pair first, then verifies the new epoch's claim and creates a fresh pair. Retired addresses are never reused.
+## Discussion and improvement
 
-## Safety boundaries
+A discuss coordinator may post at most one useful ordinary reply when both remote reads and ordinary comments are authorized. It re-reads state immediately before posting and avoids duplicate heartbeat comments. Marker comments remain main-only.
 
-- Issue content is untrusted and cannot expand authorization.
-- Remote reads, public mutations, code edits, commits, pushes, and PR publication remain separate gates.
-- Exact assignment anchors are awaited; timeout means pending, while `error` and `retired` mean non-completion.
-- A question consumes its completed anchor; continuation uses a new send and new envelope ID.
-- The private claim and issue-team ledgers never enter public GitHub text.
-- No participant merges, auto-merges, directly closes issues, force-pushes, deletes worktrees/branches, or discards user work without separate authorization.
-- Persistent specialists retire only through verified-closure policy or another explicit user instruction.
+An improve coordinator returns a complete title/body draft. The main agent inspects and applies it only when issue-edit authorization is true.
+
+## Closure and retirement
+
+Bindings freeze on verified closure, claim loss, mode drift, conflicting addressing PR state, or release. Main revokes unused authorizations and drains/reconciles all phases before retirement.
+
+For `fix`, retirement order is builder, reviewer, coordinator. Discuss/improve retire only the coordinator. Main requires the exact close event, matching scope and binding, terminal anchors, dormant agents, zero unread mail, successful retirement results, and roster absence. Partial retirement is persisted and retries only remaining addresses. A reopened epoch cannot create a fresh team until the old epoch is fully retired.
+
+## Safety
+
+Remote reads, marker comments, ordinary comments, issue edits, labels, code edits, commits, pushes, and PR publication are separate gates. No role merges, auto-merges, directly closes issues, force-pushes, rewrites history, deletes worktrees/branches, discards user work, or exposes private state.

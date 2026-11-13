@@ -32,7 +32,6 @@ import { composeContext, type IdentityOptions, type PeerInfo } from "../context/
 import { Deliverer, type DelivererHooks, type DeliveryOutcome, type HopsGuard } from "../mail/deliver.ts";
 import { composeWakeDigest, type DigestItem } from "../mail/digest.ts";
 import {
-	type Address,
 	type Envelope,
 	type EnvelopeType,
 	formatAgentAddress,
@@ -136,8 +135,10 @@ interface Handle {
 	assignment: string | null;
 	/** Set when the agent sent a final report this turn; a oneshot auto-retires after (D13). */
 	retireAfterTurn: boolean;
-	/** This type's frontmatter peer default (D12); the effective setting layers user/main over it. */
-	peersDefault: boolean;
+	/** Keep the current main-task anchor across a question/answer wake. */
+	preserveAssignment: boolean;
+	/** Peer-roster generation used to compose this handle's system context. */
+	peerContextGeneration: number;
 }
 
 function vitalsFrom(session: AgentSession, state: AgentState): AgentVitals {
@@ -165,6 +166,12 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	private runningAddresses = new Set<string>();
 	/** Addresses with an interrupt requested before their turn began streaming. */
 	private pendingInterrupt = new Set<string>();
+	/** Running handles whose peer roster changed and must rebuild after the turn. */
+	private dirtyPeerContexts = new Set<string>();
+	/** Durable-in-runtime task anchors survive handle rebuilds caused by peer changes. */
+	private assignmentAnchors = new Map<string, string>();
+	/** Incremented whenever peer membership/control changes. */
+	private peerContextGeneration = 0;
 	/** User-level peer control (D12): "on"/"off" force it; "llm" delegates to the main agent. */
 	private userPeerMode: PeerMode;
 	/** Main-agent peer override, honored only when userPeerMode === "llm". null = per-type default. */
@@ -237,6 +244,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		});
 		mkdirSync(this.layout.agentInstanceDir(type, id), { recursive: true });
 		this.persist();
+		if (created) this.invalidatePeerContexts();
 
 		let taskEnvelopeId: string | undefined;
 		if (options.task !== undefined) {
@@ -256,7 +264,17 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 	// ------------------------------------------------------------- send/collect
 	async send(options: SendOptions): Promise<SendResult> {
-		return this.sendFrom({ kind: "main" }, options);
+		const outcome = this.deliverer.send({
+			from: { kind: "main" },
+			to: options.to,
+			type: options.correlationId !== undefined ? "answer" : "message",
+			text: options.text,
+			correlationId: options.correlationId ?? null,
+		});
+		if (outcome.delivered && options.correlationId !== undefined) {
+			this.completeMainQuestion(options.to, options.correlationId);
+		}
+		return toSendResult(outcome);
 	}
 
 	async sendAsUser(options: SendOptions): Promise<SendResult> {
@@ -270,6 +288,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		// D17 transparency: FYI report to main that the user messaged this agent directly.
 		const to = parseAddress(options.to);
 		if (to?.kind === "agent" && outcome.delivered) {
+			if (options.correlationId !== undefined) this.completeMainQuestion(options.to, options.correlationId);
 			this.deliverer.send({ from: to, to: MAIN_ADDRESS, type: "report", text: `The user sent me a direct message: "${options.text}"` });
 		}
 		return toSendResult(outcome);
@@ -289,15 +308,12 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		return { requested: true, requestId: outcome.envelopeId, ...(outcome.recipientState ? { recipientState: outcome.recipientState } : {}) };
 	}
 
-	private sendFrom(from: Address, options: SendOptions): SendResult {
-		const outcome = this.deliverer.send({
-			from,
-			to: options.to,
-			type: options.correlationId !== undefined ? "answer" : "message",
-			text: options.text,
-			correlationId: options.correlationId ?? null,
-		});
-		return toSendResult(outcome);
+	/** Mark a delivered agent question done after main/user answers it. */
+	private completeMainQuestion(answerer: string, correlationId: string): void {
+		const question = readPending(this.layout.mainMailboxDir).find(
+			(p) => p.envelope.id === correlationId && p.envelope.type === "question" && p.envelope.from === answerer,
+		);
+		if (question) markDone(this.layout.mainMailboxDir, question.envelope.id);
 	}
 
 	/** SubagentMailPort: mail originated by a subagent's tool during its turn. */
@@ -305,18 +321,16 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		const fromAddress = parseAddress(from);
 		if (!fromAddress || fromAddress.kind !== "agent") throw new Error(`invalid agent sender ${JSON.stringify(from)}`);
 		const handle = this.handles.get(from);
-		// Peer-messaging gate (D12): block any agent→agent send when this sender's
-		// effective peer setting is off. Enforced live here (not just by hiding the
-		// tool), so a toggle takes effect immediately even for a session built while
-		// peers were on. Upward channels (to main) are always allowed.
-		if (parseAddress(opts.to)?.kind === "agent" && !this.effectivePeers(handle?.peersDefault ?? true)) {
-			return {
-				delivered: false,
-				disposition: "bounced",
-				envelopeId: "(peer messaging disabled)",
-				bounceReason: "peer messaging is disabled — report to the main agent, which coordinates the team",
-			};
+		const targetAddress = parseAddress(opts.to);
+		// Peer ACLs are enforced in both directions from live type definitions. This
+		// prevents an unrestricted sender from injecting mail into a scoped recipient.
+		if (targetAddress?.kind === "agent") {
+			const senderDenial = this.peerDenial(from, opts.to, true);
+			if (senderDenial) return this.peerBounce(senderDenial);
+			const recipientDenial = this.peerDenial(opts.to, from, false);
+			if (recipientDenial) return this.peerBounce(recipientDenial);
 		}
+		if (opts.type === "question" && handle) handle.preserveAssignment = true;
 		const causedBy = handle?.trigger && handle.trigger.length > 0 ? handle.trigger.reduce((a, b) => (b.hops > a.hops ? b : a)) : null;
 		// A final report with no explicit correlation is correlated to the current
 		// assignment so an await on the task anchor can match it (D26'). A oneshot
@@ -403,6 +417,8 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			// cached defaults/activity (H3 / address-reuse staleness).
 			this.buildLocks.delete(to);
 			this.inheritCache.delete(to);
+			this.assignmentAnchors.delete(to);
+			this.dirtyPeerContexts.delete(to);
 			this.activity.delete(to);
 			this.pendingInterrupt.delete(to);
 			// NB: we deliberately do NOT await this.chains.get(to) — a oneshot
@@ -423,6 +439,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			}
 			removeAgent(this.registry, to);
 			this.persist();
+			this.invalidatePeerContexts();
 			const archiveDir = archiveAgentDir(this.layout, record.type, record.id, new Date().toISOString());
 			this.emit({ type: "agent-retired", address: to, archiveDir });
 			return { retired: true, archiveDir };
@@ -434,6 +451,33 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 	/** Retired agents on disk in .archive/ (D13). */
 	archived(): ArchivedInfo[] {
 		return readArchived(this.layout);
+	}
+
+	/** Surface a failed peer assignment to main and every causal requester. */
+	private surfaceTurnFailure(record: AgentRecord, triggers: Envelope[], text: string): void {
+		const failedAgent = { kind: "agent" as const, type: record.type, id: record.id };
+		this.deliverer.send({ from: failedAgent, to: MAIN_ADDRESS, type: "error", text });
+
+		// This is a non-bouncing runtime safety path: a retired requester is skipped,
+		// and the hop guard cannot turn failure delivery into a retry loop.
+		const notified = new Set<string>();
+		for (const requester of triggers) {
+			const to = parseAddress(requester.from);
+			if (requester.type !== "question" || to?.kind !== "agent" || notified.has(requester.id)) continue;
+			notified.add(requester.id);
+			const requesterRecord = getAgent(this.registry, requester.from);
+			if (!requesterRecord) continue;
+			const error = makeEnvelope({
+				from: MAIN_ADDRESS,
+				to,
+				type: "error",
+				text: `${text} (peer request ${requester.id})`,
+				correlationId: requester.id,
+				hops: requester.hops,
+			});
+			writeEnvelope(this.layout.mailboxDir(to.type, to.id), error);
+			if (requesterRecord.vitals.state === "dormant") this.scheduleMailTurn(requester.from);
+		}
 	}
 
 	// ----------------------------------------------------------------- peer control (D12)
@@ -448,13 +492,47 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		return this.mainPeerOverride ?? peersDefault;
 	}
 
-	/** Refresh tools + prose for DORMANT agents so a peer-setting change lands on their next wake. */
-	private refreshDormantHandles(): void {
-		for (const address of [...this.handles.keys()]) {
-			if (this.runningAddresses.has(address)) continue; // running agents rebuild after their turn
+	private peerBounce(reason: string): DeliveryOutcome {
+		return { delivered: false, disposition: "bounced", envelopeId: "(peer ACL denied)", bounceReason: reason };
+	}
+
+	/** Return a role's live peer-policy denial for one other agent, or null. */
+	private peerDenial(owner: string, peer: string, ownerMustExist: boolean): string | null {
+		const ownerAddress = parseAddress(owner);
+		const peerAddress = parseAddress(peer);
+		if (ownerAddress?.kind !== "agent" || peerAddress?.kind !== "agent") return "peer ACL requires agent addresses";
+		const record = getAgent(this.registry, owner);
+		if (!record) return ownerMustExist ? `peer sender \`${owner}\` is not registered` : null;
+		const resolved = resolveTypeDef(this.layout, record.type, { projectTrusted: this.projectTrusted() });
+		if (!resolved.ok) return `peer policy for \`${owner}\` is unavailable`;
+		const config = resolved.resolved.definition.config;
+		if (!this.effectivePeers(config.peers !== false)) return `peer messaging is disabled for \`${owner}\``;
+		if (config.peerScope === "same-id" && ownerAddress.id !== peerAddress.id) {
+			return `peer address is outside \`${owner}\`'s same-id scope`;
+		}
+		if (config.peerTypes !== undefined && !config.peerTypes.includes(peerAddress.type)) {
+			return `peer type is not allowed by \`${owner}\`'s definition`;
+		}
+		return null;
+	}
+
+	/** Rebuild peer rosters/tools after membership or peer-control changes. */
+	private invalidatePeerContexts(): void {
+		this.peerContextGeneration++;
+		for (const [address, handle] of this.handles) {
+			if (this.runningAddresses.has(address)) {
+				this.dirtyPeerContexts.add(address);
+				continue;
+			}
+			handle.session.dispose();
 			this.handles.delete(address);
 			this.buildLocks.delete(address);
 		}
+	}
+
+	/** Refresh tools + prose so a peer-setting change lands on each agent's next wake. */
+	private refreshDormantHandles(): void {
+		this.invalidatePeerContexts();
 	}
 
 	/** User-level control: "on"/"off" force peer messaging, "llm" delegates to the main agent. */
@@ -626,9 +704,17 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		};
 	}
 
-	private identityFor(address: string, record: AgentRecord): IdentityOptions {
+	private identityFor(
+		address: string,
+		record: AgentRecord,
+		peerScope: "all" | "same-id" = "all",
+		peerTypes?: string[],
+	): IdentityOptions {
 		const peers: PeerInfo[] = listAgents(this.registry)
 			.filter((other) => formatAgentAddress(other.type, other.id) !== address)
+			.filter((other) => peerScope !== "same-id" || other.id === record.id)
+			.filter((other) => peerTypes === undefined || peerTypes.includes(other.type))
+			.filter((other) => this.peerDenial(formatAgentAddress(other.type, other.id), address, false) === null)
 			.map((other) => ({ address: formatAgentAddress(other.type, other.id), purview: other.label ?? other.id }));
 		return { address, purview: record.label ?? record.id, peers, lifetime: record.lifetime };
 	}
@@ -710,12 +796,7 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 				const message = error instanceof Error ? error.message : String(error);
 				this.setState(address, "dormant");
 				this.emit({ type: "turn-error", address, error: message });
-				this.deliverer.send({
-					from: { kind: "agent", type: record.type, id: record.id },
-					to: MAIN_ADDRESS,
-					type: "error",
-					text: `Turn failed before start: ${message}`,
-				});
+				this.surfaceTurnFailure(record, pending.map((item) => item.envelope), `Turn failed before start: ${message}`);
 				leavePending = true;
 				return;
 			}
@@ -738,10 +819,14 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			handle.trigger = pending.map((p) => p.envelope);
 			handle.aborted = false;
 			handle.retireAfterTurn = false;
+			handle.preserveAssignment = false;
 			// The current assignment (for final-report correlation, D26'): the first
 			// uncorrelated task message (from main or a peer) driving this turn.
 			const task = pending.find((p) => p.envelope.type === "message" && p.envelope.correlationId === null && p.envelope.from !== USER_ADDRESS);
-			if (task) handle.assignment = task.envelope.id;
+			if (task) {
+				handle.assignment = task.envelope.id;
+				this.assignmentAnchors.set(address, task.envelope.id);
+			}
 			this.setState(address, "running");
 			this.emit({ type: "turn-started", address });
 
@@ -812,11 +897,31 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 					}
 				}
 			});
+			let promptFailed = false;
+			let promptError: unknown;
 			try {
 				await handle.session.prompt(digest);
 				await handle.session.waitForIdle();
+			} catch (error) {
+				promptFailed = true;
+				promptError = error;
 			} finally {
 				unsubscribe();
+			}
+
+			if (promptFailed) {
+				leavePending = true;
+				const message = promptError instanceof Error ? promptError.message : String(promptError);
+				this.emit({ type: "turn-error", address, error: message });
+				this.surfaceTurnFailure(record, pending.map((item) => item.envelope), `Turn execution failed: ${message}`);
+				const vitals = vitalsFrom(handle.session, "dormant");
+				patchAgent(this.registry, address, { vitals, lastActiveAt: new Date().toISOString() });
+				this.persist();
+				handle.trigger = null;
+				this.activity.delete(address);
+				this.emit({ type: "state-changed", address, state: "dormant" });
+				this.emit({ type: "turn-finished", address, vitals });
+				return;
 			}
 
 			// Re-read `failure` through a const: it is assigned inside the subscribe
@@ -839,13 +944,15 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 			if (turnFailure?.stopReason === "error") {
 				this.emit({ type: "turn-error", address, error: turnFailure.message });
-				// surface a fatal error to main
-				this.deliverer.send({ from: { kind: "agent", type: record.type, id: record.id }, to: MAIN_ADDRESS, type: "error", text: `Turn failed: ${turnFailure.message}` });
+				this.surfaceTurnFailure(record, pending.map((item) => item.envelope), `Turn failed: ${turnFailure.message}`);
 			}
 			this.activity.delete(address);
 			this.emit({ type: "state-changed", address, state: "dormant" });
 			this.emit({ type: "turn-finished", address, vitals });
-			if (!leavePending) handle.assignment = null;
+			if (!leavePending && !handle.preserveAssignment) {
+				handle.assignment = null;
+				this.assignmentAnchors.delete(address);
+			}
 		} finally {
 			this.activity.delete(address);
 			// Consume any interrupt intent that landed in the sliver where the session
@@ -863,21 +970,39 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 			await this.retire(address);
 			return;
 		}
+		if (this.dirtyPeerContexts.delete(address)) {
+			const stale = this.handles.get(address);
+			if (stale === turnHandle) {
+				stale.session.dispose();
+				this.handles.delete(address);
+				this.buildLocks.delete(address);
+			}
+		}
 		// More mail arrived during the turn (held, never interrupts) → drain again.
 		if (!leavePending && !this.disposed && pendingCount(mailboxDir) > 0) this.scheduleMailTurn(address);
 	}
 
 	private async ensureHandle(address: string, record: AgentRecord, def: TypeDefinition, inherit?: InheritedDefaults): Promise<Handle> {
 		const existing = this.handles.get(address);
-		if (existing) return existing;
+		if (existing && existing.peerContextGeneration === this.peerContextGeneration) return existing;
+		if (existing && !existing.session.isStreaming) {
+			existing.session.dispose();
+			this.handles.delete(address);
+			this.dirtyPeerContexts.delete(address);
+		}
 		const pending = this.buildLocks.get(address);
 		if (pending) return pending;
-		const build = this.buildHandle(address, record, def, inherit)
-			.then((handle) => {
+		const build = this.buildFreshHandle(address, record, def, inherit)
+			.then(async (initialHandle) => {
+				let handle = initialHandle;
+				// Recheck at installation. An invalidation can occur after a fresh build
+				// resolves but before this promise reaction runs.
+				while (handle.peerContextGeneration !== this.peerContextGeneration) {
+					handle.session.dispose();
+					handle = await this.buildFreshHandle(address, record, def, inherit);
+				}
 				// If the agent was retired (or the runtime disposed) while this session
-				// was being built, do NOT install it — stand it down instead, so we don't
-				// leak a live session for a gone agent. The caller (mailTurn) re-checks
-				// liveness after ensureHandle and will leave the mail pending.
+				// was being built, do NOT install it — stand it down instead.
 				if (this.disposed || this.retiring.has(address) || !getAgent(this.registry, address)) {
 					void handle.session.abort().catch(() => {});
 					return handle;
@@ -890,7 +1015,22 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		return build;
 	}
 
-	private async buildHandle(address: string, record: AgentRecord, def: TypeDefinition, inherit?: InheritedDefaults): Promise<Handle> {
+	private async buildFreshHandle(address: string, record: AgentRecord, def: TypeDefinition, inherit?: InheritedDefaults): Promise<Handle> {
+		for (;;) {
+			const generation = this.peerContextGeneration;
+			const handle = await this.buildHandle(address, record, def, inherit, generation);
+			if (generation === this.peerContextGeneration) return handle;
+			handle.session.dispose();
+		}
+	}
+
+	private async buildHandle(
+		address: string,
+		record: AgentRecord,
+		def: TypeDefinition,
+		inherit: InheritedDefaults | undefined,
+		peerContextGeneration: number,
+	): Promise<Handle> {
 		const layout = this.layout;
 		const instanceDir = layout.agentInstanceDir(record.type, record.id);
 		mkdirSync(instanceDir, { recursive: true });
@@ -900,7 +1040,9 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 
 		const peersDefault = def.config.peers !== false;
 		const peersEnabled = this.effectivePeers(peersDefault);
-		const composed = composeContext(def, { ...this.identityFor(address, record), peersEnabled });
+		const peerScope = def.config.peerScope ?? "all";
+		const peerTypes = def.config.peerTypes;
+		const composed = composeContext(def, { ...this.identityFor(address, record, peerScope, peerTypes), peersEnabled });
 		const services = await createAgentSessionServices({
 			cwd: layout.cwd,
 			agentDir: layout.agentDir,
@@ -956,7 +1098,15 @@ export class InProcessRuntime implements SubagentRuntime, SubagentMailPort {
 		if (thinkingLevel !== undefined) sessionOptions.thinkingLevel = thinkingLevel;
 
 		const { session } = await createAgentSessionFromServices(sessionOptions);
-		return { session, aborted: false, trigger: null, assignment: null, retireAfterTurn: false, peersDefault };
+		return {
+			session,
+			aborted: false,
+			trigger: null,
+			assignment: this.assignmentAnchors.get(address) ?? null,
+			retireAfterTurn: false,
+			preserveAssignment: false,
+			peerContextGeneration,
+		};
 	}
 
 	private resolveModel(

@@ -300,7 +300,7 @@ export function createStatusTool(getCore: GetCore): ToolDefinition<typeof Status
 					return jsonResult(detail);
 				}
 				const roster = await core.status();
-				return jsonResult({ agents: roster, count: roster.length });
+				return jsonResult({ ownerScopeId: core.ownerScopeId(), agents: roster, count: roster.length });
 			} catch (error) {
 				return errorResult(error);
 			}

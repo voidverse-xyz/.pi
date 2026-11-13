@@ -15,7 +15,7 @@ import { createTestModelRuntime, EXT, PI_PKG, WORLDS, jiti } from "./env.mjs";
 const piSdk = await jiti.import(join(PI_PKG, "dist/index.js"));
 const piAi = await jiti.import(join(PI_PKG, "node_modules/@earendil-works/pi-ai/dist/index.js"));
 const { createLayout } = await jiti.import(join(EXT, "store/layout.ts"));
-const { readPending } = await jiti.import(join(EXT, "mail/mailbox.ts"));
+const { lookupSentQuestion, readPending, recordSentQuestion } = await jiti.import(join(EXT, "mail/mailbox.ts"));
 const { composeWakeDigest } = await jiti.import(join(EXT, "mail/digest.ts"));
 const { validateAgainstSchema } = await jiti.import(join(EXT, "mail/collect.ts"));
 const { makeEnvelope } = await jiti.import(join(EXT, "mail/envelope.ts"));
@@ -124,6 +124,14 @@ await test("answers quote the original question; mail ordered", () => {
 	assert.ok(digest.includes("A or B?"));
 	assert.ok(digest.includes("Use A."));
 });
+await test("user may answer a main-directed question but cannot spoof a peer answer", () => {
+	const box = join(scratch, "question-index");
+	mkdirSync(box, { recursive: true });
+	recordSentQuestion(box, "q-main", "main question", "main");
+	recordSentQuestion(box, "q-peer", "peer question", "worker/bob");
+	assert.equal(lookupSentQuestion(box, "q-main", "user"), "main question");
+	assert.equal(lookupSentQuestion(box, "q-peer", "user"), undefined);
+});
 console.log("collect validation (pure):");
 await test("honest subset: additionalProperties:false closes empty object; order-independent const", () => {
 	assert.equal(validateAgainstSchema({ x: 1 }, { type: "object", additionalProperties: false }).valid, false);
@@ -150,6 +158,7 @@ await test("answer wakes the agent; digest quotes the question next to the answe
 	const before = llmCalls.length;
 	const res = await core.send({ to: "researcher/q1", text: "Use approach A.", correlationId: q.id });
 	assert.equal(res.disposition, "woken");
+	assert.equal(mainMail().some((e) => e.id === q.id), false, "answered attention question is no longer pending for repeated awaits");
 	await core.whenIdle();
 	const wakeCall = llmCalls.slice(before).find((c) => c.address === "researcher/q1");
 	assert.ok(wakeCall, "researcher woke and got an LLM call");

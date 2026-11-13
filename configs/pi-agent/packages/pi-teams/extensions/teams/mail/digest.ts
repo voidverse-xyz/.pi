@@ -67,6 +67,9 @@ function formatItem(item: DigestItem, index: number): string {
 	const lines: string[] = [];
 	lines.push(`${index}. ${envelope.type} from \`${envelope.from}\` (${envelope.id}):`);
 	lines.push(quote(boundText(envelope.payload.text, envelope.id)));
+	if (envelope.correlationId !== null && envelope.type !== "answer") {
+		lines.push(`   Related correlationId: "${envelope.correlationId}".`);
+	}
 	if (envelope.type === "question") {
 		lines.push(`   To answer, send a message back to \`${envelope.from}\` with correlationId "${envelope.id}".`);
 	}

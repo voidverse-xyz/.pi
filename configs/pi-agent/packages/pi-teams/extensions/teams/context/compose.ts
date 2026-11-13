@@ -35,7 +35,7 @@ export interface IdentityOptions {
 	address: string;
 	/** What this instance owns (D5 purview slug or richer prose). */
 	purview: string;
-	/** Every OTHER agent under the same main (flat comm — D12), with purviews. */
+	/** Every OTHER agent this instance is allowed to reach, with purviews. */
 	peers: PeerInfo[];
 	/**
 	 * Whether this instance may message peers directly (D12). Default true. When
@@ -49,8 +49,8 @@ export interface IdentityOptions {
 
 /**
  * Layer 4: the deterministic runtime identity block — who the agent is, what it
- * owns, who it can talk to (all peers + main, flat), its comm powers, and the
- * non-blocking-question + checkpoint conventions (D14).
+ * owns, which peers it may reach, its comm powers, and the non-blocking-question
+ * plus checkpoint conventions (D14).
  */
 export function composeIdentityBlock(options: IdentityOptions): string {
 	const peersEnabled = options.peersEnabled !== false;
@@ -108,9 +108,9 @@ export function composeIdentityBlock(options: IdentityOptions): string {
 	lines.push("## Conventions");
 	lines.push("");
 	lines.push(
-		"- The main agent only learns what you tell it — never finish silently. When your assigned " +
-			"task is complete, send a FINAL report (the `report` tool with final:true); send progress " +
-			"reports at meaningful milestones along the way.",
+		"- Never finish silently. For a task assigned directly by the main agent, send a FINAL report " +
+			"(`report` with final:true). For a task assigned by a peer, answer that peer with `send_message` " +
+			"and the received question's correlationId; do not also send a routine final report to main.",
 	);
 	if (options.lifetime === "oneshot") {
 		lines.push(
@@ -120,8 +120,8 @@ export function composeIdentityBlock(options: IdentityOptions): string {
 		);
 	}
 	lines.push(
-		"- Questions are non-blocking: when you ask one, END YOUR TURN. You will go dormant and be " +
-			"woken with the answer quoted next to your question. Never busy-wait or poll for a reply.",
+		"- Questions are non-blocking: after `ask` or `send_message` with expectReply:true, END YOUR TURN. " +
+			"You will go dormant and be woken with the correlated answer. Never busy-wait or poll.",
 	);
 	lines.push(
 		"- Before ending a turn on a question (or any pause), jot a one-line checkpoint in your " +

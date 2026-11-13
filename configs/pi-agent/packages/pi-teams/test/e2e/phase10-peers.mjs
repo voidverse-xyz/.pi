@@ -22,7 +22,7 @@ const piAi = await jiti.import(join(PI_PKG, "node_modules/@earendil-works/pi-ai/
 const { parseTypeFile } = await jiti.import(join(EXT, "typedefs/parse.ts"));
 const { composeIdentityBlock } = await jiti.import(join(EXT, "context/compose.ts"));
 const { createSubagentTools } = await jiti.import(join(EXT, "tools/sub-agent.ts"));
-const { createPeersTool } = await jiti.import(join(EXT, "tools/main-agent.ts"));
+const { createPeersTool, createStatusTool } = await jiti.import(join(EXT, "tools/main-agent.ts"));
 const { createLayout } = await jiti.import(join(EXT, "store/layout.ts"));
 const { createCore } = await jiti.import(join(EXT, "core.ts"));
 
@@ -35,13 +35,21 @@ async function test(name, fn) {
 
 // ------------------------------------------------------------------ pure: parse
 console.log("frontmatter:");
-await test("peers:false parses; bad value rejected; default omitted", () => {
+await test("peer controls and scoped ACL fields parse strictly", () => {
 	const off = parseTypeFile("---\nname: t\ndescription: d\npeers: false\n---\nbody", "t");
 	assert.ok(off.ok && off.definition.config.peers === false);
+	const scoped = parseTypeFile(
+		"---\nname: t\ndescription: d\npeerScope: same-id\npeerTypes: [builder, reviewer]\n---\nbody",
+		"t",
+	);
+	assert.ok(scoped.ok);
+	assert.equal(scoped.definition.config.peerScope, "same-id");
+	assert.deepEqual(scoped.definition.config.peerTypes, ["builder", "reviewer"]);
 	const on = parseTypeFile("---\nname: t\ndescription: d\n---\nbody", "t");
 	assert.ok(on.ok && on.definition.config.peers === undefined, "default is unset (treated as on)");
-	const bad = parseTypeFile("---\nname: t\ndescription: d\npeers: maybe\n---\nbody", "t");
-	assert.equal(bad.ok, false);
+	assert.equal(parseTypeFile("---\nname: t\ndescription: d\npeers: maybe\n---\nbody", "t").ok, false);
+	assert.equal(parseTypeFile("---\nname: t\ndescription: d\npeerScope: team\n---\nbody", "t").ok, false);
+	assert.equal(parseTypeFile("---\nname: t\ndescription: d\npeerTypes: [builder, 3]\n---\nbody", "t").ok, false);
 });
 
 // ------------------------------------------------------------------ pure: prose
@@ -82,14 +90,33 @@ mkdirSync(project, { recursive: true });
 // talker: peers ON by default; loner: peers OFF by default.
 writeFileSync(join(defs, "talker.md"), ["---", "name: talker", "description: t", "model: mock/mock-1", "projectContext: false", "---", "You are TALKER."].join("\n"));
 writeFileSync(join(defs, "loner.md"), ["---", "name: loner", "description: l", "model: mock/mock-1", "projectContext: false", "peers: false", "---", "You are LONER."].join("\n"));
+writeFileSync(
+	join(defs, "scoped-a.md"),
+	["---", "name: scoped-a", "description: a", "model: mock/mock-1", "projectContext: false", "peerScope: same-id", "peerTypes: [scoped-b, bad-peer]", "---", "You are SCOPED A."].join("\n"),
+);
+writeFileSync(join(defs, "scoped-b.md"), ["---", "name: scoped-b", "description: b", "model: mock/mock-1", "projectContext: false", "---", "You are SCOPED B."].join("\n"));
+writeFileSync(join(defs, "scoped-c.md"), ["---", "name: scoped-c", "description: c", "model: mock/mock-1", "projectContext: false", "---", "You are SCOPED C."].join("\n"));
+writeFileSync(
+	join(defs, "bad-peer.md"),
+	["---", "name: bad-peer", "description: bad", "model: missing/no-such-model", "projectContext: false", "peerScope: same-id", "peerTypes: [scoped-a]", "---", "You fail before start."].join("\n"),
+);
 
 const scripts = [];
+const llmCalls = [];
 function mockStream(model, context) {
+	const sys = context.systemPrompt ?? "";
+	const address = (sys.match(/address `([^`]+)`/) || [])[1] ?? "?";
 	const stream = piAi.createAssistantMessageEventStream();
 	(async () => {
-		const sys = context.systemPrompt ?? "";
-		const address = (sys.match(/address `([^`]+)`/) || [])[1] ?? "?";
 		const lastRole = context.messages.at(-1)?.role;
+		let lastUser = "";
+		for (let i = context.messages.length - 1; i >= 0; i--) {
+			if (context.messages[i].role !== "user") continue;
+			const content = context.messages[i].content;
+			lastUser = typeof content === "string" ? content : content.map((item) => item.text ?? "").join("");
+			break;
+		}
+		llmCalls.push({ address, sys, lastRole, lastUser });
 		let spec = { text: "ok" };
 		for (let i = 0; i < scripts.length; i++) {
 			if (scripts[i].match({ address, lastRole })) {
@@ -158,6 +185,13 @@ await test("team_peers reports user-locked when the user has pinned the setting"
 	assert.ok(out.note.includes("pinned"), "the model is told the user's choice wins");
 });
 
+await test("team_status exposes the stable owner scope", async () => {
+	const tool = createStatusTool(() => core);
+	const res = await tool.execute("id", {}, undefined, undefined, {});
+	const out = JSON.parse(res.content[0].text);
+	assert.equal(out.ownerScopeId, "sess-10");
+});
+
 await test("the peer gate enforces live at the delivery port (on → delivered, off → bounced)", async () => {
 	// Two real agents so both sender and recipient exist.
 	await core.spawn({ type: "talker", id: "main", task: "exist" });
@@ -176,11 +210,102 @@ await test("the peer gate enforces live at the delivery port (on → delivered, 
 	const off = port.sendFromAgent("talker/main", { to: "loner/main", type: "message", text: "hi again" });
 	assert.equal(off.delivered, false, "peer send blocked while peers OFF");
 	assert.equal(off.disposition, "bounced");
-	assert.ok(off.bounceReason.includes("main agent"), "the bounce points the agent at the coordinator");
+	assert.ok(off.bounceReason.includes("disabled"), "the bounce explains that peer messaging is disabled");
 
 	// Upward channel to main is NEVER gated, even with peers OFF.
 	const toMain = port.sendFromAgent("talker/main", { to: "main", type: "report", text: "still can report" });
 	assert.notEqual(toMain.disposition, "bounced", "reports to main are always allowed");
+});
+
+await test("same-id and peer-type ACLs are enforced at delivery", async () => {
+	core.setUserPeerMode("on");
+	await core.spawn({ type: "scoped-a", id: "team-1", task: "exist" });
+	await core.spawn({ type: "scoped-b", id: "team-1", task: "exist" });
+	await core.spawn({ type: "scoped-b", id: "team-2", task: "exist" });
+	await core.spawn({ type: "scoped-c", id: "team-1", task: "exist" });
+	await core.whenIdle();
+	const port = core.runtime;
+
+	const allowed = port.sendFromAgent("scoped-a/team-1", { to: "scoped-b/team-1", type: "message", text: "same team" });
+	assert.equal(allowed.delivered, true);
+
+	const wrongId = port.sendFromAgent("scoped-a/team-1", { to: "scoped-b/team-2", type: "message", text: "wrong team" });
+	assert.equal(wrongId.disposition, "bounced");
+	assert.ok(wrongId.bounceReason.includes("same-id"));
+
+	const wrongType = port.sendFromAgent("scoped-a/team-1", { to: "scoped-c/team-1", type: "message", text: "wrong role" });
+	assert.equal(wrongType.disposition, "bounced");
+	assert.ok(wrongType.bounceReason.includes("type"));
+
+	const inboundWrongId = port.sendFromAgent("scoped-b/team-2", { to: "scoped-a/team-1", type: "message", text: "cross-team injection" });
+	assert.equal(inboundWrongId.disposition, "bounced", "recipient same-id scope blocks unrestricted cross-team sender");
+	assert.ok(inboundWrongId.bounceReason.includes("same-id"));
+
+	const inboundWrongType = port.sendFromAgent("scoped-c/team-1", { to: "scoped-a/team-1", type: "message", text: "wrong-role injection" });
+	assert.equal(inboundWrongType.disposition, "bounced", "recipient type allowlist blocks unrestricted wrong-role sender");
+	assert.ok(inboundWrongType.bounceReason.includes("type"));
+});
+
+await test("fatal peer turn wakes its causal requester", async () => {
+	await core.spawn({ type: "scoped-a", id: "failure", task: "be ready" });
+	await core.spawn({ type: "bad-peer", id: "failure" });
+	await core.whenIdle();
+	const before = llmCalls.length;
+	const outcome = core.runtime.sendFromAgent("scoped-a/failure", {
+		to: "bad-peer/failure",
+		type: "question",
+		text: "do failing work",
+	});
+	assert.equal(outcome.delivered, true);
+	await new Promise((resolve) => setImmediate(resolve));
+	await core.whenIdle();
+	const requesterWake = llmCalls.slice(before).find((call) => call.address === "scoped-a/failure" && call.lastUser.includes("Turn failed before start"));
+	assert.ok(requesterWake, "causal peer receives the descendant failure instead of waiting for timeout");
+});
+
+await test("rejected prompt restores dormant state and wakes the causal requester", async () => {
+	await core.spawn({ type: "scoped-a", id: "reject", task: "be ready" });
+	await core.spawn({ type: "scoped-b", id: "reject" });
+	await core.whenIdle();
+	const before = llmCalls.length;
+	const targetHandle = core.runtime.handles.get("scoped-a/reject");
+	assert.ok(targetHandle, "target handle exists before rejection injection");
+	targetHandle.session.prompt = async () => { throw null; };
+	const outcome = core.runtime.sendFromAgent("scoped-b/reject", {
+		to: "scoped-a/reject",
+		type: "question",
+		text: "trigger rejected prompt",
+	});
+	assert.equal(outcome.delivered, true);
+	await new Promise((resolve) => setImmediate(resolve));
+	await core.whenIdle();
+	const target = (await core.status()).find((entry) => entry.address === "scoped-a/reject");
+	assert.equal(target.state, "dormant");
+	assert.ok(core.agentUnreadCount("scoped-a/reject") > 0, "failed turn keeps triggering mail pending");
+	const requesterWake = llmCalls.slice(before).find((call) => call.address === "scoped-b/reject" && call.lastUser.includes("Turn execution failed"));
+	assert.ok(requesterWake, "causal requester wakes on rejected prompt");
+	const mainDigest = core.takeMainMailDigest();
+	assert.ok(mainDigest?.digest.includes("Turn execution failed"), "main receives the rejection failure");
+	mainDigest?.commit();
+});
+
+await test("peer roster context rebuilds after spawn and retirement", async () => {
+	await core.spawn({ type: "scoped-a", id: "roster", task: "before peer" });
+	await core.whenIdle();
+	const before = llmCalls.filter((call) => call.address === "scoped-a/roster").at(-1);
+	assert.ok(before && !before.sys.includes("scoped-b/roster"));
+
+	await core.spawn({ type: "scoped-b", id: "roster" });
+	await core.send({ to: "scoped-a/roster", text: "after peer spawn" });
+	await core.whenIdle();
+	const afterSpawn = llmCalls.filter((call) => call.address === "scoped-a/roster").at(-1);
+	assert.ok(afterSpawn.sys.includes("scoped-b/roster"), "new allowed peer appears after handle rebuild");
+
+	await core.retire("scoped-b/roster");
+	await core.send({ to: "scoped-a/roster", text: "after peer retirement" });
+	await core.whenIdle();
+	const afterRetire = llmCalls.filter((call) => call.address === "scoped-a/roster").at(-1);
+	assert.ok(!afterRetire.sys.includes("scoped-b/roster"), "retired peer disappears after handle rebuild");
 });
 
 await core.dispose();
